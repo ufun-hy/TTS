@@ -1,92 +1,144 @@
 # Mac mini 本地 CosyVoice TTS API
 
-最小链路：`POST /speak` → 常驻 CosyVoice3 → WAV → macOS 默认音频设备播放。
+当前链路：`HTTP /speak` → 鉴权 → FIFO → CosyVoice3 → `afplay` 播放。
 
-实现使用 [cosyvoice.cpp](https://github.com/Lourdle/cosyvoice.cpp) 的 macOS arm64 预编译包和 `Fun-CosyVoice3-0.5B-2512` 的 GGUF 模型。模型和运行时文件只放在 `runtime/`，不会提交 Git。
+实现使用 [cosyvoice.cpp](https://github.com/Lourdle/cosyvoice.cpp) v0.1.1 macOS arm64 运行时和 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF 模型。模型、音频、日志和运行时文件均不提交 Git。
 
 ## 安装
-
-需要 Apple Silicon macOS、Homebrew、`curl`、Python 3 和可用的 macOS 音频输出设备：
 
 ```bash
 ./scripts/install.sh
 ```
 
-安装脚本会下载：
+安装内容：
 
-- `cosyvoice.cpp v0.1.1` macOS arm64 miniaudio release
 - `CosyVoice3-2512_Q8_0.gguf`
 - `speech_tokenizer_v3.int8.onnx`、`campplus.int8.onnx`
-- 官方示例 `zero_shot_prompt.wav`，并生成 `prompt_speech.gguf`
+- 官方示例提示音并生成 `runtime/models/prompt_speech.gguf`
+- macOS arm64 `cosyvoice.cpp v0.1.1`
 
-模型来源：[Hugging Face 模型包](https://huggingface.co/Lourdle/Fun-CosyVoice3-0.5B-2512-GGUF)。该 GGUF 包是为 cosyvoice.cpp 准备的社区转换包；CosyVoice3 原始模型说明见 [QwenAudio/CosyVoice](https://github.com/QwenAudio/CosyVoice)。
+## 常驻服务
 
-## 启动
-
-默认监听本机所有网卡 `0.0.0.0:8765`，并让 cosyvoice.cpp 自动选择可用后端（Apple Silicon 上优先 Metal）：
-
-```bash
-./start.sh
-```
-
-也可以显式使用同样的局域网监听模式：
+首次安装 launchd LaunchAgent，并在 macOS 登录后自动启动：
 
 ```bash
-./start.sh --lan
+./scripts/service-install.sh
 ```
 
-可通过环境变量调整端口或后端：`TTS_PORT=8765 COSYVOICE_BACKEND=auto ./start.sh`。只有明确设置 `COSYVOICE_BACKEND=cpu` 才会使用 CPU；启动输出会显示请求的后端模式，CosyVoice 日志会记录服务端运行信息。
+API Key 会生成并保存到 macOS Keychain，不写入 Git、plist、README 或日志。
 
-## 本机测试
+管理服务：
 
 ```bash
-curl -X POST http://127.0.0.1:8765/speak \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"欢迎进入直播间，这是接口测试。"}'
+./scripts/service-status.sh
+./scripts/service-start.sh
+./scripts/service-stop.sh
+./scripts/service-restart.sh
+./scripts/service-uninstall.sh
 ```
 
-只有合成成功并且 `afplay` 播放完成后才返回：
+服务日志：`runtime/logs/service.log`、`runtime/logs/service.error.log`、`runtime/logs/cosyvoice-server.log`。
+
+如果手工运行 `./start.sh`，脚本会从 Keychain 读取 API Key；也可以临时设置 `TTS_API_KEY` 环境变量。
+
+## 健康检查
+
+```bash
+curl http://127.0.0.1:8765/health
+```
+
+模型未加载或播放 worker 未运行时返回 503，不会伪造 200：
 
 ```json
-{"success": true}
+{"status":"ok","tts":"ready","queue":"ready","queue_depth":0}
 ```
 
-空文本、缺少 `text` 或超过 200 个字符返回 400。多个请求由单个 FIFO worker 顺序合成和播放，单条失败不会停止 worker。
+## 本地 / 局域网 API
 
-## 局域网测试
+Gateway 默认监听 `0.0.0.0:8765`，CosyVoice 引擎只监听 `127.0.0.1:8766`。`8765` 不应通过路由器端口映射直接暴露公网。
 
-先在 Mac mini 执行 `./start.sh --lan`，再在另一台同一局域网设备上执行：
+读取本机 API Key 并请求：
 
 ```bash
-curl -X POST http://<MAC_LAN_IP>:8765/speak \
+API_KEY="$(security find-generic-password -a "$USER" -s com.ufun.tts.api-key -w)"
+curl -X POST http://127.0.0.1:8765/speak \
+  -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"text":"欢迎进入直播间，这是局域网测试。"}'
+  -d '{"text":"欢迎进入直播间，这是接口测试。","voice":"default"}'
 ```
 
-Mac mini 的局域网地址可用 `ipconfig getifaddr en1` 查看；不要做端口映射、隧道或公网 DNS。
+局域网设备把地址替换为 Mac mini 的 LAN 地址，例如：
 
-## 停止与日志
+```bash
+curl -X POST http://192.168.3.92:8765/speak \
+  -H "Authorization: Bearer $API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"这是局域网语音测试。","voice":"default"}'
+```
 
-在运行 `start.sh` 的终端按 `Ctrl-C`，它会同时停止网关和 CosyVoice 子进程。CosyVoice 日志在 `runtime/logs/cosyvoice-server.log`，生成的 WAV 在 `runtime/audio/`。
+未携带或携带错误 API Key 返回 401；不存在音色返回 404 `voice_not_found`；超长文本、空文本、错误 Content-Type 返回 4xx。默认限流为每分钟 30 个请求，可用 `TTS_RATE_LIMIT_PER_MINUTE` 调整。
 
-## 当前验收记录（2026-09-07，Mac mini M4 Pro）
+## 音色
 
-- 模型启动：约 5 秒到 `/healthz` ready。
-- 首次中文合成：CosyVoice 服务端 2.71 秒；文本 19 字符。
-- 暖机中文合成：CosyVoice 服务端 2.17 秒；文本 20 字符。
-- 音频：实际生成并播放 WAV，24 kHz、单声道；`afplay` 返回成功。
-- 加速：`COSYVOICE_BACKEND=auto` 合成约 2 秒级；同文本显式 CPU 对照为 8.73 秒。合成期间 `IOAccelerator` 的 GPU Device Utilization 最高 99%，因此本次实际使用 Metal。显式 `--backend metal` 在该 release/macOS 组合下初始化失败，默认保持 `auto`。
-- 进程物理内存：`footprint` 采样峰值 319 MB；这是进程 physical footprint，不等同于统一内存中 GPU/驱动的全部占用。
-- FIFO：3 条不同文本连续提交，按队列顺序完整播放，均返回成功；未观察到重叠。
-- 校验：空文本、缺少 `text`、201 字符文本均实际返回 400。
-- 局域网：`--lan` 后通过 `192.168.3.92:8765` 本机 LAN 地址请求成功；当前执行环境没有第二台局域网设备，因此“另一台设备”验收尚未完成。
-- 重启：停止服务、重新启动后再次合成成功。
+查询当前可用音色：
 
-网关日志会记录每条语音的合成、播放和总耗时；CosyVoice 服务日志在 `runtime/logs/cosyvoice-server.log`。
+```bash
+curl http://127.0.0.1:8765/voices \
+  -H "Authorization: Bearer $API_KEY"
+```
 
-## 已知限制
+当前配置在 [voices.json](./voices.json)，默认只有已经存在真实 `prompt_speech.gguf` 的 `default` 音色。业务端只传 Voice ID，不传文件路径：
 
-- 这是本地验证服务，不包含鉴权；默认监听所有网卡，仅建议在可信局域网使用。
-- 依赖 macOS 默认音频设备和 `/usr/bin/afplay`。
-- 当前请求是整段 WAV 返回后再播放，没有流式播放。
-- 当前最大文本长度是 200 个 Unicode 字符。
+```json
+{"text":"欢迎进入直播间","voice":"default"}
+```
+
+添加音色：
+
+```bash
+mkdir -p voices/host_female
+# 放入 voices/host_female/reference.wav
+# 放入 voices/host_female/reference.txt
+./scripts/voice-prepare.sh host_female
+```
+
+`reference.txt` 必须是音频中实际说出的准确文字。脚本会生成 `runtime/models/voices/host_female.gguf` 并更新 `voices.json`。Gateway 会在配置文件变化后自动注册/删除音色，不需要重启 CosyVoice 主进程。
+
+如果没有真实第二音色样本，不注册或伪造 `host_female` / `host_male`。
+
+## Tailscale Funnel 公网 HTTPS
+
+本项目只使用 Tailscale Funnel，不做路由器端口映射。先安装官方 macOS Tailscale 客户端并完成登录；当前机器如果尚未安装，`scripts/funnel-enable.sh` 会明确报错，不会伪造公网状态。
+
+启用、停用和查看状态：
+
+```bash
+./scripts/funnel-enable.sh
+./scripts/funnel-status.sh
+./scripts/funnel-disable.sh
+```
+
+当前官方 CLI 使用 `tailscale funnel --bg 8765`，后台配置会在 Tailscale/设备重启后恢复。真实公网地址以 `funnel-status.sh` 输出为准。
+
+本次实际启用的公网地址：
+
+```text
+https://ufunmac-mini.tail352fe1.ts.net
+```
+
+目标链路：
+
+```text
+公网 HTTPS Tunnel → 127.0.0.1:8765 → API Key → Gateway
+```
+
+公网请求必须继续携带 API Key。禁止路由器端口映射或直接暴露 8765。
+
+软件端调用约定见 [docs/software-api.md](docs/software-api.md)，示例配置见 [config/tts.example.json](config/tts.example.json)。
+
+## 当前限制
+
+- API Key 保护 `/speak` 和 `/voices`；`/health` 可公开访问，只返回健康状态和队列长度，不暴露本机路径。
+- FIFO 是单 worker，返回成功前必须完成合成和本机播放。
+- 日志记录 job ID、来源、音色、文本长度、排队/合成/播放耗时和结果，不记录全文文本或 API Key。
+- 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端 `auto`；当前 Mac mini M4 Pro 实测使用 Metal。

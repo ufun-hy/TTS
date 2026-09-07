@@ -1,0 +1,9 @@
+{
+  "tts": {
+    "base_url": "https://your-device.your-tailnet.ts.net",
+    "api_key": "load-from-os-keychain",
+    "default_voice": "default",
+    "connect_timeout_seconds": 5,
+    "request_timeout_seconds": 30
+  }
+}

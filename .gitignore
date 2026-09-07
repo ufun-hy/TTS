@@ -3,6 +3,12 @@ runtime/models/
 runtime/audio/
 runtime/logs/
 runtime/pids/
+runtime/models/voices/
+voices/*
+!voices/.gitkeep
+!voices/README.md
 *.wav
 *.gguf
 *.onnx
+.DS_Store
+config/tts.json

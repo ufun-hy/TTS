@@ -1,0 +1,5 @@
+{
+  "default": {
+    "prompt_speech": "runtime/models/prompt_speech.gguf"
+  }
+}
