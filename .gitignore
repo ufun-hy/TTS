@@ -1,0 +1,8 @@
+runtime/bin/
+runtime/models/
+runtime/audio/
+runtime/logs/
+runtime/pids/
+*.wav
+*.gguf
+*.onnx
