@@ -125,10 +125,10 @@ class Job:
         self.error: str | None = None
 
 
-def _engine_request(job: Job, engine_url: str) -> bytes:
+def _engine_request_text(text: str, voice: str, engine_url: str) -> bytes:
     payload = json.dumps({
-        "text": job.text,
-        "voice": job.voice,
+        "text": text,
+        "voice": voice,
         "response_format": "wav",
         "stream": False,
     }).encode("utf-8")
@@ -140,6 +140,10 @@ def _engine_request(job: Job, engine_url: str) -> bytes:
     )
     with urllib.request.urlopen(request, timeout=900) as response:
         return response.read()
+
+
+def _engine_request(job: Job, engine_url: str) -> bytes:
+    return _engine_request_text(job.text, job.voice, engine_url)
 
 
 def synthesize_and_play(job: Job, engine_url: str) -> None:
@@ -241,11 +245,14 @@ def make_handler(
             self._json(404, {"success": False, "error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/speak":
+            if self.path not in ("/speak", "/synthesize"):
                 self._json(404, {"success": False, "error": "not_found"})
                 return
             if not self._authorized():
                 self._json(401, {"success": False, "error": "unauthorized"})
+                return
+            if self.path == "/synthesize" and self.client_address[0] not in ("127.0.0.1", "::1"):
+                self._json(403, {"success": False, "error": "local_only"})
                 return
             if not rate_limiter.allow():
                 self._json(429, {"success": False, "error": "rate_limited"}, {"Retry-After": "60"})
@@ -275,6 +282,19 @@ def make_handler(
                     return
             except (ValueError, TypeError, json.JSONDecodeError, OSError, RuntimeError) as exc:
                 self._json(400, {"success": False, "error": str(exc)})
+                return
+
+            if self.path == "/synthesize":
+                try:
+                    audio = _engine_request_text(text, voice, engine_url)
+                except (OSError, urllib.error.URLError) as exc:
+                    self._json(502, {"success": False, "error": "tts_failed", "detail": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(audio)))
+                self.end_headers()
+                self.wfile.write(audio)
                 return
 
             job = Job(text, voice, self.client_address[0], self.server.audio_dir)  # type: ignore[attr-defined]

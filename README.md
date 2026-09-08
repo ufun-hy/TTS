@@ -136,6 +136,23 @@ https://ufunmac-mini.tail352fe1.ts.net
 
 软件端调用约定见 [docs/software-api.md](docs/software-api.md)，示例配置见 [config/tts.example.json](config/tts.example.json)。
 
+## 直播话术时间轴 V1
+
+文本层入口见 [docs/timeline-speech-v1.md](docs/timeline-speech-v1.md)。它接收带时间戳的 ASR JSON，使用本机 Ollama 提取意图并生成多版本话术，保持 Segment 顺序和原节奏，输出可供后续 `/speak` 使用的模板。
+
+```bash
+python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model qwen3:8b
+```
+
+这一阶段不会自动播放或推流；Lookahead TTS 缓存属于下一阶段。
+
+运行时入口见 [docs/timeline-runtime-v1.md](docs/timeline-runtime-v1.md)。
+
+```bash
+python3 scripts/timeline-run.py runtime/timeline.json --dry-run --lookahead 3
+python3 scripts/timeline-run.py runtime/timeline.json --voice default --lookahead 3
+```
+
 ## 当前限制
 
 - API Key 保护 `/speak` 和 `/voices`；`/health` 可公开访问，只返回健康状态和队列长度，不暴露本机路径。

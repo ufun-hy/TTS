@@ -1,6 +1,9 @@
 runtime/bin/
 runtime/models/
 runtime/audio/
+runtime/audio-cache/
+runtime/sessions/
+runtime/reports/
 runtime/logs/
 runtime/pids/
 runtime/models/voices/
