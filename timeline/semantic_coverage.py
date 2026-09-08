@@ -15,13 +15,13 @@ from typing import Dict, Iterable, List
 
 STOP_TERMS = {"强调", "说明", "介绍", "原文", "产品", "用户", "可以", "比较", "现在", "这个", "那个", "起来", "方面"}
 ALIASES = {
-    "软塌": ("软塌", "不会软", "不容易软", "不软塌", "不会软掉"),
     "成熟度": ("成熟度", "熟度", "刚好", "正好", "成熟"),
     "入口": ("入口", "好入口", "容易吃", "适合老人", "适合小孩"),
     "children": ("小孩", "孩子", "儿童", "老人", "children"),
     "汁水": ("汁水", "水分", "多汁", "汁足"),
 }
-NEGATIVE_MARKERS = ("不", "没", "无", "不会", "不容易")
+NEGATIVE_SOFT_ALIASES = ("不会软", "不容易软", "不软塌", "不会软掉")
+POSITIVE_SOFT_ALIASES = ("容易软塌", "会软塌", "软塌", "软掉")
 
 
 def _clean(value: str) -> str:
@@ -34,10 +34,6 @@ def _terms(point: str) -> List[str]:
     return [term for term in dict.fromkeys(terms) if term not in STOP_TERMS and not all(char in "的了是有很更一二三四五六七八九十" for char in term)]
 
 
-def _has_negative(value: str) -> bool:
-    return any(marker in value for marker in NEGATIVE_MARKERS)
-
-
 def point_covered(point: str, text: str) -> bool:
     """Return a conservative lexical hint, not a semantic truth value."""
     point = _clean(point)
@@ -47,12 +43,17 @@ def point_covered(point: str, text: str) -> bool:
     if point in text:
         return True
 
-    # Avoid treating an opposite-polarity phrase as equivalent merely because
-    # both contain the same product term (for example 容易软塌 vs 不容易软塌).
-    if _has_negative(point) != _has_negative(text):
-        shared = [term for term in _terms(point) if term in text]
-        if shared:
+    # Only apply polarity handling to the concept that actually needs it.
+    # A negative phrase elsewhere in a long sentence must not affect unrelated
+    # points such as 皮薄 or 成熟度合适.
+    if "软塌" in point or "软掉" in point or "不会软" in point or "不容易软" in point:
+        point_is_negative = any(alias in point for alias in NEGATIVE_SOFT_ALIASES)
+        if point_is_negative:
+            return any(alias in text for alias in NEGATIVE_SOFT_ALIASES)
+        if any(alias in text for alias in NEGATIVE_SOFT_ALIASES):
             return False
+        if any(alias in text for alias in POSITIVE_SOFT_ALIASES):
+            return True
 
     for key, aliases in ALIASES.items():
         if key in point and any(alias in text for alias in aliases):
