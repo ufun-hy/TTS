@@ -146,6 +146,8 @@ python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model 
 
 这一阶段不会自动播放或推流；Lookahead TTS 缓存属于下一阶段。
 
+长 ASR Segment 可先使用 [docs/timeline-resegment-v1.md](docs/timeline-resegment-v1.md) 做规则优先的语义重切分，再进入 Generalize。
+
 运行时入口见 [docs/timeline-runtime-v1.md](docs/timeline-runtime-v1.md)。
 
 ```bash
