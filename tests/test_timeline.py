@@ -19,7 +19,7 @@ class TimelineTests(unittest.TestCase):
             Segment("seg_1", 0, 5, "原话一", Analysis(mode="atomic", intent="一", must_keep=["操作更方便"])),
             Segment("seg_2", 5, 10, "原话二", Analysis(mode="atomic", intent="二", must_keep=["操作更方便"])),
         ]
-        result = TimelineEngine(FakeLLM(), seed=1).process(segments)
+        result = TimelineEngine(FakeLLM(), seed=1, simple_candidate=False).process(segments)
         self.assertEqual([item["id"] for item in result["segments"]], ["seg_1", "seg_2"])
         self.assertTrue(result["segments"][0]["variants"])
 

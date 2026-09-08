@@ -2,10 +2,14 @@ runtime/bin/
 runtime/models/
 runtime/audio/
 runtime/audio-cache/
+runtime/asr/
+runtime/audio-ingest/
 runtime/sessions/
 runtime/reports/
 runtime/logs/
 runtime/pids/
+runtime/*.json
+.venv-asr/
 runtime/models/voices/
 voices/*
 !voices/.gitkeep

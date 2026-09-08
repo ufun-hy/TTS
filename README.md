@@ -138,7 +138,37 @@ https://ufunmac-mini.tail352fe1.ts.net
 
 ## 直播话术时间轴 V1
 
+### 本地音频 ASR 输入
+
+`audio-ingest.py` 将本地 wav/mp3/m4a/mp4（mp4 会先抽取音轨）交给已安装的本地 ASR 后端，并输出包含 Segment 与 word timestamp 的结构化 JSON：
+
+```bash
+python3 scripts/audio-ingest.py /path/to/live.mp3 runtime/asr/live.json --model /path/to/local/model
+```
+
+支持自动选择 `mlx-whisper`、`faster-whisper`、`openai-whisper` 或 `whisper.cpp`，优先使用 `mlx-whisper`。也可以通过 `--backend` 固定后端；模型必须通过 `--model` 或 `TTS_ASR_MODEL` 指定，脚本不会隐式下载模型。未检测到本地 ASR 后端时命令会直接报错。
+
+生成的 JSON 可直接交给重切分：
+
+```bash
+python3 scripts/timeline-resegment.py runtime/asr/live.json runtime/resegmented.json
+```
+
+Mac Apple Silicon 首测已验证 `mlx-whisper 0.4.3 + mlx 0.29.3 + whisper-large-v3-turbo`。模型来自 [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo)，本地目录为 `runtime/models/asr/large-v3-turbo/`，约 1.51 GiB，不提交 Git。项目专用环境在 `.venv-asr/`，真实运行示例：
+
+```bash
+.venv-asr/bin/python scripts/audio-ingest.py \
+  /path/to/live.mp3 runtime/asr/live.json \
+  --backend mlx-whisper \
+  --model "$PWD/runtime/models/asr/large-v3-turbo" \
+  --language zh
+```
+
+模型路径必须显式指定；脚本不会在运行时联网下载模型。
+
 文本层入口见 [docs/timeline-speech-v1.md](docs/timeline-speech-v1.md)。它接收带时间戳的 ASR JSON，使用本机 Ollama 提取意图并生成多版本话术，保持 Segment 顺序和原节奏，输出可供后续 `/speak` 使用的模板。
+
+Generalize 默认采用 Semantic Coverage V1：Analyze 提取语义骨架和 `semantic_points` 后统一生成完整 `candidates[]`，Rewrite 不再携带完整原文，程序执行 hard_keep、semantic coverage、similarity 和 Natural Duration 审核；旧的 slots/combination 逻辑保留为 legacy mode。详见 [docs/timeline-generalize-robustness-v1.md](docs/timeline-generalize-robustness-v1.md)。
 
 ```bash
 python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model qwen3:8b
@@ -146,7 +176,7 @@ python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model 
 
 这一阶段不会自动播放或推流；Lookahead TTS 缓存属于下一阶段。
 
-长 ASR Segment 可先使用 [docs/timeline-resegment-v1.md](docs/timeline-resegment-v1.md) 做规则优先的语义重切分，再进入 Generalize。
+timestamped ASR 会先进行 Sentence Reconstruction：合并连续碎片、保留 `source_segment_ids` 和原文，再使用 [docs/timeline-resegment-v1.md](docs/timeline-resegment-v1.md) 做 Natural Segmentation。长 ASR Segment 和旧 TXT 输入继续兼容原有规则，再进入 Generalize。
 
 Generalize 的批处理恢复和失败隔离见 [docs/timeline-generalize-robustness-v1.md](docs/timeline-generalize-robustness-v1.md)。
 

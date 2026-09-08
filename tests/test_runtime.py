@@ -38,6 +38,20 @@ def twenty_segments():
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_composable_prefers_precomposed_candidates(self):
+        segment = {
+            "id": "candidate",
+            "start": 0,
+            "end": 10,
+            "speech_duration": 10,
+            "mode": "composable",
+            "candidates": ["完整候选表达"],
+            "slots": [{"id": "opening", "required": True, "variants": ["碎片"]}],
+        }
+        selection = RuntimeSelector(seed=1).select(segment, RuntimeSession("candidate-session", "candidate"))
+        self.assertEqual(selection.final_text, "完整候选表达")
+        self.assertEqual(selection.variant_ids, ["candidate_1"])
+
     def run_dry(self, root, seed):
         timeline = twenty_segments()
         session = RuntimeSession(f"session-{seed}", "runtime-test")

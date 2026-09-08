@@ -54,6 +54,17 @@ class ResegmenterTests(unittest.TestCase):
         self.assertAlmostEqual(children[0]["end"], 1.9)
         self.assertAlmostEqual(children[0]["speech_duration"] + children[0]["pause_after"], children[0]["timeline_duration"])
 
+    def test_word_pause_between_asr_segments_is_preserved(self):
+        source = [
+            {"id": "seg_a", "start": 0, "end": 1, "text": "先看商品", "words": [{"word": "先看商品", "start": 0, "end": 0.8}]},
+            {"id": "seg_b", "start": 1.7, "end": 2.5, "text": "再看价格", "words": [{"word": "再看价格", "start": 1.7, "end": 2.4}]},
+        ]
+        children, report = resegment(source)
+        self.assertAlmostEqual(children[0]["pause_after"], 0.9)
+        self.assertAlmostEqual(children[0]["end"], 1.7)
+        self.assertEqual(report["segments_with_pause"], 2)
+        self.assertTrue(report["order_preserved"])
+
     def test_semantic_feature_to_price_boundary(self):
         source = [{"id": "seg_semantic", "start": 0, "end": 8, "text": "这个结构用起来会更方便，今天直播间到手是199。"}]
         children, _ = resegment(source)

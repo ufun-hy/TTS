@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from timeline.engine import Ollama, TimelineEngine, TimelineError, load_segments
+from timeline.engine import GENERALIZE_STRATEGY_VERSION, Ollama, TimelineEngine, TimelineError, load_segments
 
 
 def main() -> int:
@@ -48,6 +48,7 @@ def main() -> int:
         def checkpoint(snapshot):
             payload = {
                 "schema_version": 1,
+                "generalize_strategy_version": GENERALIZE_STRATEGY_VERSION,
                 "source": str(args.input),
                 "model": args.model,
                 "segments": snapshot["segments"],
@@ -74,6 +75,7 @@ def main() -> int:
             "source": str(args.input),
             "output": str(args.output),
             "model": args.model,
+            "generalize_strategy_version": GENERALIZE_STRATEGY_VERSION,
             "total_segments": result["total"],
             "success_segments": result["success"],
             "failed_segments": result["failed"],

@@ -37,7 +37,7 @@ class RuntimeSelector:
         segment_id = str(segment["id"])
         mode = str(segment.get("mode", "atomic"))
         target = float(segment.get("speech_duration", segment.get("duration_target", float(segment["end"]) - float(segment["start"]))))
-        if mode == "composable":
+        if mode in {"composable", "compact_composable"}:
             result = self._select_composable(segment, session, target)
         else:
             result = self._select_atomic(segment, session, target)
@@ -46,6 +46,13 @@ class RuntimeSelector:
 
     def _select_atomic(self, segment: Dict[str, Any], session: RuntimeSession, target: float) -> Selection:
         segment_id = str(segment["id"])
+        candidates = [(f"candidate_{index + 1:02d}", str(value).strip()) for index, value in enumerate(segment.get("candidates", [])) if str(value).strip()]
+        if candidates:
+            recent = set(session.recent_variants.get(segment_id, []))
+            available = [item for item in candidates if item[0] not in recent] or candidates
+            available.sort(key=lambda item: _duration_score(item[1], target))
+            variant_id, text = self.random.choice(available[: min(3, len(available))])
+            return Selection(segment_id, str(segment.get("strategy", "simple_candidate")), [variant_id], variant_id, text, estimate_duration(text), target)
         values = [str(value).strip() for value in segment.get("variants", []) if str(value).strip()]
         recent = set(session.recent_variants.get(segment_id, []))
         candidates = [(f"variant_{index + 1}", value) for index, value in enumerate(values)]
@@ -59,6 +66,13 @@ class RuntimeSelector:
 
     def _select_composable(self, segment: Dict[str, Any], session: RuntimeSession, target: float) -> Selection:
         segment_id = str(segment["id"])
+        candidates = [(f"candidate_{index + 1}", str(value).strip()) for index, value in enumerate(segment.get("candidates", [])) if str(value).strip()]
+        if candidates:
+            recent = set(session.recent_variants.get(segment_id, []))
+            available = [item for item in candidates if item[0] not in recent] or candidates
+            available.sort(key=lambda item: _duration_score(item[1], target))
+            variant_id, text = available[0]
+            return Selection(segment_id, str(segment.get("strategy", "composable")), [variant_id], variant_id, text, estimate_duration(text), target)
         recent = set(session.recent_variants.get(segment_id, []))
         recent_combinations = set(session.recent_combinations.get(segment_id, []))
         required: List[Tuple[str, List[Tuple[str, str]]]] = []

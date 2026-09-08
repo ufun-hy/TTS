@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .engine import estimate_duration
 from .semantic_boundary import boundary_type, classify, is_entity_boundary
+from .sentence_reconstruction import ReconstructionConfig, reconstruct_segments
 
 
 @dataclass
@@ -127,6 +128,30 @@ def split_text(text: str, config: ResegmentConfig) -> List[str]:
 
 
 def _timestamped_units(raw: Dict[str, Any], config: ResegmentConfig) -> Optional[List[Unit]]:
+    if raw.get("reconstructed"):
+        words = raw.get("words")
+        if isinstance(words, list) and words:
+            valid_words = [value for value in words if isinstance(value, dict) and normalize_text(value.get("word", value.get("text")))]
+            if valid_words:
+                return [Unit(
+                    normalize_text(raw.get("text")),
+                    float(valid_words[0]["start"]),
+                    float(valid_words[-1]["end"]),
+                    classify(normalize_text(raw.get("text"))),
+                    boundary_source=["timestamp", *list(raw.get("reconstruction_source") or [])],
+                )]
+        sentences = raw.get("sentences")
+        if isinstance(sentences, list) and sentences:
+            try:
+                return [Unit(
+                    normalize_text(raw.get("text")),
+                    float(sentences[0]["start"]),
+                    float(sentences[-1]["end"]),
+                    classify(normalize_text(raw.get("text"))),
+                    boundary_source=["timestamp", *list(raw.get("reconstruction_source") or [])],
+                )]
+            except (KeyError, TypeError, ValueError):
+                return None
     values = raw.get("sentences")
     if isinstance(values, list) and values:
         result = []
@@ -290,6 +315,8 @@ def resegment_segment(raw: Dict[str, Any], index: int, config: ResegmentConfig) 
             "source_segment_id": parent_id,
             "source_start": start,
             "source_end": end,
+            "source_segment_ids": list(raw.get("source_segment_ids") or [parent_id]),
+            "reconstruction_source": list(raw.get("reconstruction_source") or []),
             "start": round(child_start, 6),
             "speech_end": round(speech_end, 6),
             "end": round(child_end, 6),
@@ -357,20 +384,56 @@ def validate_timeline(original: Sequence[Dict[str, Any]], children: Sequence[Dic
 
 def resegment(raw_segments: Sequence[Dict[str, Any]], config: Optional[ResegmentConfig] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     config = config or ResegmentConfig()
+    reconstruction_report = {
+        "input_segments": len(raw_segments),
+        "output_segments": len(raw_segments),
+        "merged_segments": 0,
+        "merged_source_segments": 0,
+        "text_retention": 1.0,
+        "boundary_source_counts": {},
+    }
+    timestamped_input = any(isinstance(raw, dict) and _timestamped_units(raw, config) for raw in raw_segments)
+    source_segments = list(raw_segments)
+    if timestamped_input:
+        source_segments, reconstruction_report = reconstruct_segments(raw_segments, ReconstructionConfig(
+            preferred_max=config.preferred_max,
+            max_duration=config.max_duration,
+            min_duration=config.min_duration,
+            pause_candidate=0.3,
+            pause_priority=config.pause_threshold,
+        ))
     children = []
     rule_fallback_count = 0
-    for index, raw in enumerate(raw_segments, 1):
+    previous_timestamped = False
+    for index, raw in enumerate(source_segments, 1):
         if not isinstance(raw, dict):
             raise ValueError(f"segment {index}: expected object")
-        if not _timestamped_units(raw, config):
+        timestamped = bool(_timestamped_units(raw, config))
+        if not timestamped:
             rule_fallback_count += 1
-        children.extend(resegment_segment(raw, index, config))
-    validation = validate_timeline(raw_segments, children)
-    original_durations = [float(item["end"]) - float(item["start"]) for item in raw_segments]
+        segment_children = resegment_segment(raw, index, config)
+        if children and segment_children and (previous_timestamped or timestamped):
+            gap = float(segment_children[0]["start"]) - float(children[-1]["end"])
+            if gap > 0:
+                previous = children[-1]
+                previous["pause_after"] = round(float(previous["pause_after"]) + gap, 6)
+                previous["end"] = round(float(segment_children[0]["start"]), 6)
+                previous["timeline_duration"] = round(previous["end"] - previous["start"], 6)
+                previous["duration"] = previous["timeline_duration"]
+                previous["boundary_source"] = list(dict.fromkeys(previous["boundary_source"] + ["pause"]))
+        children.extend(segment_children)
+        previous_timestamped = timestamped
+    validation = validate_timeline(source_segments, children)
+    original_durations = [float(item["end"]) - float(item["start"]) for item in source_segments]
     child_durations = [float(item["end"]) - float(item["start"]) for item in children]
     pauses = [float(item.get("pause_after", 0.0)) for item in children]
     report = {
         "original_segment_count": len(raw_segments),
+        "input_segments": len(raw_segments),
+        "reconstructed_segment_count": len(source_segments),
+        "merged_segments": reconstruction_report.get("merged_segments", 0),
+        "merged_source_segments": reconstruction_report.get("merged_source_segments", 0),
+        "reconstruction_text_retention": reconstruction_report.get("text_retention", 1.0),
         "new_segment_count": len(children),
         "original_average_duration": mean(original_durations) if original_durations else 0.0,
         "original_p50_duration": _percentile(original_durations, 0.50),
@@ -396,8 +459,15 @@ def resegment(raw_segments: Sequence[Dict[str, Any]], config: Optional[Resegment
         "p50_pause": _percentile(pauses, 0.50),
         "p90_pause": _percentile(pauses, 0.90),
         "max_pause": max(pauses) if pauses else 0.0,
+        "boundary_source_counts": {
+            source: sum(source in item.get("boundary_source", []) for item in children)
+            for source in ("asr_merge", "punctuation", "pause", "semantic_rule", "char_fallback")
+        },
         **validation,
     }
+    for lower, upper, key in ((0, 3, "short_segments_lt_3s"), (3, 4, "segments_3_4s"), (4, 6, "segments_4_6s"), (6, 15, "segments_6_15s"), (15, 20, "segments_15_20s"), (20, 25, "segments_20_25s")):
+        report[key] = sum(lower <= value < upper for value in child_durations)
+    report["segments_gt_25s"] = sum(value > 25 for value in child_durations)
     return children, report
 
 
