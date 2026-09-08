@@ -160,9 +160,13 @@ class Segment:
     variants: List[str] = field(default_factory=list)
     slots: List[Slot] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    speech_end: Optional[float] = None
+    pause_after: float = 0.0
 
     @property
     def target_duration(self) -> float:
+        if self.speech_end is not None:
+            return max(0.0, self.speech_end - self.start)
         return max(0.0, self.end - self.start)
 
     @property
@@ -218,6 +222,8 @@ def _segment_from_json(raw: Dict[str, Any], index: int) -> Segment:
     analysis_raw = raw.get("analysis") if isinstance(raw.get("analysis"), dict) else None
     if analysis_raw is None and any(key in raw for key in ("segment_type", "intent", "facts", "must_keep", "tone", "mode")):
         analysis_raw = {key: raw.get(key) for key in ("segment_type", "intent", "facts", "must_keep", "tone", "mode")}
+    speech_end = float(raw.get("speech_end", end))
+    pause_after = float(raw.get("pause_after", max(0.0, end - speech_end)))
     return Segment(
         id=_clean_text(raw.get("id")) or f"seg_{index:04d}",
         start=start,
@@ -231,6 +237,8 @@ def _segment_from_json(raw: Dict[str, Any], index: int) -> Segment:
             variants=[_clean_text(x) for x in slot.get("variants", []) if _clean_text(x)],
         ) for slot in raw.get("slots", []) if isinstance(slot, dict) and _clean_text(slot.get("id"))],
         metadata={key: raw[key] for key in ("parent_segment_id", "source_segment_id", "source_start", "source_end") if key in raw},
+        speech_end=speech_end,
+        pause_after=pause_after,
     )
 
 
@@ -575,6 +583,10 @@ def _segment_to_json(segment: Segment) -> Dict[str, Any]:
         "segment_type": analysis.segment_type, "intent": analysis.intent, "facts": analysis.facts,
         "must_keep": analysis.must_keep, "tone": analysis.tone, "mode": analysis.mode,
     }
+    data["speech_end"] = segment.speech_end if segment.speech_end is not None else segment.end
+    data["speech_duration"] = segment.target_duration
+    data["pause_after"] = segment.pause_after
+    data["timeline_duration"] = segment.end - segment.start
     data.update(segment.metadata)
     if analysis.mode == "composable":
         data["slots"] = [{"id": slot.id, "required": slot.required, "variants": slot.variants} for slot in segment.slots]

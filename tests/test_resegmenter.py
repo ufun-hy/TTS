@@ -37,6 +37,41 @@ class ResegmenterTests(unittest.TestCase):
         self.assertEqual(children[-1]["end"], 4)
         self.assertEqual("".join(item["text"] for item in children), source[0]["text"])
 
+    def test_real_word_pause_is_preserved(self):
+        source = [{
+            "id": "seg_pause",
+            "start": 0,
+            "end": 3,
+            "text": "先看商品。再看价格。",
+            "words": [
+                {"word": "先看商品。", "start": 0, "end": 1.2},
+                {"word": "再看价格。", "start": 1.9, "end": 2.5},
+            ],
+        }]
+        children, _ = resegment(source)
+        self.assertAlmostEqual(children[0]["speech_end"], 1.2)
+        self.assertAlmostEqual(children[0]["pause_after"], 0.7)
+        self.assertAlmostEqual(children[0]["end"], 1.9)
+        self.assertAlmostEqual(children[0]["speech_duration"] + children[0]["pause_after"], children[0]["timeline_duration"])
+
+    def test_semantic_feature_to_price_boundary(self):
+        source = [{"id": "seg_semantic", "start": 0, "end": 8, "text": "这个结构用起来会更方便，今天直播间到手是199。"}]
+        children, _ = resegment(source)
+        self.assertEqual(len(children), 2)
+        self.assertEqual(children[0]["semantic_boundary"], "feature_to_price")
+        self.assertEqual("".join(item["text"] for item in children), source[0]["text"])
+
+    def test_price_entity_stays_together(self):
+        source = [{"id": "seg_entity", "start": 0, "end": 6, "text": "今天两件368，而且送一个赠品。"}]
+        children, _ = resegment(source)
+        self.assertIn("两件368", children[0]["text"])
+
+    def test_old_timeline_fields_remain_compatible(self):
+        source = [{"id": "seg_old", "start": 0, "end": 4, "text": "旧格式仍然可以运行。"}]
+        children, _ = resegment(source)
+        self.assertEqual(children[0]["pause_after"], 0.0)
+        self.assertEqual(children[0]["speech_duration"], children[0]["timeline_duration"])
+
 
 if __name__ == "__main__":
     unittest.main()

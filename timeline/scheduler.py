@@ -69,7 +69,7 @@ class LookaheadScheduler:
                     self._schedule(index, executor)
                 self._print_state(current)
                 future = self.futures[current]
-                if current > 0 and not future.done():
+                if current > 0 and not self.dry_run and not future.done():
                     self.session.buffer_underrun_count += 1
                 artifact = future.result()
                 self.session.current_segment = artifact.segment_id
@@ -83,6 +83,7 @@ class LookaheadScheduler:
                 actual = artifact.audio_duration
                 if actual is None:
                     actual = artifact.selection.estimated_duration
+                pause_after = float(self.segments[current].get("pause_after", 0.0))
                 record = {
                     "segment_id": artifact.segment_id,
                     "selected_mode": artifact.selection.mode,
@@ -91,6 +92,7 @@ class LookaheadScheduler:
                     "final_text": artifact.selection.final_text,
                     "estimated_duration": artifact.selection.estimated_duration,
                     "audio_duration": actual,
+                    "pause_after": pause_after,
                     "tts_latency_ms": round(artifact.tts_latency_ms),
                     "duration_deviation": round((actual - artifact.selection.target_duration) / artifact.selection.target_duration, 4) if artifact.selection.target_duration else 0,
                     "cache_hit": artifact.cache_hit,
@@ -106,6 +108,8 @@ class LookaheadScheduler:
                 self.session.ready_audio = [segment_id for segment_id, status in self.session.statuses.items() if status == "ready"]
                 self.session.generating = [segment_id for segment_id, status in self.session.statuses.items() if status == "generating"]
                 self._save_session()
+                if current < len(self.segments) - 1 and pause_after > 0:
+                    time.sleep(pause_after)
         report = self._report()
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         import json
@@ -130,7 +134,7 @@ class LookaheadScheduler:
     def _generate_impl(self, index: int) -> Artifact:
         segment = self.segments[index]
         segment_id = str(segment["id"])
-        target = float(segment.get("duration_target", float(segment["end"]) - float(segment["start"])))
+        target = float(segment.get("speech_duration", segment.get("duration_target", float(segment["end"]) - float(segment["start"]))))
         last: Optional[Artifact] = None
         for _ in range(self.max_duration_retry + 1):
             selection = self.selector.select(segment, self.session)

@@ -150,6 +150,8 @@ python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model 
 
 Generalize 的批处理恢复和失败隔离见 [docs/timeline-generalize-robustness-v1.md](docs/timeline-generalize-robustness-v1.md)。
 
+Natural Timeline 重切分会额外保留语义边界和真实 pause，详见 [docs/timeline-resegment-v1.md](docs/timeline-resegment-v1.md)。Generalize 和 Runtime 优先使用 `speech_duration`，Pause 由 Runtime 控制，不计入 TTS 文本时长审核。
+
 运行时入口见 [docs/timeline-runtime-v1.md](docs/timeline-runtime-v1.md)。
 
 ```bash

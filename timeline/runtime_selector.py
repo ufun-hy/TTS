@@ -36,7 +36,7 @@ class RuntimeSelector:
     def select(self, segment: Dict[str, Any], session: RuntimeSession) -> Selection:
         segment_id = str(segment["id"])
         mode = str(segment.get("mode", "atomic"))
-        target = float(segment.get("duration_target", float(segment["end"]) - float(segment["start"])))
+        target = float(segment.get("speech_duration", segment.get("duration_target", float(segment["end"]) - float(segment["start"]))))
         if mode == "composable":
             result = self._select_composable(segment, session, target)
         else:
