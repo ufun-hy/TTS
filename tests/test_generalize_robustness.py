@@ -138,18 +138,33 @@ class RobustnessTests(unittest.TestCase):
     def test_semantic_coverage_tracks_multiple_points(self):
         report = coverage_report(["桃子皮薄", "汁水足", "成熟度合适", "不容易软塌", "老人小孩容易入口"], "这款桃子皮很薄，水分特别足，熟度刚刚好，不会软掉，老人小孩都好入口。")
         self.assertTrue(report["accepted"])
+        self.assertTrue(report["complete"])
         self.assertEqual(report["covered"], 5)
 
-    def test_semantic_coverage_missing_fails_candidate(self):
+    def test_semantic_coverage_missing_is_advisory_not_hard_failure(self):
         class CoverageLLM:
             def json(self, prompt, **_kwargs):
                 return {"candidates": ["桃子皮薄，价格合适。", "桃子皮很薄，吃起来不错。"]}
 
         analysis = Analysis(segment_type="benefit", intent="介绍卖点", semantic_points=["桃子皮薄", "汁水足"], mode="atomic")
         segment = Segment("seg_coverage", 0, 8, "桃子皮薄汁水足", analysis)
-        with self.assertRaises(SegmentFailure) as error:
-            TimelineEngine(CoverageLLM()).process_one(segment, max_retries=0)
-        self.assertEqual(error.exception.reason, "semantic_coverage_missing")
+        result = TimelineEngine(CoverageLLM()).process_one(segment, max_retries=0)
+        self.assertTrue(result["segment"]["candidates"])
+        self.assertTrue(result["review"]["sample"]["semantic_coverage"]["advisory"])
+        self.assertIn("汁水足", result["review"]["sample"]["semantic_coverage"]["missing"])
+
+    def test_semantic_coverage_hard_keep_does_not_cover_unrelated_point(self):
+        report = coverage_report(["包装方便携带"], "今天23块8。", ["23块8"])
+        self.assertTrue(report["accepted"])
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["missing"], ["包装方便携带"])
+
+    def test_semantic_coverage_does_not_accept_opposite_polarity(self):
+        report = coverage_report(["不容易软塌"], "这个桃子很容易软塌。")
+        self.assertTrue(report["accepted"])
+        self.assertFalse(report["complete"])
+        self.assertEqual(report["missing"], ["不容易软塌"])
+
     def test_ollama_retries_malformed_json(self):
         invalid = io.BytesIO(json.dumps({"response": "不是 JSON"}).encode())
         valid = io.BytesIO(json.dumps({"response": '{"variants": ["可以"]}'}).encode())
