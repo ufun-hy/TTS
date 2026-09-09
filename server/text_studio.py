@@ -379,6 +379,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     provider = payload.get("provider", "codex")
     model = validate_model(payload.get("model", ""))
     instruction = payload.get("instruction", "")
+    risk_findings = payload.get("risk_findings", [])
+    replacement_history = payload.get("replacement_history", [])
     voice = payload.get("voice", "default")
     candidate_count = payload.get("candidate_count", 3)
 
@@ -386,6 +388,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid project source")
     if not isinstance(provider, str) or not isinstance(instruction, str) or not isinstance(voice, str):
         raise ValueError("invalid project settings")
+    if not isinstance(risk_findings, list) or not isinstance(replacement_history, list):
+        raise ValueError("invalid text processing state")
     try:
         candidate_count = int(candidate_count)
     except (TypeError, ValueError) as exc:
@@ -415,6 +419,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "candidate_count": candidate_count,
         "voice": voice[:80],
         "instruction": instruction,
+        "risk_findings": risk_findings,
+        "replacement_history": replacement_history,
         "paragraphs": paragraphs,
         "created_at": created_at,
         "updated_at": now,
