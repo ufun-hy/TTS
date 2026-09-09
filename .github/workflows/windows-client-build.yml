@@ -1,0 +1,50 @@
+name: Build Windows AI Audio Client
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "audio_client/**"
+      - "windows_client.py"
+      - "build/windows/**"
+      - "config/audio-client.example.json"
+      - "tests/test_audio_cache.py"
+      - ".github/workflows/windows-client-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          choco install innosetup -y --no-progress
+
+      - name: Run audio client tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_audio_cache.py"
+
+      - name: Build installer
+        shell: pwsh
+        run: .\build\windows\build.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Audio-Client-Setup
+          path: build/windows/output/AI-Audio-Client-Setup.exe
+          if-no-files-found: error
+          retention-days: 30

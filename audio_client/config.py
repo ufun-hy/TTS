@@ -14,7 +14,6 @@ class ClientConfig:
     server: str = "http://192.168.3.92:8000"
     cache_dir: str = "./cache"
     poll_interval: float = 1.0
-    preload_segments: int = 5
     api_key: str = ""
     timeout: int = 5
 
@@ -29,7 +28,6 @@ class ClientConfig:
             server=str(raw.get("server", cls.server)).strip(),
             cache_dir=str(raw.get("cache_dir", raw.get("cache", cls.cache_dir))),
             poll_interval=poll_interval,
-            preload_segments=int(raw.get("preload_segments", cls.preload_segments)),
             api_key=str(raw.get("api_key", cls.api_key)),
             timeout=int(raw.get("timeout", cls.timeout)),
         )
@@ -37,8 +35,6 @@ class ClientConfig:
             raise ValueError("server is required")
         if value.poll_interval <= 0:
             raise ValueError("poll_interval must be positive")
-        if value.preload_segments < 1:
-            raise ValueError("preload_segments must be positive")
         if value.timeout < 1:
             raise ValueError("timeout must be positive")
         return value
@@ -48,7 +44,6 @@ class ClientConfig:
             "server": self.server,
             "cache_dir": self.cache_dir,
             "poll_interval": self.poll_interval,
-            "preload_segments": self.preload_segments,
             "api_key": self.api_key,
             "timeout": self.timeout,
         }

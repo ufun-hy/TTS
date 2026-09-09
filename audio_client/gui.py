@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
-from pathlib import Path
 import queue
 import threading
 import tkinter as tk
@@ -19,8 +17,8 @@ class AudioClientApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("AI Audio Client")
-        self.root.geometry("520x390")
-        self.root.minsize(480, 350)
+        self.root.geometry("520x370")
+        self.root.minsize(480, 340)
         self.events: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
         self.stop_event: Optional[threading.Event] = None
         self.worker: Optional[threading.Thread] = None
@@ -36,7 +34,6 @@ class AudioClientApp:
         self.server_var = tk.StringVar(value=self.config.server)
         self.cache_var = tk.StringVar(value=self.config.cache_dir)
         self.poll_var = tk.StringVar(value=str(self.config.poll_interval))
-        self.preload_var = tk.StringVar(value=str(self.config.preload_segments))
         self.api_key_var = tk.StringVar(value=self.config.api_key)
         self.status_var = tk.StringVar(value="等待连接")
         self.server_status_var = tk.StringVar(value=self.config.server)
@@ -62,9 +59,8 @@ class AudioClientApp:
         self._field(config_frame, 0, "AI Server", self.server_var)
         self._field(config_frame, 1, "缓存目录", self.cache_var)
         self._field(config_frame, 2, "轮询间隔(s)", self.poll_var)
-        self._field(config_frame, 3, "预加载段数", self.preload_var)
-        self._field(config_frame, 4, "API Key", self.api_key_var, password=True)
-        ttk.Button(config_frame, text="保存配置", command=self.save).grid(row=5, column=1, sticky="e", pady=(8, 0))
+        self._field(config_frame, 3, "API Key", self.api_key_var, password=True)
+        ttk.Button(config_frame, text="保存配置", command=self.save).grid(row=4, column=1, sticky="e", pady=(8, 0))
 
         status_frame = ttk.LabelFrame(outer, text="运行状态", padding=10)
         status_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -72,7 +68,7 @@ class AudioClientApp:
         self._status_row(status_frame, 0, "连接状态", self.status_var)
         self._status_row(status_frame, 1, "服务器", self.server_status_var)
         self._status_row(status_frame, 2, "已接收", self.received_var)
-        self._status_row(status_frame, 3, "当前缓存", self.cache_count_var)
+        self._status_row(status_frame, 3, "本地已缓存", self.cache_count_var)
         self._status_row(status_frame, 4, "已完成", self.completed_var)
         self._status_row(status_frame, 5, "失败", self.failed_var)
         self._status_row(status_frame, 6, "最近错误", self.error_var)
@@ -104,7 +100,6 @@ class AudioClientApp:
             "server": self.server_var.get(),
             "cache_dir": self.cache_var.get(),
             "poll_interval": self.poll_var.get(),
-            "preload_segments": self.preload_var.get(),
             "api_key": self.api_key_var.get(),
         })
 
@@ -177,7 +172,7 @@ class AudioClientApp:
                     self.logger.info("received %s", item.id)
                     self.events.put(("received", client.local_stats()))
                     # V1 has no playback consumer. A durable local WAV is the
-                    # consumption boundary, so ACK only after the atomic save.
+                    # transport completion boundary, so ACK only after the atomic save.
                     client.ack(item.id, "completed")
                     self.logger.info("completed %s", item.id)
                     self.events.put(("completed", client.local_stats()))

@@ -81,8 +81,7 @@ class AudioCacheTests(unittest.TestCase):
     def test_client_config_accepts_install_format_and_counts_local_state(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory)
-            config = ClientConfig.from_dict({"server": "http://server:8000", "cache_dir": "./cache", "poll_interval": 1, "preload_segments": 5})
-            self.assertEqual(config.preload_segments, 5)
+            config = ClientConfig.from_dict({"server": "http://server:8000", "cache_dir": "./cache", "poll_interval": 1})
             self.assertEqual(ClientConfig.from_dict({"server": "http://server:8000", "poll_interval": 1000}).poll_interval, 1)
             (cache / "segment_001.wav").write_bytes(wav_bytes())
             (cache / "segment_001.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
