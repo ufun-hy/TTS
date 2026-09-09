@@ -216,7 +216,7 @@ Windows 图形客户端入口为 `windows_client.py`，使用 Tkinter，不需�
 
 ## Live Session V1
 
-Text Studio 页面内置 AI 直播控制区：选择可用声音、输入文本并点击“开始直播”，服务会按句调用 TTS Gateway，把 WAV 写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
+Text Studio 页面内置 AI 直播控制区：选择可用声音，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终自然段文本调用 TTS Gateway，把 WAV 写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 ```bash
 export AUDIO_CACHE_URL="http://127.0.0.1:8000"

@@ -8,6 +8,12 @@ from server import text_studio
 
 
 class TextStudioTest(unittest.TestCase):
+    def test_live_control_has_no_second_text_source(self):
+        html = (Path(__file__).resolve().parents[1] / "web" / "text-studio.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="liveText"', html)
+        self.assertIn("segments", html)
+        self.assertIn("请先完成泛化并确认直播文本", html)
+
     def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
         cases = [
             (text_studio.subprocess.CompletedProcess([], 0,

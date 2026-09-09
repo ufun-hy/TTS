@@ -63,7 +63,7 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 | `POST /audio/cleanup` | 按 `session_id` 清理该 Session 创建的缓存项 |
 | `GET /health` | 返回各状态数量 |
 
-无 ready 音频时 `/audio/next` 返回 `204`。ACK 是幂等的；客户端下载完成后先把 WAV 和本地 metadata 原子写入 cache，网络断开时不会丢失本地文件。
+无 ready 音频时 `/audio/next` 返回 `204`。ACK 是幂等的；客户端下载完成后先把 WAV 和本地 metadata 原子写入 cache，网络断开时不会丢失本地文件。`/health` 和 Session 状态还会根据最近的 `/audio/next` 请求报告 `client_connected`。
 
 ## 直播端客户端
 

@@ -686,7 +686,7 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
-                    result = live.start(body.get("voice", "default"), body.get("text", ""))
+                    result = live.start(body.get("voice", "default"), body.get("segments"))
                     self._json(202, result)
                     return
 

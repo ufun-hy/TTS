@@ -1,16 +1,32 @@
 import time
 import unittest
 
-from server.live_session import LiveSessionError, LiveSessionManager, split_live_text
+from server.live_session import LiveSessionError, LiveSessionManager, prepare_live_segments
 
 
 class LiveSessionTests(unittest.TestCase):
-    def test_split_live_text_keeps_sentence_order(self):
-        self.assertEqual(split_live_text("第一句。第二句？\n\n第三段！"), ["第一句。", "第二句？", "第三段！"])
+    def test_prepare_segments_keeps_paragraph_order_without_resegmentation(self):
+        segments = prepare_live_segments([
+            {"id": "p0001", "text": "第一段确认文本"},
+            {"id": "p0002", "text": "第二段确认文本"},
+        ])
+        self.assertEqual(segments, [
+            {"id": "p0001", "text": "第一段确认文本"},
+            {"id": "p0002", "text": "第二段确认文本"},
+        ])
 
-    def test_split_live_text_chunks_long_sentences_for_gateway_limit(self):
-        segments = split_live_text("甲" * 450)
-        self.assertEqual([len(segment) for segment in segments], [200, 200, 50])
+    def test_prepare_segments_only_chunks_oversized_text(self):
+        segments = prepare_live_segments([{"id": "p0005", "text": "甲" * 450}])
+        self.assertEqual([segment["id"] for segment in segments], ["p0005-01", "p0005-02", "p0005-03"])
+        self.assertEqual([len(segment["text"]) for segment in segments], [200, 200, 50])
+        self.assertEqual("".join(segment["text"] for segment in segments), "甲" * 450)
+
+    def test_start_rejects_missing_confirmed_segments(self):
+        manager = LiveSessionManager("http://gateway", "http://cache", synthesize=lambda *_args: b"RIFF")
+        with self.assertRaises(LiveSessionError) as error:
+            manager.start("default", None)
+        self.assertEqual(error.exception.status, 400)
+        self.assertIn("segments", str(error.exception))
 
     def test_session_generates_and_enqueues_each_segment(self):
         enqueued = []
@@ -27,7 +43,10 @@ class LiveSessionTests(unittest.TestCase):
             cache_cleanup=lambda _session_id: {},
         )
 
-        self.assertEqual(manager.start("default", "第一句。第二句。")["status"], "starting")
+        self.assertEqual(manager.start("default", [
+            {"id": "p0001", "text": "第一段确认文本"},
+            {"id": "p0002", "text": "第二段确认文本"},
+        ])["status"], "starting")
         deadline = time.monotonic() + 1
         while manager.status()["status"] == "starting" or manager.status()["status"] == "running":
             if time.monotonic() >= deadline:
@@ -36,12 +55,15 @@ class LiveSessionTests(unittest.TestCase):
         status = manager.status()
         self.assertEqual(status["status"], "stopped")
         self.assertEqual(status["generated_segments"], 2)
-        self.assertEqual(status["cache_ready"], 2)
+        self.assertEqual(status["ready_segments"], 2)
+        self.assertEqual(status["processing_segments"], 0)
+        self.assertEqual(status["completed_segments"], 0)
         self.assertTrue(status["client_connected"])
-        self.assertEqual([item[0] for item in enqueued], ["segment_001", "segment_002"])
+        self.assertEqual([item[0] for item in enqueued], ["p0001", "p0002"])
+        self.assertEqual([item[2] for item in enqueued], ["第一段确认文本", "第二段确认文本"])
 
         with self.assertRaises(LiveSessionError):
-            manager.start("default", "不能重复启动。")
+            manager.start("default", [{"id": "p0001", "text": "不能重复启动"}])
         manager.reset()
 
     def test_failed_segment_sets_failed_state(self):
@@ -53,7 +75,7 @@ class LiveSessionTests(unittest.TestCase):
             cache_status=lambda _session_id: {},
             cache_cleanup=lambda _session_id: {},
         )
-        manager.start("default", "测试。")
+        manager.start("default", [{"id": "p0001", "text": "测试文本"}])
         deadline = time.monotonic() + 1
         while manager.status()["status"] == "starting":
             if time.monotonic() >= deadline:
