@@ -26,12 +26,22 @@ class SentenceReconstructionTests(unittest.TestCase):
         self.assertEqual(len(output), 2)
         self.assertEqual(report["pause_boundaries"], 1)
 
-    def test_context_limit_is_only_technical_boundary(self):
+    def test_default_keeps_34_seconds_of_continuous_speech_together(self):
         output, report = reconstruct_segments([
-            segment("第一段", 0, 6),
-            segment("第二段", 6, 12),
-            segment("第三段", 12, 18),
-        ], ReconstructionConfig(max_context_duration=15))
+            segment("第一段", 0, 12),
+            segment("第二段", 12, 24),
+            segment("第三段", 24, 34.04),
+        ])
+        self.assertEqual(len(output), 1)
+        self.assertEqual(report["max_context_boundaries"], 0)
+        self.assertAlmostEqual(report["max_context_duration"], 34.04)
+
+    def test_safety_limit_can_still_create_technical_boundary(self):
+        output, report = reconstruct_segments([
+            segment("第一段", 0, 20),
+            segment("第二段", 20, 40),
+            segment("第三段", 40, 60),
+        ], ReconstructionConfig(max_context_duration=45))
         self.assertEqual(len(output), 2)
         self.assertEqual(report["max_context_boundaries"], 1)
         self.assertEqual("".join(item["text"] for item in output), "第一段第二段第三段")

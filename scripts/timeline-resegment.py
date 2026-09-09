@@ -19,7 +19,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--max-context-duration", type=float, default=15.0)
+    parser.add_argument("--max-context-duration", type=float, default=45.0)
     parser.add_argument("--pause-threshold", type=float, default=0.05)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--dry-run", action="store_true")

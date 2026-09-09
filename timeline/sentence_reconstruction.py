@@ -10,15 +10,16 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 @dataclass
 class ReconstructionConfig:
-    """Only two things may create a new context block.
+    """Create context blocks from timing only.
 
-    1. A real timestamp gap (pause) at or above ``pause_threshold``.
-    2. The current continuous block would exceed ``max_context_duration``.
+    Real timestamp pauses are the normal boundary. ``max_context_duration`` is
+    only a large safety cap for unusually long uninterrupted speech, so normal
+    TTS phrasing is not reset every few seconds.
 
     No punctuation, semantic category, price/CTA keywords, or content judge is used.
     """
 
-    max_context_duration: float = 15.0
+    max_context_duration: float = 45.0
     pause_threshold: float = 0.05
 
 

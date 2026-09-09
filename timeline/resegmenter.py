@@ -15,7 +15,7 @@ from .sentence_reconstruction import ReconstructionConfig, reconstruct_segments
 
 @dataclass
 class ResegmentConfig:
-    max_context_duration: float = 15.0
+    max_context_duration: float = 45.0
     pause_threshold: float = 0.05
 
 
