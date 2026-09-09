@@ -70,8 +70,9 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 ```json
 {
   "server": "http://192.168.x.x:8000",
-  "poll_interval": 1000,
-  "cache": "runtime/audio-client"
+  "cache_dir": "./cache",
+  "poll_interval": 1,
+  "preload_segments": 5
 }
 ```
 

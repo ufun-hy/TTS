@@ -20,3 +20,5 @@ voices/*
 *.onnx
 .DS_Store
 config/tts.json
+dist/
+build/windows/output/

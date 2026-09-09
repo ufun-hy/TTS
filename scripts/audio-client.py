@@ -23,10 +23,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         config = json.loads(args.config.read_text(encoding="utf-8"))
+        poll_interval = float(config.get("poll_interval", 1))
+        if poll_interval > 60:
+            poll_interval /= 1000
         client = AudioClient(
             str(config["server"]),
-            Path(config.get("cache", "cache")),
-            float(config.get("poll_interval", 1000)) / 1000,
+            Path(config.get("cache_dir", config.get("cache", "cache"))),
+            poll_interval,
             str(config.get("api_key", "")),
             int(config.get("timeout", 15)),
         )

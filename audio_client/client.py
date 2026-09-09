@@ -35,6 +35,32 @@ class AudioClient:
         self.api_key = api_key
         self.timeout = timeout
 
+    def health(self) -> Dict[str, Any]:
+        response = self._request("GET", "health")
+        if response.status != 200:
+            raise AudioClientError(f"health check failed: HTTP {response.status}")
+        try:
+            value = json.loads(response.body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise AudioClientError("health response is not JSON") from exc
+        if not isinstance(value, dict):
+            raise AudioClientError("health response must be an object")
+        return value
+
+    def local_stats(self) -> Dict[str, int]:
+        stats = {"received": 0, "completed": 0, "failed": 0, "cache": 0}
+        stats["cache"] = sum(1 for path in self.cache_dir.glob("*.wav") if path.is_file())
+        for path in self.cache_dir.glob("*.json"):
+            metadata = self._read_metadata(path.stem)
+            if not metadata:
+                continue
+            status = metadata.get("status")
+            if status in ("downloaded", "completed", "failed"):
+                stats["received"] += 1
+            if status in ("completed", "failed"):
+                stats[status] += 1
+        return stats
+
     def fetch_next(self) -> Optional[ClientAudio]:
         existing = self._recoverable()
         if existing:

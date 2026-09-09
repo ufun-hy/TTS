@@ -6,6 +6,7 @@ import unittest
 import wave
 
 from audio_client.client import AudioClient
+from audio_client.config import ClientConfig
 from audio_cache.manager import AudioCacheManager
 from audio_cache.processing import AudioProcessingConfig, calculate_speed_factor, calculate_volume_gain
 from audio_cache.server import AudioCacheServer, make_handler
@@ -67,6 +68,7 @@ class AudioCacheTests(unittest.TestCase):
             thread.start()
             try:
                 client = AudioClient(f"http://127.0.0.1:{server.server_port}", root / "client")
+                self.assertEqual(client.health()["status"], "ok")
                 item = client.fetch_next()
                 self.assertEqual(item.id, "segment_001")
                 self.assertTrue(item.path.is_file())
@@ -75,6 +77,16 @@ class AudioCacheTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_client_config_accepts_install_format_and_counts_local_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            config = ClientConfig.from_dict({"server": "http://server:8000", "cache_dir": "./cache", "poll_interval": 1, "preload_segments": 5})
+            self.assertEqual(config.preload_segments, 5)
+            self.assertEqual(ClientConfig.from_dict({"server": "http://server:8000", "poll_interval": 1000}).poll_interval, 1)
+            (cache / "segment_001.wav").write_bytes(wav_bytes())
+            (cache / "segment_001.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+            self.assertEqual(AudioClient(config.server, cache).local_stats(), {"received": 1, "completed": 1, "failed": 0, "cache": 1})
 
 
 if __name__ == "__main__":

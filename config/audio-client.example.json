@@ -1,5 +1,8 @@
 {
-  "server": "http://192.168.x.x:8000",
-  "poll_interval": 1000,
-  "cache": "runtime/audio-client"
+  "server": "http://192.168.3.92:8000",
+  "cache_dir": "./cache",
+  "poll_interval": 1,
+  "preload_segments": 5,
+  "api_key": "",
+  "timeout": 5
 }

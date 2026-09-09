@@ -208,6 +208,10 @@ python3 scripts/audio-client.py --config config/audio-client.example.json
 
 该阶段不接入播放、虚拟声卡、OBS 或直播平台。
 
+## Windows AI Audio Client
+
+Windows 图形客户端入口为 `windows_client.py`，使用 Tkinter，不需要额外运行时依赖。Windows 构建机上运行 `build/windows/build.ps1`，先生成 PyInstaller 程序，再由 Inno Setup 生成 `AI-Audio-Client-Setup.exe`。安装后用户只需打开客户端、填写 AI Server 地址并点击“启动”。
+
 ## 当前限制
 
 - API Key 保护 `/speak` 和 `/voices`；`/health` 可公开访问，只返回健康状态和队列长度，不暴露本机路径。
