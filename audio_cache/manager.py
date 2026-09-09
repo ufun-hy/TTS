@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import threading
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -187,6 +188,29 @@ class AudioCacheManager:
 
     def stats(self) -> Dict[str, int]:
         return {state: len(self.list_items(state)) for state in STATES}
+
+    def session_stats(self, session_id: str) -> Dict[str, int]:
+        if not session_id:
+            raise AudioCacheError("session_id is required")
+        items = [item for item in self.list_items() if item.metadata.get("session_id") == session_id]
+        stats = {state: 0 for state in STATES}
+        for item in items:
+            stats[item.status] += 1
+        return stats
+
+    def cleanup_session(self, session_id: str) -> int:
+        """Remove only cache items tagged with one live session."""
+        if not session_id:
+            raise AudioCacheError("session_id is required")
+        removed = 0
+        with self._lock:
+            for state in STATES:
+                for item in self.list_items(state):
+                    if item.metadata.get("session_id") != session_id:
+                        continue
+                    shutil.rmtree(item.directory)
+                    removed += 1
+        return removed
 
     def _find(self, item_id: str, states: Iterable[str]) -> Optional[AudioItem]:
         item_id = self._validate_id(item_id)

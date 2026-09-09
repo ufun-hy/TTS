@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -17,6 +18,14 @@ from .manager import AudioCacheError, AudioCacheManager, AudioItem
 
 class AudioCacheServer(ThreadingHTTPServer):
     daemon_threads = True
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.last_client_at = 0.0
+        self.client_timeout = 10.0
+
+    def client_connected(self) -> bool:
+        return time.monotonic() - self.last_client_at <= self.client_timeout
 
 
 def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, api_key: str = ""):
@@ -56,15 +65,27 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 return
             path = urlsplit(self.path).path
             if path in ("/health", "/healthz"):
-                self._json(200, {"status": "ok", "cache": manager.stats()})
+                self._json(200, {
+                    "status": "ok",
+                    "cache": manager.stats(),
+                    "client_connected": self.server.client_connected(),  # type: ignore[attr-defined]
+                })
                 return
             if path == "/audio/next":
+                self.server.last_client_at = time.monotonic()  # type: ignore[attr-defined]
                 item = manager.claim_next()
                 if not item:
                     self.send_response(204)
                     self.end_headers()
                     return
                 self._json(200, _next_payload(item))
+                return
+            if path.startswith("/audio/session-status/"):
+                session_id = unquote(path.rsplit("/", 1)[-1])
+                self._json(200, {
+                    **manager.session_stats(session_id),
+                    "client_connected": self.server.client_connected(),  # type: ignore[attr-defined]
+                })
                 return
             if path.startswith("/audio/files/"):
                 item_id = unquote(path.rsplit("/", 1)[-1])
@@ -121,6 +142,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 if path == "/audio/preload":
                     self._preload(body)
                     return
+                if path == "/audio/cleanup":
+                    session_id = body.get("session_id")
+                    if not isinstance(session_id, str) or not session_id:
+                        raise ValueError("session_id is required")
+                    self._json(200, {"removed": manager.cleanup_session(session_id)})
+                    return
                 self._json(404, {"error": "not_found"})
             except (AudioCacheError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
@@ -131,7 +158,7 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             item_id = body.get("id")
             metadata = {
                 key: body[key]
-                for key in ("text", "voice", "target_duration", "sequence", "source")
+                for key in ("text", "voice", "target_duration", "sequence", "source", "session_id")
                 if key in body
             }
             if "voice" not in metadata:

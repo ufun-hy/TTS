@@ -21,8 +21,10 @@ from typing import Any
 
 if __package__:
     from .text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
+    from .live_session import LiveSessionError, build_live_manager
 else:
     from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
+    from live_session import LiveSessionError, build_live_manager
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
@@ -518,8 +520,15 @@ class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
 
 
-def make_handler(root: Path, gateway_url: str):
+def make_handler(
+    root: Path,
+    gateway_url: str,
+    audio_cache_url: str = "http://127.0.0.1:8000",
+    tts_api_key: str = "",
+    audio_cache_api_key: str = "",
+):
     html_path = root / "web" / "text-studio.html"
+    live = build_live_manager(gateway_url, audio_cache_url, tts_api_key, audio_cache_api_key)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
@@ -575,6 +584,14 @@ def make_handler(root: Path, gateway_url: str):
                         "gateway_url": gateway_url,
                     },
                 })
+                return
+
+            if path == "/api/live/status":
+                self._json(200, live.status())
+                return
+
+            if path == "/api/live/voices":
+                self._json(200, live.voices())
                 return
 
             if path == "/api/models":
@@ -668,9 +685,32 @@ def make_handler(root: Path, gateway_url: str):
                     self._json(200, result)
                     return
 
+                if path == "/api/live/start":
+                    result = live.start(body.get("voice", "default"), body.get("text", ""))
+                    self._json(202, result)
+                    return
+
+                if path == "/api/live/pause":
+                    self._json(200, live.pause())
+                    return
+
+                if path == "/api/live/resume":
+                    self._json(200, live.resume())
+                    return
+
+                if path == "/api/live/stop":
+                    self._json(200, live.stop())
+                    return
+
+                if path == "/api/live/reset":
+                    self._json(200, live.reset())
+                    return
+
                 self._json(404, {"error": "not_found"})
             except subprocess.TimeoutExpired:
                 self._json(504, {"error": "provider_timeout"})
+            except LiveSessionError as exc:
+                self._json(exc.status, {"error": str(exc)})
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
             except RuntimeError as exc:
@@ -689,6 +729,9 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8770)
     parser.add_argument("--tts-gateway-url", default=os.environ.get("TTS_GATEWAY_URL", "http://127.0.0.1:8765"))
+    parser.add_argument("--audio-cache-url", default=os.environ.get("AUDIO_CACHE_URL", "http://127.0.0.1:8000"))
+    parser.add_argument("--tts-api-key", default=os.environ.get("TTS_API_KEY", ""))
+    parser.add_argument("--audio-cache-api-key", default=os.environ.get("AUDIO_CACHE_API_KEY", ""))
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -698,11 +741,18 @@ def main() -> int:
         return 1
 
     _projects_root(root)
-    server = StudioServer((args.host, args.port), make_handler(root, args.tts_gateway_url))
+    server = StudioServer((args.host, args.port), make_handler(
+        root,
+        args.tts_gateway_url,
+        args.audio_cache_url,
+        args.tts_api_key,
+        args.audio_cache_api_key,
+    ))
     print(f"Text Studio: http://{args.host}:{args.port}", flush=True)
     print(f"Codex provider: {'ready' if provider_available('codex') else 'unavailable'}", flush=True)
     print(f"ChatGPT provider: {'ready' if provider_available('chatgpt') else 'not configured'}", flush=True)
     print(f"TTS gateway: {args.tts_gateway_url}", flush=True)
+    print(f"Audio cache: {args.audio_cache_url}", flush=True)
     print(f"Projects: {_projects_root(root)}", flush=True)
     try:
         server.serve_forever()

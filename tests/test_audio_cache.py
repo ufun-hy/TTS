@@ -49,6 +49,16 @@ class AudioCacheTests(unittest.TestCase):
             metadata = json.loads((Path(directory) / "failed/segment_001/metadata.json").read_text())
             self.assertEqual(metadata["status"], "failed")
 
+    def test_session_stats_and_cleanup_are_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = AudioCacheManager(Path(directory), lambda audio, _metadata: audio)
+            manager.add_audio(wav_bytes(), {"session_id": "live_a"}, "segment_001")
+            manager.add_audio(wav_bytes(), {"session_id": "live_b"}, "segment_002")
+            self.assertEqual(manager.session_stats("live_a")["ready"], 1)
+            self.assertEqual(manager.cleanup_session("live_a"), 1)
+            self.assertFalse(manager.has("segment_001"))
+            self.assertTrue(manager.has("segment_002"))
+
     def test_processing_limits_are_reported(self):
         config = AudioProcessingConfig()
         factor, warnings = calculate_speed_factor(40, 30, config)

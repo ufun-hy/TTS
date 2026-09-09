@@ -59,6 +59,8 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 | `GET /audio/files/{id}` | 下载 WAV |
 | `GET /audio/status/{id}` | 查询任务状态，供客户端重启恢复 |
 | `POST /audio/ack` | `{\"id\":\"segment_001\",\"status\":\"completed\"}` 确认消费 |
+| `GET /audio/session-status/{session_id}` | 查询一个 Live Session 的 ready/processing/completed 数量及客户端在线状态 |
+| `POST /audio/cleanup` | 按 `session_id` 清理该 Session 创建的缓存项 |
 | `GET /health` | 返回各状态数量 |
 
 无 ready 音频时 `/audio/next` 返回 `204`。ACK 是幂等的；客户端下载完成后先把 WAV 和本地 metadata 原子写入 cache，网络断开时不会丢失本地文件。
