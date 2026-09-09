@@ -132,7 +132,7 @@ textarea.source{height:180px;resize:vertical;margin-top:12px;font-size:13px;line
       </div>
       <div class="field"><label>额外要求（可选）</label><textarea id="instruction" rows="4" placeholder="例如：保持节奏快；不要新增营销承诺。"></textarea></div>
       <div class="actions"><button class="btn primary" id="generalizeBtn" disabled>泛化全部段落</button></div>
-      <div class="hint">原文和泛化结果会按段一一对应。每段默认折叠，只显示当前选中结果；展开后可切换候选、编辑和试听。</div>
+      <div class="hint">原文和泛化结果会按段一一对应。全稿按每 8 个自然段一批逐批泛化；每完成一批立即显示结果，失败时已完成内容会保留。</div>
       <div id="message" class="msg"></div>
     </aside>
 
@@ -148,7 +148,7 @@ textarea.source{height:180px;resize:vertical;margin-top:12px;font-size:13px;line
 </div>
 
 <script>
-const state={paragraphs:[],providerStatus:{},ttsReady:false,sourceName:'manual.txt'};
+const state={paragraphs:[],providerStatus:{},ttsReady:false,sourceName:'manual.txt',generalizing:false};
 const $=id=>document.getElementById(id);
 
 function showMessage(text,type='info'){
@@ -173,14 +173,14 @@ async function health(){
   }catch(e){$('status').innerHTML='<span class="badge bad">服务异常</span>'}
 }
 function escapeHtml(s){
-  return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))
+  return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[m]))
 }
 function selectedText(p){
   return (p.editedText||p.candidates?.[p.selectedIndex||0]||p.original_text).trim()
 }
 function render(){
   const list=state.paragraphs;
-  $('generalizeBtn').disabled=!list.length;
+  $('generalizeBtn').disabled=!list.length||state.generalizing;
   $('footerActions').style.display=list.length?'flex':'none';
 
   if(!list.length){
@@ -266,13 +266,52 @@ async function generalizeSubset(indexes){
   return data
 }
 async function generalizeAll(){
-  clearMessage();const btn=$('generalizeBtn');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>泛化中';
+  clearMessage();
+  const btn=$('generalizeBtn');
+  const batchSize=8;
+  const pending=state.paragraphs.map((p,i)=>p.candidates?.length?null:i).filter(i=>i!==null);
+  if(!pending.length){showMessage('全部自然段都已经完成泛化。需要改某一段时可使用“重生成本段”。','ok');return}
+
+  state.generalizing=true;
+  btn.disabled=true;
+  const total=state.paragraphs.length;
+  const batchCount=Math.ceil(pending.length/batchSize);
+  const started=performance.now();
+
   try{
-    const indexes=state.paragraphs.map((_,i)=>i);
-    const data=await generalizeSubset(indexes);
-    render();showMessage(`泛化完成，共 ${state.paragraphs.length} 段，用时 ${data.elapsed_seconds}s。`,'ok')
-  }catch(e){showMessage(e.message,'err')}
-  finally{btn.disabled=false;btn.textContent='泛化全部段落'}
+    for(let offset=0,batchNo=1;offset<pending.length;offset+=batchSize,batchNo++){
+      const batch=pending.slice(offset,offset+batchSize);
+      const completedBefore=state.paragraphs.filter(p=>p.candidates?.length).length;
+      btn.innerHTML=`<span class="spinner"></span>泛化中 ${completedBefore}/${total}`;
+      showMessage(`正在泛化第 ${batchNo}/${batchCount} 批：${state.paragraphs[batch[0]].id} - ${state.paragraphs[batch[batch.length-1]].id}\n已完成 ${completedBefore}/${total} 段。`,'info');
+
+      try{
+        await generalizeSubset(batch);
+      }catch(e){
+        const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
+        render();
+        throw new Error(`第 ${batchNo}/${batchCount} 批泛化失败：${e.message}\n已完成的 ${completed}/${total} 段结果已保留，可再次点击继续剩余段落。`);
+      }
+
+      render();
+      const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
+      btn.disabled=true;
+      btn.innerHTML=`<span class="spinner"></span>泛化中 ${completed}/${total}`;
+      showMessage(`第 ${batchNo}/${batchCount} 批完成，已生成 ${completed}/${total} 段。正在继续下一批…`,'info');
+      await new Promise(resolve=>setTimeout(resolve,0));
+    }
+
+    const seconds=((performance.now()-started)/1000).toFixed(1);
+    showMessage(`泛化完成，共 ${total} 段，用时 ${seconds}s。`,'ok');
+  }catch(e){
+    showMessage(e.message,'err');
+  }finally{
+    state.generalizing=false;
+    render();
+    const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
+    btn.textContent=completed===total?'全部泛化完成':`继续泛化剩余 ${total-completed} 段`;
+    btn.disabled=completed===total;
+  }
 }
 
 window.toggleParagraph=i=>{state.paragraphs[i].expanded=!state.paragraphs[i].expanded;render()};
