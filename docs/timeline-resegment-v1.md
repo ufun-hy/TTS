@@ -1,6 +1,20 @@
-# ASR Semantic Re-segmentation V1
+# Timestamp-first ASR Context Grouping
 
-重切分阶段先对 timestamped ASR 做 Sentence Reconstruction，再形成 Natural Segment；整个阶段不改写、不排序、不调用 Ollama。连续的 1～3 秒 ASR 碎片会按自然表达、真实 pause、强标点、语义边界和目标时长合并，输出保留 `source_segment_ids` 和 `reconstruction_source`。
+ASR 重组阶段只做两件事：
+
+1. 按时间顺序把连续的 ASR 小碎片合成较大的上下文块。
+2. 按原始时间戳保留主播真实停顿。
+
+它不再判断价格、优惠、CTA、互动、商品卖点、语义类型或“自然句”。文本在哪里断开不负责表达语义；上下文块只是给 Direct Model Generalize 足够的上下文。
+
+## 默认规则
+
+- `max_context_duration = 15s`：纯技术性的上下文块上限。
+- `pause_threshold = 0.05s`：相邻 ASR Segment 出现真实时间间隔时，新开一个块。
+- 因长度上限切开的相邻块，如果时间轴连续，则 `pause_after = 0`，Runtime 连续播放。
+- 因真实停顿切开的块，`pause_after = next.start - current.speech_end`，Runtime 按原停顿等待。
+
+没有 Semantic Boundary、价格/CTA 规则、标点规则或内容 Judge。
 
 ## 使用
 
@@ -9,20 +23,38 @@ python3 scripts/timeline-resegment.py input.json runtime/resegmented.json
 python3 scripts/timeline-resegment.py input.json runtime/resegmented.json --dry-run
 ```
 
-也支持纯文本测试输入。文本按空行拆成粗 Segment，并估算连续时间轴：
+可选：
 
 ```bash
-python3 scripts/timeline-resegment.py "/path/to/live.txt" runtime/resegmented.json --dry-run
+python3 scripts/timeline-resegment.py input.json runtime/resegmented.json \
+  --max-context-duration 15 \
+  --pause-threshold 0.05
 ```
 
-默认目标：单段最多 25 秒，优选 6～15 秒，短段允许约 3 秒。输出会保留 `parent_segment_id`、`source_start`、`source_end`、`source_segment_ids`，并增加 `speech_end`、`speech_duration`、`pause_after`、`timeline_duration`、`semantic_type`、`semantic_boundary`、`boundary_source` 和 `reconstruction_source`。报告额外统计输入/输出段数、合并段数和时长分布。
+输出 Segment 只保留时间轴和来源追踪所需字段：
 
-有 word/sentence timestamp 时，真实停顿不会被压平；Pause 保留在 Segment 的 `pause_after` 中，由 Runtime 在下一段播放前等待。没有细时间戳的旧数据默认 `pause_after=0`，不会人为添加停顿。
+- `id`
+- `source_segment_ids`
+- `start`
+- `speech_end`
+- `end`
+- `speech_duration`
+- `pause_after`
+- `timeline_duration`
+- `text`
 
-重切分后可直接交给现有文本泛化：
+随后直接交给 Direct Model Generalize：
 
 ```bash
 python3 scripts/timeline-generalize.py runtime/resegmented.json runtime/timeline.json
 ```
 
-重切分失败会返回错误，不会静默丢弃原文或继续生成不完整结果。
+职责划分：
+
+```text
+ASR              -> 文本 + 时间戳
+Context Grouping -> 简单拼接 + 保留停顿
+LLM              -> 自然改写文本
+Runtime          -> 按时间顺序和 pause 播放
+TTS              -> 合成声音
+```
