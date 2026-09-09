@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -19,6 +18,11 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+if __package__:
+    from .text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
+else:
+    from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
@@ -87,21 +91,6 @@ def _validate_model_result(raw: Any, expected_ids: list[str]) -> list[dict[str, 
     return [by_id[paragraph_id] for paragraph_id in expected_ids]
 
 
-def _provider_command(provider: str) -> list[str] | None:
-    if provider == "codex":
-        raw = os.environ.get(
-            "TTS_TEXT_STUDIO_CODEX_CMD",
-            "codex exec --skip-git-repo-check --color never -",
-        )
-    elif provider == "chatgpt":
-        raw = os.environ.get("TTS_TEXT_STUDIO_CHATGPT_CMD", "")
-    else:
-        return None
-    if not raw.strip():
-        return None
-    return shlex.split(raw)
-
-
 def provider_available(provider: str) -> bool:
     command = _provider_command(provider)
     return bool(command and shutil.which(command[0]))
@@ -130,25 +119,97 @@ def _build_prompt(paragraphs: list[dict[str, Any]], candidate_count: int, instru
 """
 
 
-def _run_provider(provider: str, prompt: str, timeout_seconds: int) -> Any:
-    command = _provider_command(provider)
+def _capture_provider_output(diagnostic: dict[str, Any], stdout: Any, stderr: Any) -> None:
+    """Preserve provider output before parsing, including partial timeout output."""
+    def as_text(value: Any) -> str:
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+    stdout, stderr = as_text(stdout), as_text(stderr)
+    Path(diagnostic["response_path"]).write_text(stdout, encoding="utf-8")
+    Path(diagnostic["stderr_path"]).write_text(stderr, encoding="utf-8")
+    for field in ("model", "provider"):
+        match = re.search(rf"^{field}:\s*(.+)$", stderr, re.MULTILINE)
+        if match:
+            diagnostic["model" if field == "model" else "model_provider"] = match.group(1).strip()
+    diagnostic["empty_response"] = not stdout.strip()
+    diagnostic["markdown_wrapped"] = stdout.lstrip().startswith("```")
+
+
+def _run_provider(provider: str, prompt: str, timeout_seconds: int,
+                  diagnostic: dict[str, Any] | None = None, model: str = "") -> Any:
+    command = _provider_command(provider, model)
+    if provider == "agy" and command:
+        command = agy_prompt_command(command, prompt)
     if not command:
         raise RuntimeError(f"provider {provider!r} is not configured")
     if not shutil.which(command[0]):
         raise RuntimeError(f"provider command not found: {command[0]}")
     env = os.environ.copy()
     env.setdefault("NO_COLOR", "1")
-    proc = subprocess.run(
-        command,
-        input=prompt,
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-        cwd=Path(__file__).resolve().parents[1],
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            command,
+            input=None if provider == "agy" else prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        if diagnostic is not None:
+            _capture_provider_output(diagnostic, exc.stdout, exc.stderr)
+        raise
+    if diagnostic is not None:
+        diagnostic["returncode"] = proc.returncode
+        _capture_provider_output(diagnostic, proc.stdout, proc.stderr)
+    if provider == "agy":
+        try:
+            envelope = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            envelope = None
+        if isinstance(envelope, dict):
+            if diagnostic is not None:
+                diagnostic["model_provider"] = "antigravity"
+                diagnostic["conversation_id"] = envelope.get("conversation_id", "")
+                diagnostic["model"] = envelope.get("model") or "unknown"
+            response = envelope.get("response")
+            if envelope.get("status") != "SUCCESS" or proc.returncode:
+                raise RuntimeError(f"agy 模型 {model or '默认'} 调用失败：{envelope.get('error') or response or proc.stderr or envelope.get('status')}")
+            if not isinstance(response, str) or not response.strip():
+                denied = envelope.get("denied_actions")
+                reason = f"无头模式权限被拒绝：{denied}" if denied else "CLI 返回空 response"
+                raise RuntimeError(f"agy 模型 {model or '默认'} 未生成结果：{reason}。{proc.stderr.strip()}")
+            return _extract_json(response)
+        if proc.returncode == 0:
+            raise ValueError("agy 未返回有效 JSON；请使用 --output-format json")
+    if provider == "gemini":
+        try:
+            envelope = json.loads(proc.stdout or (proc.stderr if proc.returncode else ""))
+        except json.JSONDecodeError:
+            envelope = None
+        if isinstance(envelope, dict):
+            used_models = list((envelope.get("stats") or {}).get("models", {}))
+            if diagnostic is not None:
+                diagnostic["models_used"] = used_models
+                diagnostic["model"] = ", ".join(used_models) or "unknown"
+                diagnostic["model_provider"] = "google"
+            if envelope.get("error"):
+                detail = envelope["error"]
+                reason = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
+                raise RuntimeError(f"Gemini 模型 {model or '默认'} 调用失败：{reason}。如未登录，请在终端运行 gemini 完成登录。")
+            if proc.returncode == 0:
+                response = envelope.get("response")
+                if not isinstance(response, str) or not response.strip():
+                    raise ValueError("Gemini CLI 未返回非空 response 字段")
+                return _extract_json(response)
+        elif proc.returncode == 0:
+            raise ValueError("Gemini CLI 未返回有效 JSON；请使用 --output-format json")
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "provider failed").strip()
+        if model:
+            errors = [line.removeprefix("ERROR: ") for line in detail.splitlines() if line.startswith("ERROR:")]
+            reason = errors[-1] if errors else detail[-2000:]
+            raise RuntimeError(f"模型 {model} 调用失败：{reason}")
         raise RuntimeError(detail[-2000:])
     return _extract_json(proc.stdout)
 
@@ -160,14 +221,19 @@ def generalize_paragraphs(
     instruction: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    diagnostic_root: Path | None = None,
+    project_id: str = "",
+    paragraph_indexes: list[int] | None = None,
+    model: str = "",
 ) -> list[dict[str, Any]]:
-    if provider not in {"codex", "chatgpt"}:
-        raise ValueError("provider must be codex or chatgpt")
+    if provider not in {"codex", "chatgpt", "gemini", "agy"}:
+        raise ValueError("provider must be codex, chatgpt, gemini or agy")
     if not 1 <= candidate_count <= 5:
         raise ValueError("candidate_count must be between 1 and 5")
     if not paragraphs or len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
         raise ValueError(f"paragraphs must contain 1 to {MAX_PARAGRAPHS_PER_REQUEST} items")
 
+    model = validate_model(model)
     normalized: list[dict[str, Any]] = []
     for item in paragraphs:
         if not isinstance(item, dict):
@@ -182,12 +248,65 @@ def generalize_paragraphs(
             raise ValueError(f"paragraph {paragraph_id!r} exceeds {MAX_PARAGRAPH_CHARS} characters")
         normalized.append({"id": paragraph_id.strip(), "original_text": original_text.strip()})
 
+    if paragraph_indexes is not None and (
+        not isinstance(paragraph_indexes, list) or len(paragraph_indexes) != len(normalized)
+        or any(type(index) is not int or index < 0 for index in paragraph_indexes)
+    ):
+        raise ValueError("paragraph_indexes must contain one nonnegative integer per paragraph")
+
     results: list[dict[str, Any]] = []
     for start in range(0, len(normalized), batch_size):
         batch = normalized[start:start + batch_size]
         prompt = _build_prompt(batch, candidate_count, instruction)
-        raw = _run_provider(provider, prompt, timeout_seconds)
-        validated = _validate_model_result(raw, [item["id"] for item in batch])
+        diagnostic = None
+        if diagnostic_root is not None:
+            run_id = uuid.uuid4().hex
+            indexes = (paragraph_indexes or list(range(len(normalized))))[start:start + len(batch)]
+            batch_id = f"batch-{indexes[0] // batch_size + 1:03d}"
+            paths = {}
+            for kind in ("request", "response"):
+                directory = diagnostic_root / "debug" / kind / run_id
+                directory.mkdir(parents=True, exist_ok=True)
+                paths[kind] = directory
+            diagnostic = {
+                "project_id": project_id, "run_id": run_id, "batch_id": batch_id,
+                "paragraph_start": indexes[0], "paragraph_end": indexes[-1],
+                "paragraph_indexes": indexes, "paragraph_ids": [item["id"] for item in batch],
+                "provider": provider, "model": "unknown", "requested_model": model, "paragraph_count": len(batch),
+                "input_chars": sum(len(item["original_text"]) for item in batch),
+                "prompt_chars": len(prompt), "estimated_tokens": len(prompt),
+                "token_estimate_method": "rough 1 token/character; not tokenizer measurement",
+                "start_time": _utc_timestamp(), "end_time": "", "status": "running", "error": "",
+                "response_path": str(paths["response"] / f"{batch_id}-response.txt"),
+                "stderr_path": str(paths["response"] / f"{batch_id}-stderr.txt"),
+            }
+            (paths["request"] / f"{batch_id}-request.json").write_text(json.dumps({
+                **diagnostic, "command": (agy_prompt_command(_provider_command(provider, model), prompt)
+                            if provider == "agy" else _provider_command(provider, model)), "prompt": prompt,
+                "candidate_count": candidate_count, "timeout_seconds": timeout_seconds,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            log_dir = diagnostic_root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"{run_id}-{batch_id}.json"
+            log_path.write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            options = {}
+            if diagnostic is not None:
+                options["diagnostic"] = diagnostic
+            if model:
+                options["model"] = model
+            raw = _run_provider(provider, prompt, timeout_seconds, **options)
+            validated = _validate_model_result(raw, [item["id"] for item in batch])
+            if diagnostic is not None:
+                diagnostic["status"] = "success"
+        except Exception as exc:
+            if diagnostic is not None:
+                diagnostic.update(status="failed", error=str(exc), error_type=type(exc).__name__)
+            raise
+        finally:
+            if diagnostic is not None:
+                diagnostic["end_time"] = _utc_timestamp()
+                log_path.write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8")
         for item in validated:
             item["candidates"] = item["candidates"][:candidate_count]
         results.extend(validated)
@@ -258,6 +377,7 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     source_text = payload.get("source_text", "")
     source_name = payload.get("source_name", "")
     provider = payload.get("provider", "codex")
+    model = validate_model(payload.get("model", ""))
     instruction = payload.get("instruction", "")
     voice = payload.get("voice", "default")
     candidate_count = payload.get("candidate_count", 3)
@@ -291,6 +411,7 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "source_name": source_name[:255],
         "source_text": source_text,
         "provider": provider,
+        "model": model,
         "candidate_count": candidate_count,
         "voice": voice[:80],
         "instruction": instruction,
@@ -439,6 +560,8 @@ def make_handler(root: Path, gateway_url: str):
                     "status": "ok",
                     "providers": {
                         "codex": provider_available("codex"),
+                        "gemini": provider_available("gemini"),
+                        "agy": provider_available("agy"),
                         "chatgpt": provider_available("chatgpt"),
                     },
                     "tts": {
@@ -446,6 +569,14 @@ def make_handler(root: Path, gateway_url: str):
                         "gateway_url": gateway_url,
                     },
                 })
+                return
+
+            if path == "/api/models":
+                provider = (query.get("provider") or ["codex"])[0]
+                if provider not in {"codex", "chatgpt", "gemini", "agy"}:
+                    self._json(400, {"error": "provider must be codex, chatgpt, gemini or agy"})
+                    return
+                self._json(200, list_models(provider, root))
                 return
 
             if path == "/api/projects":
@@ -487,6 +618,7 @@ def make_handler(root: Path, gateway_url: str):
                         raise ValueError("paragraphs must be an array")
                     provider = body.get("provider", "codex")
                     candidate_count = int(body.get("candidate_count", 3))
+                    model = validate_model(body.get("model", ""))
                     instruction = body.get("instruction", "")
                     if not isinstance(provider, str) or not isinstance(instruction, str):
                         raise ValueError("invalid provider or instruction")
@@ -496,9 +628,14 @@ def make_handler(root: Path, gateway_url: str):
                         provider=provider,
                         candidate_count=candidate_count,
                         instruction=instruction,
+                        diagnostic_root=root / "runtime" / "text-studio",
+                        project_id=str(body.get("project_id", "")),
+                        paragraph_indexes=body.get("paragraph_indexes"),
+                        model=model,
                     )
                     self._json(200, {
                         "provider": provider,
+                        "model": model,
                         "candidate_count": candidate_count,
                         "paragraphs": result,
                         "elapsed_seconds": round(time.monotonic() - started, 3),

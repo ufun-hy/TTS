@@ -1,18 +1,47 @@
-import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "server" / "text_studio.py"
-spec = importlib.util.spec_from_file_location("text_studio", MODULE_PATH)
-text_studio = importlib.util.module_from_spec(spec)
-assert spec and spec.loader
-spec.loader.exec_module(text_studio)
+from server import text_studio
 
 
 class TextStudioTest(unittest.TestCase):
+    def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
+        cases = [
+            (text_studio.subprocess.CompletedProcess([], 0,
+             '{"paragraphs":[{"id":"p0009","candidates":["改写"]}]}',
+             'model: test-model\nprovider: openai\n'), None),
+            (text_studio.subprocess.CompletedProcess([], 0, '{"paragraphs":[]}', ''), ValueError),
+            (text_studio.subprocess.TimeoutExpired('codex', 240, output=b'partial',
+             stderr=b'model: test-model\n'), text_studio.subprocess.TimeoutExpired),
+        ]
+        # Retain diagnostic artifacts; repository cleanup requires explicit authorization.
+        root = Path(tempfile.mkdtemp(prefix="text-studio-diagnostic-test-"))
+        for index, (output, error) in enumerate(cases):
+            target = root / str(index)
+            kwargs = {"side_effect": output} if error is text_studio.subprocess.TimeoutExpired else {"return_value": output}
+            with mock.patch.object(text_studio.shutil, "which", return_value="codex"), mock.patch.object(text_studio.subprocess, "run", **kwargs):
+                def run():
+                    return text_studio.generalize_paragraphs(
+                        [{"id": "p0009", "original_text": "原稿"}], "codex", 1, "",
+                        diagnostic_root=target, project_id="project-test", paragraph_indexes=[8])
+                if error:
+                    with self.assertRaises(error):
+                        run()
+                else:
+                    self.assertEqual(run()[0]["candidates"], ["改写"])
+            record = json.loads(next((target / "logs").glob("*.json")).read_text())
+            self.assertEqual(record["status"], "failed" if error else "success")
+            self.assertEqual(record["paragraph_start"], 8)
+            self.assertEqual(record["batch_id"], "batch-002")
+            self.assertTrue(record["end_time"])
+            self.assertEqual(Path(record["response_path"]).read_text(),
+                             "partial" if error is text_studio.subprocess.TimeoutExpired else output.stdout)
+            if error is not ValueError:
+                self.assertEqual(record["model"], "test-model")
+
     def test_split_paragraphs_preserves_natural_paragraphs(self):
         data = text_studio.split_paragraphs("第一句。第二句？\n\n第三段！")
         self.assertEqual([item["id"] for item in data], ["p0001", "p0002"])
