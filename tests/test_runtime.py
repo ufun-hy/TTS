@@ -50,7 +50,7 @@ class RuntimeTests(unittest.TestCase):
         }
         selection = RuntimeSelector(seed=1).select(segment, RuntimeSession("candidate-session", "candidate"))
         self.assertEqual(selection.final_text, "完整候选表达")
-        self.assertEqual(selection.variant_ids, ["candidate_1"])
+        self.assertEqual(selection.variant_ids, ["candidate_01"])
 
     def run_dry(self, root, seed):
         timeline = twenty_segments()

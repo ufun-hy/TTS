@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib import error, request
 
-GENERALIZE_STRATEGY_VERSION = "direct-model-v1"
+GENERALIZE_STRATEGY_VERSION = "direct-model-v2"
 
 
 class TimelineError(RuntimeError):
@@ -79,7 +79,7 @@ class Ollama:
         for attempt, temp in enumerate(temperatures):
             retry_prompt = prompt
             if attempt:
-                retry_prompt += f"\n只返回合法 JSON，不要解释。格式：{schema_hint}"
+                retry_prompt += f"\n只返回合法 JSON，不要解释。{schema_hint}"
             payload = json.dumps({
                 "model": self.model,
                 "prompt": retry_prompt,
@@ -132,18 +132,20 @@ def _rewrite_prompt(segment: Segment, count: int) -> str:
 请把下面原话直接改写成 {count} 个自然、完整、可直接朗读的直播口语版本。
 
 要求：
-- 保持原话的意思和事实。
-- 数字、价格、数量、规格、优惠条件、产品名等关键信息不要改错。
-- 不要编造原话没有的信息。
-- 不要为了凑时长加废话，也不要故意压缩成摘要。
-- 每个版本都是完整的一段话。
-- 直接改写，不要分析，不要输出标签、要点、评分或解释。
+- 完整保留原话中的有效信息，不要总结、概括或删减成只剩重点。
+- 原话里连续出现的表达、动作、条件、问答关系都尽量保留下来，可以换说法、调整语序，但不要省略关键内容。
+- 数字、价格、数量、重量、规格、优惠条件、产品名、物流、售后等事实必须保持不变。
+- 不要编造原话没有的信息，也不要自行补充卖点、优惠、承诺或商品事实。
+- ASR 里如果有口语重复、停顿词或轻微识别噪声，可以整理成更自然的直播口语，但不要因此改变原意。
+- 不要求匹配原话时长；不要为了凑时长加废话，也不要故意压缩成摘要。
+- 每个版本都必须是一整段可以直接朗读的直播话术。
+- 直接改写，不要分析，不要输出标签、要点、评分、序号、解释或任何占位内容。
 
 原话：
 {segment.original_text}
 
-只返回：
-{{"candidates":["版本1","版本2","版本3"]}}
+输出要求：
+只返回合法 JSON 对象。对象只能包含 candidates 字段；candidates 必须是包含 {count} 个非空字符串的数组。
 """
 
 
@@ -161,7 +163,11 @@ class TimelineEngine:
 
     def _ask(self, prompt: str) -> Dict[str, Any]:
         try:
-            result = self.llm.json(prompt, schema_hint='{"candidates":["..."]}', temperature=0.7)
+            result = self.llm.json(
+                prompt,
+                schema_hint="对象只能包含 candidates 字段，值必须是非空字符串数组。",
+                temperature=0.7,
+            )
         except TypeError:
             result = self.llm.json(prompt)
         self.json_retry_total += int(getattr(self.llm, "last_json_retry_count", 0))
