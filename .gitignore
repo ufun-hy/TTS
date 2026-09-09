@@ -1,18 +1,6 @@
-runtime/bin/
-runtime/models/
-runtime/audio/
-runtime/audio-cache/
-runtime/audio-client/
-runtime/asr/
-runtime/audio-ingest/
-runtime/voice-datasets/
-runtime/sessions/
-runtime/reports/
-runtime/logs/
-runtime/pids/
-runtime/*.json
+# Local runtime data: models, audio, ASR output, caches, sessions, reports, logs.
+runtime/
 .venv-asr/
-runtime/models/voices/
 voices/*
 !voices/.gitkeep
 !voices/README.md
