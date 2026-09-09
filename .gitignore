@@ -5,6 +5,7 @@ runtime/audio-cache/
 runtime/audio-client/
 runtime/asr/
 runtime/audio-ingest/
+runtime/voice-datasets/
 runtime/sessions/
 runtime/reports/
 runtime/logs/

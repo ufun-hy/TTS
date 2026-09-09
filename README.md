@@ -80,6 +80,8 @@ curl -X POST http://192.168.3.92:8765/speak \
 
 ## 音色
 
+三位授权主播的数据整理、对齐及 Zero-shot 比较规范见 [docs/voice-datasets.md](docs/voice-datasets.md)。独立数据集保存在 `runtime/voice-datasets/`，按实际有效素材量整理，不设固定总时长；固定测试话术保存在 `config/voice-benchmark-texts.json`。
+
 查询当前可用音色：
 
 ```bash
