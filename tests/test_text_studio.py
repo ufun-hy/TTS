@@ -1,6 +1,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -69,6 +70,79 @@ class TextStudioTest(unittest.TestCase):
 
         self.assertEqual(len(result), 121)
         self.assertEqual(runner.call_count, 16)
+
+    def test_project_round_trip_persists_candidates_and_progress(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = text_studio.save_project(root, {
+                "name": "桃子直播稿",
+                "source_name": "桃子.txt",
+                "source_text": "第一段。\n\n第二段。",
+                "provider": "codex",
+                "candidate_count": 3,
+                "voice": "default",
+                "instruction": "保持直播口语",
+                "paragraphs": [
+                    {
+                        "id": "p0001",
+                        "index": 1,
+                        "original_text": "第一段。",
+                        "sentences": ["第一段。"],
+                        "candidates": ["泛化一", "泛化二", "泛化三"],
+                        "selectedIndex": 1,
+                        "editedText": "泛化二",
+                    },
+                    {
+                        "id": "p0002",
+                        "index": 2,
+                        "original_text": "第二段。",
+                        "sentences": ["第二段。"],
+                        "candidates": [],
+                        "selectedIndex": 0,
+                        "editedText": "",
+                    },
+                ],
+            })
+
+            project_id = project["project_id"]
+            loaded = text_studio.load_project(root, project_id)
+            summaries = text_studio.list_projects(root)
+
+            self.assertEqual(loaded["name"], "桃子直播稿")
+            self.assertEqual(loaded["paragraphs"][0]["candidates"][1], "泛化二")
+            self.assertEqual(loaded["paragraphs"][0]["selectedIndex"], 1)
+            self.assertEqual(summaries[0]["project_id"], project_id)
+            self.assertEqual(summaries[0]["paragraph_count"], 2)
+            self.assertEqual(summaries[0]["generated_count"], 1)
+
+    def test_project_update_reuses_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = text_studio.save_project(root, {
+                "name": "测试",
+                "source_name": "test.txt",
+                "source_text": "第一段。",
+                "provider": "codex",
+                "candidate_count": 3,
+                "voice": "default",
+                "instruction": "",
+                "paragraphs": [],
+            })
+            second = text_studio.save_project(root, {
+                "project_id": first["project_id"],
+                "name": "测试更新",
+                "source_name": "test.txt",
+                "source_text": "第一段。",
+                "provider": "codex",
+                "candidate_count": 3,
+                "voice": "default",
+                "instruction": "",
+                "paragraphs": [],
+            })
+
+            self.assertEqual(first["project_id"], second["project_id"])
+            self.assertEqual(first["created_at"], second["created_at"])
+            self.assertEqual(text_studio.load_project(root, first["project_id"])["name"], "测试更新")
 
 
 if __name__ == "__main__":

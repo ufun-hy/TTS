@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local web studio for text generalization and TTS preview."""
+"""Local web studio for text generalization, project persistence, and TTS preview."""
 
 from __future__ import annotations
 
@@ -14,15 +14,19 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
 MAX_PARAGRAPH_CHARS = 4000
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_TIMEOUT_SECONDS = 240
+PROJECT_SCHEMA_VERSION = 1
+PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
 SENTENCE_RE = re.compile(r"(?<=[。！？!?])\s*")
 
 
@@ -190,6 +194,146 @@ def generalize_paragraphs(
     return results
 
 
+def _projects_root(root: Path) -> Path:
+    path = root / "runtime" / "text-studio" / "projects"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validate_project_id(project_id: str) -> str:
+    if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError("invalid project_id")
+    return project_id
+
+
+def _project_file(root: Path, project_id: str) -> Path:
+    project_id = _validate_project_id(project_id)
+    return _projects_root(root) / project_id / "project.json"
+
+
+def _utc_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _new_project_id() -> str:
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+
+
+def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
+    paragraphs = project.get("paragraphs") if isinstance(project.get("paragraphs"), list) else []
+    generated = sum(
+        1
+        for item in paragraphs
+        if isinstance(item, dict) and isinstance(item.get("candidates"), list) and item.get("candidates")
+    )
+    return {
+        "project_id": project.get("project_id", ""),
+        "name": project.get("name", "未命名项目"),
+        "source_name": project.get("source_name", ""),
+        "created_at": project.get("created_at", ""),
+        "updated_at": project.get("updated_at", ""),
+        "paragraph_count": len(paragraphs),
+        "generated_count": generated,
+    }
+
+
+def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    project_id = payload.get("project_id")
+    if project_id:
+        project_id = _validate_project_id(project_id)
+    else:
+        project_id = _new_project_id()
+
+    paragraphs = payload.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        raise ValueError("project paragraphs must be an array")
+    if len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
+        raise ValueError(f"project exceeds {MAX_PARAGRAPHS_PER_REQUEST} paragraphs")
+
+    name = payload.get("name", "未命名项目")
+    if not isinstance(name, str) or not name.strip():
+        name = "未命名项目"
+    name = name.strip()[:120]
+
+    source_text = payload.get("source_text", "")
+    source_name = payload.get("source_name", "")
+    provider = payload.get("provider", "codex")
+    instruction = payload.get("instruction", "")
+    voice = payload.get("voice", "default")
+    candidate_count = payload.get("candidate_count", 3)
+
+    if not isinstance(source_text, str) or not isinstance(source_name, str):
+        raise ValueError("invalid project source")
+    if not isinstance(provider, str) or not isinstance(instruction, str) or not isinstance(voice, str):
+        raise ValueError("invalid project settings")
+    try:
+        candidate_count = int(candidate_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid candidate_count") from exc
+    if not 1 <= candidate_count <= 5:
+        raise ValueError("candidate_count must be between 1 and 5")
+
+    path = _project_file(root, project_id)
+    created_at = _utc_timestamp()
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict) and isinstance(existing.get("created_at"), str):
+                created_at = existing["created_at"]
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+
+    now = _utc_timestamp()
+    project = {
+        "schema_version": PROJECT_SCHEMA_VERSION,
+        "project_id": project_id,
+        "name": name,
+        "source_name": source_name[:255],
+        "source_text": source_text,
+        "provider": provider,
+        "candidate_count": candidate_count,
+        "voice": voice[:80],
+        "instruction": instruction,
+        "paragraphs": paragraphs,
+        "created_at": created_at,
+        "updated_at": now,
+    }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name("project.json.tmp")
+    temp.write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp, path)
+    return project
+
+
+def load_project(root: Path, project_id: str) -> dict[str, Any]:
+    path = _project_file(root, project_id)
+    if not path.is_file():
+        raise FileNotFoundError(project_id)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("project file must contain an object")
+    return raw
+
+
+def list_projects(root: Path) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    projects_root = _projects_root(root)
+    for path in projects_root.glob("*/project.json"):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict):
+            continue
+        project_id = raw.get("project_id")
+        if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
+            continue
+        items.append(_project_summary(raw))
+    items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+    return items
+
+
 def _read_keychain_api_key() -> str:
     key = os.environ.get("TTS_API_KEY", "")
     if key:
@@ -251,7 +395,7 @@ def make_handler(root: Path, gateway_url: str):
     html_path = root / "web" / "text-studio.html"
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "tts-text-studio/1.0"
+        server_version = "tts-text-studio/1.1"
 
         def _json(self, status: int, body: dict[str, Any]) -> None:
             encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -265,14 +409,17 @@ def make_handler(root: Path, gateway_url: str):
         def _read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > MAX_BODY_BYTES:
-                raise ValueError("request body must be between 1 byte and 4 MiB")
+                raise ValueError("request body must be between 1 byte and 16 MiB")
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("request body must be a JSON object")
             return body
 
         def do_GET(self) -> None:  # noqa: N802
-            path = self.path.split("?", 1)[0]
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
+
             if path in {"/", "/index.html"}:
                 try:
                     body = html_path.read_bytes()
@@ -286,6 +433,7 @@ def make_handler(root: Path, gateway_url: str):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+
             if path == "/api/health":
                 self._json(200, {
                     "status": "ok",
@@ -299,12 +447,28 @@ def make_handler(root: Path, gateway_url: str):
                     },
                 })
                 return
+
+            if path == "/api/projects":
+                self._json(200, {"projects": list_projects(root)})
+                return
+
+            if path == "/api/project":
+                project_id = (query.get("project_id") or [""])[0]
+                try:
+                    project = load_project(root, project_id)
+                except FileNotFoundError:
+                    self._json(404, {"error": "project_not_found"})
+                    return
+                self._json(200, {"project": project})
+                return
+
             self._json(404, {"error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             try:
                 body = self._read_json()
+
                 if path == "/api/parse":
                     text = body.get("text")
                     if not isinstance(text, str):
@@ -316,6 +480,7 @@ def make_handler(root: Path, gateway_url: str):
                         "character_count": len(text),
                     })
                     return
+
                 if path == "/api/generalize":
                     paragraphs = body.get("paragraphs")
                     if not isinstance(paragraphs, list):
@@ -339,6 +504,16 @@ def make_handler(root: Path, gateway_url: str):
                         "elapsed_seconds": round(time.monotonic() - started, 3),
                     })
                     return
+
+                if path == "/api/project/save":
+                    project = save_project(root, body)
+                    self._json(200, {
+                        "project_id": project["project_id"],
+                        "project": project,
+                        "summary": _project_summary(project),
+                    })
+                    return
+
                 if path == "/api/tts/preview":
                     text = body.get("text")
                     voice = body.get("voice", "default")
@@ -349,6 +524,7 @@ def make_handler(root: Path, gateway_url: str):
                     result = _tts_preview(text.strip(), voice.strip(), gateway_url)
                     self._json(200, result)
                     return
+
                 self._json(404, {"error": "not_found"})
             except subprocess.TimeoutExpired:
                 self._json(504, {"error": "provider_timeout"})
@@ -378,11 +554,13 @@ def main() -> int:
         print(f"Missing {html_path}", file=sys.stderr)
         return 1
 
+    _projects_root(root)
     server = StudioServer((args.host, args.port), make_handler(root, args.tts_gateway_url))
     print(f"Text Studio: http://{args.host}:{args.port}", flush=True)
     print(f"Codex provider: {'ready' if provider_available('codex') else 'unavailable'}", flush=True)
     print(f"ChatGPT provider: {'ready' if provider_available('chatgpt') else 'not configured'}", flush=True)
     print(f"TTS gateway: {args.tts_gateway_url}", flush=True)
+    print(f"Projects: {_projects_root(root)}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

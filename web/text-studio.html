@@ -10,365 +10,92 @@
   --blue:#2563eb;--blue2:#1d4ed8;--shadow:0 12px 34px rgba(15,23,42,.08);--radius:18px;
 }
 *{box-sizing:border-box}
-body{
-  margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
-  background:linear-gradient(180deg,#f8fafc,#f3f6fb);color:var(--text)
-}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:linear-gradient(180deg,#f8fafc,#f3f6fb);color:var(--text)}
 .wrap{max-width:1500px;margin:0 auto;padding:28px 24px 80px}
 .top{display:flex;gap:20px;align-items:flex-start;justify-content:space-between;margin-bottom:22px}
-.title h1{margin:0;font-size:28px;letter-spacing:-.02em}
-.title p{margin:8px 0 0;color:var(--muted);font-size:14px}
-.status{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
-.badge{padding:7px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:12px;border:1px solid #e0e7ff}
-.badge.ok{background:#ecfdf5;color:#047857;border-color:#d1fae5}
-.badge.bad{background:#fef2f2;color:#b91c1c;border-color:#fee2e2}
-.grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:20px}
-.card{background:rgba(255,255,255,.94);border:1px solid rgba(229,231,235,.95);border-radius:var(--radius);box-shadow:var(--shadow)}
-.side{padding:18px;position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto}
-.section-title{font-size:14px;font-weight:700;margin:0 0 12px}
-.drop{border:1.5px dashed #cbd5e1;border-radius:14px;padding:18px;text-align:center;background:#f8fafc;cursor:pointer}
-.drop:hover{border-color:#94a3b8}
-.drop strong{display:block;font-size:14px;margin-bottom:5px}
-.drop span{font-size:12px;color:var(--muted)}
-input[type=file]{display:none}
-textarea,input,select{width:100%;border:1px solid var(--line);border-radius:12px;background:#fff;padding:10px 12px;font:inherit;color:var(--text);outline:none}
-textarea:focus,input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px #dbeafe}
-textarea.source{height:180px;resize:vertical;margin-top:12px;font-size:13px;line-height:1.65}
-.source-details{margin-top:12px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}
-.source-details summary{cursor:pointer;padding:10px 12px;font-size:12px;font-weight:650;color:#475569;list-style:none}
-.source-details summary::-webkit-details-marker{display:none}
-.source-details summary::after{content:"展开";float:right;color:#94a3b8;font-weight:500}
-.source-details[open] summary::after{content:"收起"}
-.source-details textarea{border:0;border-top:1px solid var(--line);border-radius:0 0 12px 12px;box-shadow:none}
-.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.field{margin-top:14px}
-.field label{display:block;font-size:12px;color:#475569;font-weight:600;margin-bottom:7px}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-.btn{border:0;border-radius:12px;padding:10px 14px;font-weight:650;cursor:pointer;background:#eef2f7;color:#111827}
-.btn:hover{filter:brightness(.98)}
-.btn.primary{background:var(--blue);color:#fff}
-.btn.primary:hover{background:var(--blue2)}
-.btn.ghost{background:#fff;border:1px solid var(--line)}
-.btn:disabled{opacity:.45;cursor:not-allowed}
-.hint{margin-top:10px;font-size:12px;color:var(--muted);line-height:1.55}
-.msg{margin-top:12px;padding:10px 12px;border-radius:12px;background:#f8fafc;font-size:12px;color:#475569;display:none;white-space:pre-wrap}
-.msg.err{display:block;background:#fef2f2;color:#b91c1c}
-.msg.ok{display:block;background:#ecfdf5;color:#047857}
-.msg.info{display:block;background:#eff6ff;color:#1d4ed8}
-.main{padding:18px}
-.empty{padding:80px 20px;text-align:center;color:var(--muted)}
-.summary{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
-.summary .metric{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:8px 10px;font-size:12px}
-.summary-tools{margin-left:auto;display:flex;gap:8px}
-.results{display:flex;flex-direction:column;gap:12px}
-.para{
-  border:1px solid var(--line);border-radius:16px;padding:14px;background:#fff;
-  content-visibility:auto;contain-intrinsic-size:280px
-}
-.para-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
-.para-id{font-size:12px;font-weight:750;color:#334155}
-.para-meta{font-size:11px;color:#94a3b8;margin-left:6px}
-.para-head-actions{display:flex;gap:7px;align-items:center}
-.compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:stretch}
-.compare-col{border:1px solid #edf0f4;border-radius:13px;background:#fafbfc;min-width:0;overflow:hidden}
-.compare-title{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-bottom:1px solid #edf0f4;font-size:11px;font-weight:700;color:#64748b;background:#fff}
-.compare-body{padding:11px 12px;font-size:13px;line-height:1.75;color:#334155;white-space:pre-wrap;word-break:break-word}
-.para:not(.expanded) .compare-body{
-  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden;min-height:112px
-}
-.para.expanded .compare-body{min-height:112px}
-.generated-empty{color:#94a3b8}
-.generated-preview{color:#1f2937}
-.editor-panel{display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
-.para.expanded .editor-panel{display:block}
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}
-.tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 9px;font-size:12px;cursor:pointer}
-.tab.active{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}
-.candidate{min-height:126px;resize:vertical;line-height:1.68;font-size:13px}
-.para-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:9px}
-.small{padding:7px 10px;border-radius:10px;font-size:12px}
-.footer-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
-.spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.5);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}
-@media(max-width:1050px){
-  .grid{grid-template-columns:280px minmax(0,1fr)}
-  .compare{grid-template-columns:1fr}
-}
-@media(max-width:760px){
-  .grid{grid-template-columns:1fr}.side{position:static;max-height:none}.top{flex-direction:column}.status{justify-content:flex-start}
-  .wrap{padding:18px 14px 60px}.summary-tools{width:100%;margin-left:0}.compare{grid-template-columns:1fr}
-}
+.title h1{margin:0;font-size:28px;letter-spacing:-.02em}.title p{margin:8px 0 0;color:var(--muted);font-size:14px}
+.status{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.badge{padding:7px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:12px;border:1px solid #e0e7ff}.badge.ok{background:#ecfdf5;color:#047857;border-color:#d1fae5}.badge.bad{background:#fef2f2;color:#b91c1c;border-color:#fee2e2}
+.grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:20px}.card{background:rgba(255,255,255,.94);border:1px solid rgba(229,231,235,.95);border-radius:var(--radius);box-shadow:var(--shadow)}
+.side{padding:18px;position:sticky;top:18px;align-self:start;max-height:calc(100vh - 36px);overflow:auto}.section-title{font-size:14px;font-weight:700;margin:0 0 12px}.section-title.spaced{margin-top:20px}
+.drop{border:1.5px dashed #cbd5e1;border-radius:14px;padding:18px;text-align:center;background:#f8fafc;cursor:pointer}.drop:hover{border-color:#94a3b8}.drop strong{display:block;font-size:14px;margin-bottom:5px}.drop span{font-size:12px;color:var(--muted)}input[type=file]{display:none}
+textarea,input,select{width:100%;border:1px solid var(--line);border-radius:12px;background:#fff;padding:10px 12px;font:inherit;color:var(--text);outline:none}textarea:focus,input:focus,select:focus{border-color:#93c5fd;box-shadow:0 0 0 3px #dbeafe}
+textarea.source{height:180px;resize:vertical;margin-top:12px;font-size:13px;line-height:1.65}.source-details{margin-top:12px;border:1px solid var(--line);border-radius:12px;background:#f8fafc}.source-details summary{cursor:pointer;padding:10px 12px;font-size:12px;font-weight:650;color:#475569;list-style:none}.source-details summary::-webkit-details-marker{display:none}.source-details summary::after{content:"展开";float:right;color:#94a3b8;font-weight:500}.source-details[open] summary::after{content:"收起"}.source-details textarea{border:0;border-top:1px solid var(--line);border-radius:0 0 12px 12px;box-shadow:none}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field{margin-top:14px}.field label{display:block;font-size:12px;color:#475569;font-weight:600;margin-bottom:7px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.btn{border:0;border-radius:12px;padding:10px 14px;font-weight:650;cursor:pointer;background:#eef2f7;color:#111827}.btn:hover{filter:brightness(.98)}.btn.primary{background:var(--blue);color:#fff}.btn.primary:hover{background:var(--blue2)}.btn.ghost{background:#fff;border:1px solid var(--line)}.btn:disabled{opacity:.45;cursor:not-allowed}
+.hint{margin-top:10px;font-size:12px;color:var(--muted);line-height:1.55}.save-status{margin-top:8px;font-size:11px;color:#64748b;min-height:16px}.save-status.saving{color:#1d4ed8}.save-status.error{color:#b91c1c}.save-status.saved{color:#047857}
+.msg{margin-top:12px;padding:10px 12px;border-radius:12px;background:#f8fafc;font-size:12px;color:#475569;display:none;white-space:pre-wrap}.msg.err{display:block;background:#fef2f2;color:#b91c1c}.msg.ok{display:block;background:#ecfdf5;color:#047857}.msg.info{display:block;background:#eff6ff;color:#1d4ed8}
+.main{padding:18px}.empty{padding:80px 20px;text-align:center;color:var(--muted)}.summary{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.summary .metric{background:#f8fafc;border:1px solid var(--line);border-radius:12px;padding:8px 10px;font-size:12px}.summary-tools{margin-left:auto;display:flex;gap:8px}
+.results{display:flex;flex-direction:column;gap:12px}.para{border:1px solid var(--line);border-radius:16px;padding:14px;background:#fff;content-visibility:auto;contain-intrinsic-size:280px}.para-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}.para-id{font-size:12px;font-weight:750;color:#334155}.para-meta{font-size:11px;color:#94a3b8;margin-left:6px}.para-head-actions{display:flex;gap:7px;align-items:center}
+.compare{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:stretch}.compare-col{border:1px solid #edf0f4;border-radius:13px;background:#fafbfc;min-width:0;overflow:hidden}.compare-title{display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-bottom:1px solid #edf0f4;font-size:11px;font-weight:700;color:#64748b;background:#fff}.compare-body{padding:11px 12px;font-size:13px;line-height:1.75;color:#334155;white-space:pre-wrap;word-break:break-word}.para:not(.expanded) .compare-body{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;overflow:hidden;min-height:112px}.para.expanded .compare-body{min-height:112px}.generated-empty{color:#94a3b8}.generated-preview{color:#1f2937}
+.editor-panel{display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px}.para.expanded .editor-panel{display:block}.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}.tab{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 9px;font-size:12px;cursor:pointer}.tab.active{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8}.candidate{min-height:126px;resize:vertical;line-height:1.68;font-size:13px}.para-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:9px}.small{padding:7px 10px;border-radius:10px;font-size:12px}.footer-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.spinner{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.5);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:1050px){.grid{grid-template-columns:280px minmax(0,1fr)}.compare{grid-template-columns:1fr}}@media(max-width:760px){.grid{grid-template-columns:1fr}.side{position:static;max-height:none}.top{flex-direction:column}.status{justify-content:flex-start}.wrap{padding:18px 14px 60px}.summary-tools{width:100%;margin-left:0}.compare{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="top">
-    <div class="title"><h1>语音智播 · 文本泛化工作台</h1><p>上传原稿，按自然段泛化；原文与结果逐段并排校对。</p></div>
-    <div class="status" id="status"><span class="badge">正在检查服务…</span></div>
-  </div>
-
+  <div class="top"><div class="title"><h1>语音智播 · 文本泛化工作台</h1><p>上传原稿，按自然段泛化；结果自动保存到本机项目。</p></div><div class="status" id="status"><span class="badge">正在检查服务…</span></div></div>
   <div class="grid">
     <aside class="card side">
-      <h2 class="section-title">1. 原稿</h2>
+      <h2 class="section-title">1. 项目</h2>
+      <div class="field" style="margin-top:0"><label>本地项目</label><select id="projectSelect"><option value="">新建项目</option></select></div>
+      <div class="field"><label>项目名称</label><input id="projectName" placeholder="例如：9月4日桃子直播稿" /></div>
+      <div class="actions"><button class="btn ghost" id="newProjectBtn">新建</button><button class="btn ghost" id="saveBtn">立即保存</button></div>
+      <div id="saveStatus" class="save-status">尚未保存</div>
+
+      <h2 class="section-title spaced">2. 原稿</h2>
       <label class="drop" for="fileInput"><strong>上传 TXT 文本</strong><span id="fileHint">或直接粘贴原稿</span></label>
       <input id="fileInput" type="file" accept=".txt,text/plain" />
+      <details class="source-details"><summary>查看 / 编辑完整原稿</summary><textarea id="sourceText" class="source" placeholder="粘贴直播原稿。空行会被识别为自然段边界。"></textarea></details>
+      <div class="actions"><button class="btn ghost" id="parseBtn">解析自然段</button></div>
 
-      <details class="source-details">
-        <summary>查看 / 编辑完整原稿</summary>
-        <textarea id="sourceText" class="source" placeholder="粘贴直播原稿。空行会被识别为自然段边界。"></textarea>
-      </details>
-
-      <div class="actions"><button class="btn ghost" id="parseBtn">解析自然段</button><button class="btn" id="clearBtn">清空</button></div>
-
-      <div class="field"><label>2. 泛化引擎</label>
-        <select id="provider">
-          <option value="codex">本地 Codex</option>
-          <option value="chatgpt">ChatGPT（需配置本地命令）</option>
-        </select>
-      </div>
-      <div class="row">
-        <div class="field"><label>每段候选数</label><select id="candidateCount"><option>3</option><option>4</option><option>5</option></select></div>
-        <div class="field"><label>默认声音</label><input id="voice" value="default" /></div>
-      </div>
+      <h2 class="section-title spaced">3. 泛化设置</h2>
+      <div class="field" style="margin-top:0"><label>泛化引擎</label><select id="provider"><option value="codex">本地 Codex</option><option value="chatgpt">ChatGPT（需配置本地命令）</option></select></div>
+      <div class="row"><div class="field"><label>每段候选数</label><select id="candidateCount"><option>3</option><option>4</option><option>5</option></select></div><div class="field"><label>默认声音</label><input id="voice" value="default" /></div></div>
       <div class="field"><label>额外要求（可选）</label><textarea id="instruction" rows="4" placeholder="例如：保持节奏快；不要新增营销承诺。"></textarea></div>
       <div class="actions"><button class="btn primary" id="generalizeBtn" disabled>泛化全部段落</button></div>
-      <div class="hint">原文和泛化结果会按段一一对应。全稿按每 8 个自然段一批逐批泛化；每完成一批立即显示结果，失败时已完成内容会保留。</div>
+      <div class="hint">每 8 个自然段一批。每批完成后立即显示并自动保存；刷新、关闭浏览器或中途失败后，都可从已完成进度继续。</div>
       <div id="message" class="msg"></div>
     </aside>
 
     <main class="card main">
       <div class="summary" id="summary"><span class="metric">尚未解析文本</span></div>
       <div id="results" class="results"><div class="empty">上传或粘贴文本后，先点击“解析自然段”。</div></div>
-      <div class="footer-actions" id="footerActions" style="display:none">
-        <button class="btn ghost" id="exportTxt">导出选中版本 TXT</button>
-        <button class="btn ghost" id="exportJson">导出智播稿 JSON</button>
-      </div>
+      <div class="footer-actions" id="footerActions" style="display:none"><button class="btn ghost" id="exportTxt">导出选中版本 TXT</button><button class="btn ghost" id="exportJson">导出智播稿 JSON</button></div>
     </main>
   </div>
 </div>
-
 <script>
-const state={paragraphs:[],providerStatus:{},ttsReady:false,sourceName:'manual.txt',generalizing:false};
+const state={paragraphs:[],providerStatus:{},ttsReady:false,sourceName:'manual.txt',generalizing:false,projectId:null,projectName:'',projects:[],saveTimer:null,saveChain:Promise.resolve(),lastSavedAt:''};
 const $=id=>document.getElementById(id);
-
-function showMessage(text,type='info'){
-  const el=$('message');el.className='msg '+type;el.textContent=text
-}
+function showMessage(text,type='info'){const el=$('message');el.className='msg '+type;el.textContent=text}
 function clearMessage(){$('message').className='msg';$('message').textContent=''}
-async function api(path,body){
-  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const data=await r.json().catch(()=>({error:'invalid_response'}));
-  if(!r.ok)throw new Error(data.error||('HTTP '+r.status));
-  return data
-}
-async function health(){
-  try{
-    const r=await fetch('/api/health',{cache:'no-store'});const h=await r.json();
-    state.providerStatus=h.providers||{};state.ttsReady=!!h.tts?.ready;
-    const b=[];
-    b.push(`<span class="badge ${h.providers?.codex?'ok':'bad'}">Codex ${h.providers?.codex?'可用':'不可用'}</span>`);
-    b.push(`<span class="badge ${h.providers?.chatgpt?'ok':''}">ChatGPT ${h.providers?.chatgpt?'可用':'未配置'}</span>`);
-    b.push(`<span class="badge ${state.ttsReady?'ok':'bad'}">TTS ${state.ttsReady?'就绪':'未就绪'}</span>`);
-    $('status').innerHTML=b.join('')
-  }catch(e){$('status').innerHTML='<span class="badge bad">服务异常</span>'}
-}
-function escapeHtml(s){
-  return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#039;'}[m]))
-}
-function selectedText(p){
-  return (p.editedText||p.candidates?.[p.selectedIndex||0]||p.original_text).trim()
-}
-function render(){
-  const list=state.paragraphs;
-  $('generalizeBtn').disabled=!list.length||state.generalizing;
-  $('footerActions').style.display=list.length?'flex':'none';
-
-  if(!list.length){
-    $('summary').innerHTML='<span class="metric">尚未解析文本</span>';
-    $('results').innerHTML='<div class="empty">上传或粘贴文本后，先点击“解析自然段”。</div>';
-    return
-  }
-
-  const generated=list.filter(p=>p.candidates?.length).length;
-  const chars=list.reduce((n,p)=>n+p.original_text.length,0);
-  $('summary').innerHTML=`
-    <span class="metric">自然段 ${list.length}</span>
-    <span class="metric">原稿 ${chars} 字</span>
-    <span class="metric">已泛化 ${generated}/${list.length}</span>
-    <div class="summary-tools">
-      <button class="btn ghost small" onclick="setAllExpanded(true)">展开全部</button>
-      <button class="btn ghost small" onclick="setAllExpanded(false)">收起全部</button>
-    </div>`;
-
-  $('results').innerHTML=list.map((p,i)=>{
-    const candidates=p.candidates||[];
-    const selected=p.selectedIndex||0;
-    const editor=p.editedText??candidates[selected]??'';
-    const generatedPreview=candidates.length?selectedText(p):'等待泛化。';
-    return `
-      <section class="para ${p.expanded?'expanded':''}" data-index="${i}">
-        <div class="para-head">
-          <div><span class="para-id">${p.id}</span><span class="para-meta">${p.sentences?.length||0} 句 · ${p.original_text.length} 字</span></div>
-          <div class="para-head-actions">
-            <button class="btn ghost small" onclick="toggleParagraph(${i})">${p.expanded?'收起':'展开'}</button>
-            <button class="btn ghost small" onclick="regenerate(${i})">重生成本段</button>
-          </div>
-        </div>
-
-        <div class="compare">
-          <div class="compare-col">
-            <div class="compare-title"><span>原始段落</span><span>${p.original_text.length} 字</span></div>
-            <div class="compare-body">${escapeHtml(p.original_text)}</div>
-          </div>
-          <div class="compare-col">
-            <div class="compare-title"><span>泛化结果</span><span>${candidates.length?`候选 ${selected+1}/${candidates.length}`:'未生成'}</span></div>
-            <div class="compare-body ${candidates.length?'generated-preview':'generated-empty'}">${escapeHtml(generatedPreview)}</div>
-          </div>
-        </div>
-
-        <div class="editor-panel">
-          ${candidates.length?`
-            <div class="tabs">${candidates.map((c,ci)=>`<button class="tab ${ci===selected?'active':''}" onclick="selectCandidate(${i},${ci})">候选 ${ci+1}</button>`).join('')}</div>
-            <textarea class="candidate" oninput="editCandidate(${i},this.value)">${escapeHtml(editor)}</textarea>
-            <div class="para-actions"><button class="btn ghost small" onclick="preview(${i})">本机试听</button></div>
-          `:'<div class="hint">本段还没有泛化结果。点击右上角“重生成本段”即可单独处理。</div>'}
-        </div>
-      </section>`
-  }).join('')
-}
-
-async function parseText(){
-  clearMessage();const text=$('sourceText').value;
-  if(!text.trim()){showMessage('请先上传或粘贴文本。','err');return}
-  try{
-    const data=await api('/api/parse',{text});
-    state.paragraphs=data.paragraphs.map(p=>({...p,candidates:[],selectedIndex:0,editedText:'',expanded:false}));
-    render();showMessage(`已解析 ${data.paragraph_count} 个自然段。`,'ok')
-  }catch(e){showMessage(e.message,'err')}
-}
-async function generalizeSubset(indexes){
-  const provider=$('provider').value;
-  if(!state.providerStatus[provider])throw new Error(provider==='chatgpt'?'ChatGPT 本地命令尚未配置。':'Codex 命令不可用。');
-  const paragraphs=indexes.map(i=>({id:state.paragraphs[i].id,original_text:state.paragraphs[i].original_text}));
-  const data=await api('/api/generalize',{
-    provider,
-    candidate_count:Number($('candidateCount').value),
-    instruction:$('instruction').value,
-    paragraphs
-  });
-  const byId=Object.fromEntries(data.paragraphs.map(p=>[p.id,p]));
-  indexes.forEach(i=>{
-    const p=state.paragraphs[i];
-    p.candidates=byId[p.id]?.candidates||[];
-    p.selectedIndex=0;
-    p.editedText=p.candidates[0]||'';
-  });
-  return data
-}
-async function generalizeAll(){
-  clearMessage();
-  const btn=$('generalizeBtn');
-  const batchSize=8;
-  const pending=state.paragraphs.map((p,i)=>p.candidates?.length?null:i).filter(i=>i!==null);
-  if(!pending.length){showMessage('全部自然段都已经完成泛化。需要改某一段时可使用“重生成本段”。','ok');return}
-
-  state.generalizing=true;
-  btn.disabled=true;
-  const total=state.paragraphs.length;
-  const batchCount=Math.ceil(pending.length/batchSize);
-  const started=performance.now();
-
-  try{
-    for(let offset=0,batchNo=1;offset<pending.length;offset+=batchSize,batchNo++){
-      const batch=pending.slice(offset,offset+batchSize);
-      const completedBefore=state.paragraphs.filter(p=>p.candidates?.length).length;
-      btn.innerHTML=`<span class="spinner"></span>泛化中 ${completedBefore}/${total}`;
-      showMessage(`正在泛化第 ${batchNo}/${batchCount} 批：${state.paragraphs[batch[0]].id} - ${state.paragraphs[batch[batch.length-1]].id}\n已完成 ${completedBefore}/${total} 段。`,'info');
-
-      try{
-        await generalizeSubset(batch);
-      }catch(e){
-        const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
-        render();
-        throw new Error(`第 ${batchNo}/${batchCount} 批泛化失败：${e.message}\n已完成的 ${completed}/${total} 段结果已保留，可再次点击继续剩余段落。`);
-      }
-
-      render();
-      const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
-      btn.disabled=true;
-      btn.innerHTML=`<span class="spinner"></span>泛化中 ${completed}/${total}`;
-      showMessage(`第 ${batchNo}/${batchCount} 批完成，已生成 ${completed}/${total} 段。正在继续下一批…`,'info');
-      await new Promise(resolve=>setTimeout(resolve,0));
-    }
-
-    const seconds=((performance.now()-started)/1000).toFixed(1);
-    showMessage(`泛化完成，共 ${total} 段，用时 ${seconds}s。`,'ok');
-  }catch(e){
-    showMessage(e.message,'err');
-  }finally{
-    state.generalizing=false;
-    render();
-    const completed=state.paragraphs.filter(p=>p.candidates?.length).length;
-    btn.textContent=completed===total?'全部泛化完成':`继续泛化剩余 ${total-completed} 段`;
-    btn.disabled=completed===total;
-  }
-}
-
-window.toggleParagraph=i=>{state.paragraphs[i].expanded=!state.paragraphs[i].expanded;render()};
-window.setAllExpanded=value=>{state.paragraphs.forEach(p=>p.expanded=value);render()};
-window.regenerate=async i=>{
-  clearMessage();
-  try{
-    await generalizeSubset([i]);
-    state.paragraphs[i].expanded=true;
-    render();
-    showMessage(`${state.paragraphs[i].id} 已重新生成。`,'ok')
-  }catch(e){showMessage(e.message,'err')}
-};
-window.selectCandidate=(i,ci)=>{
-  const p=state.paragraphs[i];p.selectedIndex=ci;p.editedText=p.candidates[ci]||'';p.expanded=true;render()
-};
-window.editCandidate=(i,value)=>{state.paragraphs[i].editedText=value};
-window.preview=async i=>{
-  const p=state.paragraphs[i];
-  const text=(p.editedText||p.candidates?.[p.selectedIndex||0]||'').trim();
-  if(!text){showMessage('本段还没有可试听文本。','err');return}
-  try{
-    showMessage('已提交本机 TTS，正在合成并播放…','info');
-    await api('/api/tts/preview',{text,voice:$('voice').value||'default'});
-    showMessage('本段试听完成。','ok')
-  }catch(e){showMessage('TTS 试听失败：'+e.message,'err')}
-};
-
-function download(name,content,type){
-  const blob=new Blob([content],{type});const a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)
-}
-$('exportTxt').onclick=()=>download('智播稿-选中版本.txt',state.paragraphs.map(selectedText).join('\n\n'),'text/plain;charset=utf-8');
-$('exportJson').onclick=()=>{
-  const out={
-    schema_version:1,source_name:state.sourceName,provider:$('provider').value,
-    candidate_count:Number($('candidateCount').value),instruction:$('instruction').value,
-    paragraphs:state.paragraphs.map(p=>({
-      id:p.id,original_text:p.original_text,candidates:p.candidates||[],
-      selected_index:p.selectedIndex||0,selected_text:selectedText(p)
-    }))
-  };
-  download('智播稿.json',JSON.stringify(out,null,2),'application/json;charset=utf-8')
-};
-$('fileInput').addEventListener('change',async e=>{
-  const f=e.target.files?.[0];if(!f)return;
-  state.sourceName=f.name;$('sourceText').value=await f.text();
-  $('fileHint').textContent=f.name;
-  showMessage(`已载入 ${f.name}，点击“解析自然段”。`,'info')
-});
-$('parseBtn').onclick=parseText;
-$('generalizeBtn').onclick=generalizeAll;
-$('clearBtn').onclick=()=>{
-  $('sourceText').value='';$('fileHint').textContent='或直接粘贴原稿';
-  state.paragraphs=[];render();clearMessage()
-};
-health();render();
+function setSaveStatus(text,type=''){const el=$('saveStatus');el.className='save-status '+type;el.textContent=text}
+async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json().catch(()=>({error:'invalid_response'}));if(!r.ok)throw new Error(data.error||('HTTP '+r.status));return data}
+async function apiGet(path){const r=await fetch(path,{cache:'no-store'});const data=await r.json().catch(()=>({error:'invalid_response'}));if(!r.ok)throw new Error(data.error||('HTTP '+r.status));return data}
+async function health(){try{const h=await apiGet('/api/health');state.providerStatus=h.providers||{};state.ttsReady=!!h.tts?.ready;const b=[];b.push(`<span class="badge ${h.providers?.codex?'ok':'bad'}">Codex ${h.providers?.codex?'可用':'不可用'}</span>`);b.push(`<span class="badge ${h.providers?.chatgpt?'ok':''}">ChatGPT ${h.providers?.chatgpt?'可用':'未配置'}</span>`);b.push(`<span class="badge ${state.ttsReady?'ok':'bad'}">TTS ${state.ttsReady?'就绪':'未就绪'}</span>`);$('status').innerHTML=b.join('')}catch(e){$('status').innerHTML='<span class="badge bad">服务异常</span>'}}
+function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+function selectedText(p){return(p.editedText||p.candidates?.[p.selectedIndex||0]||p.original_text).trim()}
+function generatedCount(){return state.paragraphs.filter(p=>p.candidates?.length).length}
+function defaultProjectName(){const base=(state.sourceName||'').replace(/\.[^.]+$/,'').trim();return base&&base!=='manual'?base:'未命名直播稿'}
+function localTime(iso){if(!iso)return'';const d=new Date(iso);if(Number.isNaN(d.getTime()))return iso;return d.toLocaleString('zh-CN',{hour12:false})}
+function projectPayload(){return{project_id:state.projectId,name:($('projectName').value||state.projectName||defaultProjectName()).trim(),source_name:state.sourceName,source_text:$('sourceText').value,provider:$('provider').value,candidate_count:Number($('candidateCount').value),voice:$('voice').value||'default',instruction:$('instruction').value,paragraphs:state.paragraphs.map(p=>({id:p.id,index:p.index,original_text:p.original_text,sentences:p.sentences||[],candidates:p.candidates||[],selectedIndex:p.selectedIndex||0,editedText:p.editedText||''}))}}
+function mergeProjectSummary(summary){if(!summary)return;const idx=state.projects.findIndex(p=>p.project_id===summary.project_id);if(idx>=0)state.projects[idx]=summary;else state.projects.unshift(summary);state.projects.sort((a,b)=>(b.updated_at||'').localeCompare(a.updated_at||''));renderProjectSelect()}
+function renderProjectSelect(){const el=$('projectSelect');const selected=state.projectId||'';el.innerHTML='<option value="">新建项目</option>'+state.projects.map(p=>{const progress=`${p.generated_count||0}/${p.paragraph_count||0}`;return `<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.name||'未命名项目')} · ${progress}</option>`}).join('');el.value=selected}
+async function refreshProjects(){const data=await apiGet('/api/projects');state.projects=data.projects||[];renderProjectSelect()}
+async function doSave(quiet=true){if(!state.paragraphs.length&&!$('sourceText').value.trim()){if(!quiet)showMessage('当前没有可保存的原稿。','err');return null}setSaveStatus('正在自动保存…','saving');const data=await api('/api/project/save',projectPayload());state.projectId=data.project_id;state.projectName=data.project?.name||$('projectName').value||defaultProjectName();state.lastSavedAt=data.project?.updated_at||'';$('projectName').value=state.projectName;localStorage.setItem('ttsTextStudioProjectId',state.projectId);mergeProjectSummary(data.summary);setSaveStatus(`已保存 ${localTime(state.lastSavedAt)}`,'saved');if(!quiet)showMessage('项目已保存到本机。','ok');return data}
+function queueSave(quiet=true){state.saveChain=state.saveChain.catch(()=>{}).then(()=>doSave(quiet)).catch(e=>{setSaveStatus('保存失败：'+e.message,'error');if(!quiet)showMessage('保存失败：'+e.message,'err');throw e});return state.saveChain}
+function scheduleSave(delay=800){clearTimeout(state.saveTimer);state.saveTimer=setTimeout(()=>{queueSave(true).catch(()=>{})},delay)}
+function render(){const list=state.paragraphs;const generated=list.filter(p=>p.candidates?.length).length;$('generalizeBtn').disabled=!list.length||state.generalizing||generated===list.length;$('generalizeBtn').textContent=generated===list.length&&list.length?'全部泛化完成':generated?`继续泛化剩余 ${list.length-generated} 段`:'泛化全部段落';$('footerActions').style.display=list.length?'flex':'none';if(!list.length){$('summary').innerHTML='<span class="metric">尚未解析文本</span>';$('results').innerHTML='<div class="empty">上传或粘贴文本后，先点击“解析自然段”。</div>';return}const chars=list.reduce((n,p)=>n+p.original_text.length,0);$('summary').innerHTML=`<span class="metric">项目 ${escapeHtml(state.projectName||$('projectName').value||defaultProjectName())}</span><span class="metric">自然段 ${list.length}</span><span class="metric">原稿 ${chars} 字</span><span class="metric">已泛化 ${generated}/${list.length}</span><div class="summary-tools"><button class="btn ghost small" onclick="setAllExpanded(true)">展开全部</button><button class="btn ghost small" onclick="setAllExpanded(false)">收起全部</button></div>`;$('results').innerHTML=list.map((p,i)=>{const candidates=p.candidates||[];const selected=p.selectedIndex||0;const editor=p.editedText??candidates[selected]??'';const generatedPreview=candidates.length?selectedText(p):'等待泛化。';return `<section class="para ${p.expanded?'expanded':''}" data-index="${i}"><div class="para-head"><div><span class="para-id">${p.id}</span><span class="para-meta">${p.sentences?.length||0} 句 · ${p.original_text.length} 字</span></div><div class="para-head-actions"><button class="btn ghost small" onclick="toggleParagraph(${i})">${p.expanded?'收起':'展开'}</button><button class="btn ghost small" onclick="regenerate(${i})">重生成本段</button></div></div><div class="compare"><div class="compare-col"><div class="compare-title"><span>原始段落</span><span>${p.original_text.length} 字</span></div><div class="compare-body">${escapeHtml(p.original_text)}</div></div><div class="compare-col"><div class="compare-title"><span>泛化结果</span><span>${candidates.length?`候选 ${selected+1}/${candidates.length}`:'未生成'}</span></div><div class="compare-body ${candidates.length?'generated-preview':'generated-empty'}">${escapeHtml(generatedPreview)}</div></div></div><div class="editor-panel">${candidates.length?`<div class="tabs">${candidates.map((c,ci)=>`<button class="tab ${ci===selected?'active':''}" onclick="selectCandidate(${i},${ci})">候选 ${ci+1}</button>`).join('')}</div><textarea class="candidate" oninput="editCandidate(${i},this.value)">${escapeHtml(editor)}</textarea><div class="para-actions"><button class="btn ghost small" onclick="preview(${i})">本机试听</button></div>`:'<div class="hint">本段还没有泛化结果。点击右上角“重生成本段”即可单独处理。</div>'}</div></section>`}).join('')}
+async function parseText(){clearMessage();const text=$('sourceText').value;if(!text.trim()){showMessage('请先上传或粘贴文本。','err');return}try{const data=await api('/api/parse',{text});state.paragraphs=data.paragraphs.map(p=>({...p,candidates:[],selectedIndex:0,editedText:'',expanded:false}));if(!$('projectName').value.trim())$('projectName').value=defaultProjectName();state.projectName=$('projectName').value.trim();render();await queueSave(true);showMessage(`已解析 ${data.paragraph_count} 个自然段，并已自动保存项目。`,'ok')}catch(e){showMessage(e.message,'err')}}
+async function generalizeSubset(indexes){const provider=$('provider').value;if(!state.providerStatus[provider])throw new Error(provider==='chatgpt'?'ChatGPT 本地命令尚未配置。':'Codex 命令不可用。');const paragraphs=indexes.map(i=>({id:state.paragraphs[i].id,original_text:state.paragraphs[i].original_text}));const data=await api('/api/generalize',{provider,candidate_count:Number($('candidateCount').value),instruction:$('instruction').value,paragraphs});const byId=Object.fromEntries(data.paragraphs.map(p=>[p.id,p]));indexes.forEach(i=>{const p=state.paragraphs[i];p.candidates=byId[p.id]?.candidates||[];p.selectedIndex=0;p.editedText=p.candidates[0]||''});return data}
+async function generalizeAll(){clearMessage();const btn=$('generalizeBtn');const batchSize=8;const pending=state.paragraphs.map((p,i)=>p.candidates?.length?null:i).filter(i=>i!==null);if(!pending.length){showMessage('全部自然段都已经完成泛化。需要改某一段时可使用“重生成本段”。','ok');return}state.generalizing=true;render();const total=state.paragraphs.length;const batchCount=Math.ceil(pending.length/batchSize);const started=performance.now();try{for(let offset=0,batchNo=1;offset<pending.length;offset+=batchSize,batchNo++){const batch=pending.slice(offset,offset+batchSize);const completedBefore=generatedCount();btn.innerHTML=`<span class="spinner"></span>泛化中 ${completedBefore}/${total}`;showMessage(`正在泛化第 ${batchNo}/${batchCount} 批：${state.paragraphs[batch[0]].id} - ${state.paragraphs[batch[batch.length-1]].id}\n已完成 ${completedBefore}/${total} 段。`,'info');try{await generalizeSubset(batch);render();await queueSave(true)}catch(e){const completed=generatedCount();render();throw new Error(`第 ${batchNo}/${batchCount} 批泛化失败：${e.message}\n已完成的 ${completed}/${total} 段结果已经保存，可刷新页面后继续。`)}const completed=generatedCount();btn.disabled=true;btn.innerHTML=`<span class="spinner"></span>泛化中 ${completed}/${total}`;showMessage(`第 ${batchNo}/${batchCount} 批完成并已保存，已生成 ${completed}/${total} 段。正在继续下一批…`,'info');await new Promise(resolve=>setTimeout(resolve,0))}const seconds=((performance.now()-started)/1000).toFixed(1);showMessage(`泛化完成，共 ${total} 段，用时 ${seconds}s，项目已保存。`,'ok')}catch(e){showMessage(e.message,'err')}finally{state.generalizing=false;render()}}
+async function loadProject(projectId){if(!projectId)return;clearMessage();const data=await apiGet('/api/project?project_id='+encodeURIComponent(projectId));const p=data.project||{};state.projectId=p.project_id;state.projectName=p.name||'未命名项目';state.sourceName=p.source_name||'manual.txt';state.lastSavedAt=p.updated_at||'';state.paragraphs=(p.paragraphs||[]).map((item,index)=>({...item,index:item.index||index+1,candidates:Array.isArray(item.candidates)?item.candidates:[],selectedIndex:Number.isInteger(item.selectedIndex)?item.selectedIndex:(item.selected_index||0),editedText:typeof item.editedText==='string'?item.editedText:(item.selected_text||''),expanded:false}));$('projectName').value=state.projectName;$('sourceText').value=p.source_text||state.paragraphs.map(item=>item.original_text||'').join('\n\n');$('fileHint').textContent=state.sourceName||'已保存原稿';$('provider').value=p.provider||'codex';$('candidateCount').value=String(p.candidate_count||3);$('voice').value=p.voice||'default';$('instruction').value=p.instruction||'';localStorage.setItem('ttsTextStudioProjectId',state.projectId);renderProjectSelect();render();setSaveStatus(`已保存 ${localTime(state.lastSavedAt)}`,'saved');showMessage(`已恢复项目：${state.projectName}，已泛化 ${generatedCount()}/${state.paragraphs.length} 段。`,'ok')}
+async function newProject(saveCurrent=true){if(saveCurrent&&(state.paragraphs.length||$('sourceText').value.trim())){try{await queueSave(true)}catch(e){}}clearTimeout(state.saveTimer);state.projectId=null;state.projectName='';state.sourceName='manual.txt';state.paragraphs=[];state.lastSavedAt='';localStorage.removeItem('ttsTextStudioProjectId');$('projectName').value='';$('sourceText').value='';$('fileHint').textContent='或直接粘贴原稿';$('instruction').value='';setSaveStatus('尚未保存','');renderProjectSelect();render();clearMessage()}
+window.toggleParagraph=i=>{state.paragraphs[i].expanded=!state.paragraphs[i].expanded;render()};window.setAllExpanded=value=>{state.paragraphs.forEach(p=>p.expanded=value);render()};window.regenerate=async i=>{clearMessage();try{await generalizeSubset([i]);state.paragraphs[i].expanded=true;render();await queueSave(true);showMessage(`${state.paragraphs[i].id} 已重新生成并保存。`,'ok')}catch(e){showMessage(e.message,'err')}};window.selectCandidate=(i,ci)=>{const p=state.paragraphs[i];p.selectedIndex=ci;p.editedText=p.candidates[ci]||'';p.expanded=true;render();scheduleSave()};window.editCandidate=(i,value)=>{state.paragraphs[i].editedText=value;scheduleSave(700)};window.preview=async i=>{const p=state.paragraphs[i];const text=(p.editedText||p.candidates?.[p.selectedIndex||0]||'').trim();if(!text){showMessage('本段还没有可试听文本。','err');return}try{showMessage('已提交本机 TTS，正在合成并播放…','info');await api('/api/tts/preview',{text,voice:$('voice').value||'default'});showMessage('本段试听完成。','ok')}catch(e){showMessage('TTS 试听失败：'+e.message,'err')}};
+function download(name,content,type){const blob=new Blob([content],{type});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}$('exportTxt').onclick=()=>download('智播稿-选中版本.txt',state.paragraphs.map(selectedText).join('\n\n'),'text/plain;charset=utf-8');$('exportJson').onclick=()=>{const out={schema_version:1,source_name:state.sourceName,provider:$('provider').value,candidate_count:Number($('candidateCount').value),instruction:$('instruction').value,paragraphs:state.paragraphs.map(p=>({id:p.id,original_text:p.original_text,candidates:p.candidates||[],selected_index:p.selectedIndex||0,selected_text:selectedText(p)}))};download('智播稿.json',JSON.stringify(out,null,2),'application/json;charset=utf-8')};
+$('fileInput').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;await newProject(true);state.sourceName=f.name;$('sourceText').value=await f.text();$('projectName').value=f.name.replace(/\.[^.]+$/,'');state.projectName=$('projectName').value;$('fileHint').textContent=f.name;showMessage(`已载入 ${f.name}，点击“解析自然段”后会自动创建并保存项目。`,'info')});$('projectSelect').addEventListener('change',async e=>{const id=e.target.value;if(!id){await newProject(true);return}try{if(state.projectId&&state.projectId!==id)await queueSave(true);await loadProject(id)}catch(err){showMessage('加载项目失败：'+err.message,'err')}});$('newProjectBtn').onclick=()=>newProject(true);$('saveBtn').onclick=()=>queueSave(false).catch(()=>{});$('parseBtn').onclick=parseText;$('generalizeBtn').onclick=generalizeAll;$('projectName').addEventListener('input',()=>{state.projectName=$('projectName').value;scheduleSave()});$('provider').addEventListener('change',()=>scheduleSave());$('candidateCount').addEventListener('change',()=>scheduleSave());$('voice').addEventListener('input',()=>scheduleSave());$('instruction').addEventListener('input',()=>scheduleSave(1000));$('sourceText').addEventListener('input',()=>{if(state.projectId)scheduleSave(1200)});
+async function startup(){await health();try{await refreshProjects();const last=localStorage.getItem('ttsTextStudioProjectId');const target=(last&&state.projects.some(p=>p.project_id===last))?last:(state.projects[0]?.project_id||'');if(target)await loadProject(target);else render()}catch(e){render();showMessage('读取本地项目失败：'+e.message,'err')}}startup();
 </script>
 </body>
 </html>
