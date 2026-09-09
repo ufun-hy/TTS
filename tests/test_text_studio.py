@@ -1,6 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
 import unittest
+from unittest import mock
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "server" / "text_studio.py"
 spec = importlib.util.spec_from_file_location("text_studio", MODULE_PATH)
@@ -40,6 +42,33 @@ class TextStudioTest(unittest.TestCase):
         self.assertNotIn("版本1", prompt)
         self.assertNotIn("候选A", prompt)
         self.assertIn("事实必须保持不变", prompt)
+
+    def test_long_script_is_processed_in_batches(self):
+        paragraphs = [
+            {"id": f"p{index:04d}", "original_text": f"第{index}段直播话术。"}
+            for index in range(1, 122)
+        ]
+
+        def fake_run_provider(provider, prompt, timeout_seconds):
+            payload = json.loads(prompt.split("输入：\n", 1)[1])
+            return {
+                "paragraphs": [
+                    {"id": item["id"], "candidates": [item["text"]]}
+                    for item in payload["paragraphs"]
+                ]
+            }
+
+        with mock.patch.object(text_studio, "_run_provider", side_effect=fake_run_provider) as runner:
+            result = text_studio.generalize_paragraphs(
+                paragraphs,
+                provider="codex",
+                candidate_count=1,
+                instruction="",
+                batch_size=8,
+            )
+
+        self.assertEqual(len(result), 121)
+        self.assertEqual(runner.call_count, 16)
 
 
 if __name__ == "__main__":
