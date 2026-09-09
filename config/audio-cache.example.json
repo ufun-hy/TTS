@@ -1,0 +1,13 @@
+{
+  "preload_segments": 5,
+  "speed": {
+    "enabled": true,
+    "min": 0.92,
+    "max": 1.15
+  },
+  "volume": {
+    "enabled": true,
+    "target_db": -16,
+    "max_gain": 3
+  }
+}

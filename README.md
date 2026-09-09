@@ -174,7 +174,7 @@ Generalize 默认采用 Semantic Coverage V1：Analyze 提取语义骨架和 `se
 python3 scripts/timeline-generalize.py input.json runtime/timeline.json --model qwen3:8b
 ```
 
-这一阶段不会自动播放或推流；Lookahead TTS 缓存属于下一阶段。
+时间轴运行仍不会自动播放或推流；局域网音频缓存传输见下节。
 
 timestamped ASR 会先进行 Sentence Reconstruction：合并连续碎片、保留 `source_segment_ids` 和原文，再使用 [docs/timeline-resegment-v1.md](docs/timeline-resegment-v1.md) 做 Natural Segmentation。长 ASR Segment 和旧 TXT 输入继续兼容原有规则，再进入 Generalize。
 
@@ -188,6 +188,25 @@ Natural Timeline 重切分会额外保留语义边界和真实 pause，详见 [d
 python3 scripts/timeline-run.py runtime/timeline.json --dry-run --lookahead 3
 python3 scripts/timeline-run.py runtime/timeline.json --voice default --lookahead 3
 ```
+
+## 局域网 AI 音频缓存传输 V1
+
+缓存服务和 Python 拉取客户端已独立于播放链路，负责 TTS 音频入队、WAV 处理、顺序拉取和 ACK 消费确认。详细 API、状态目录、断线恢复和测试方式见 [docs/audio-cache-v1.md](docs/audio-cache-v1.md)。
+
+启动现有 TTS Gateway 后，在 AI 机器启动缓存服务：
+
+```bash
+export TTS_API_KEY="..."
+python3 scripts/audio-cache-server.py --host 0.0.0.0 --port 8000
+```
+
+直播端修改 `config/audio-client.example.json` 后运行：
+
+```bash
+python3 scripts/audio-client.py --config config/audio-client.example.json
+```
+
+该阶段不接入播放、虚拟声卡、OBS 或直播平台。
 
 ## 当前限制
 

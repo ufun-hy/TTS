@@ -2,6 +2,7 @@ runtime/bin/
 runtime/models/
 runtime/audio/
 runtime/audio-cache/
+runtime/audio-client/
 runtime/asr/
 runtime/audio-ingest/
 runtime/sessions/
