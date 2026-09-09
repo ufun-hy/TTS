@@ -89,10 +89,10 @@ curl http://127.0.0.1:8765/voices \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-当前配置在 [voices.json](./voices.json)，默认只有已经存在真实 `prompt_speech.gguf` 的 `default` 音色。业务端只传 Voice ID，不传文件路径：
+当前配置在 [voices.json](./voices.json)，已注册 `default` 和经确认的 `speaker_c` 音色。业务端只传 Voice ID，不传文件路径：
 
 ```json
-{"text":"欢迎进入直播间","voice":"default"}
+{"text":"欢迎进入直播间","voice":"speaker_c"}
 ```
 
 添加音色：
@@ -106,7 +106,7 @@ mkdir -p voices/host_female
 
 `reference.txt` 必须是音频中实际说出的准确文字。脚本会生成 `runtime/models/voices/host_female.gguf` 并更新 `voices.json`。Gateway 会在配置文件变化后自动注册/删除音色，不需要重启 CosyVoice 主进程。
 
-如果没有真实第二音色样本，不注册或伪造 `host_female` / `host_male`。
+没有真实且已确认的 Reference 时，不注册或伪造音色。当前 `speaker_c` 的 Reference 和运行时提示音来自 `runtime/voice-datasets/`，这些运行数据不提交 Git；在另一台机器部署时需重新准备对应运行时文件。
 
 ## Tailscale Funnel 公网 HTTPS
 
