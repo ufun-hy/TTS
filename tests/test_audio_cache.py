@@ -1,3 +1,4 @@
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -14,14 +15,13 @@ from audio_cache.server import AudioCacheServer, make_handler
 
 def wav_bytes(duration=0.1, rate=8000):
     frames = b"\x00\x00" * int(duration * rate)
-    with tempfile.NamedTemporaryFile(suffix=".wav") as handle:
-        with wave.open(handle.name, "wb") as audio:
-            audio.setnchannels(1)
-            audio.setsampwidth(2)
-            audio.setframerate(rate)
-            audio.writeframes(frames)
-        handle.seek(0)
-        return handle.read()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(frames)
+    return buffer.getvalue()
 
 
 class AudioCacheTests(unittest.TestCase):
