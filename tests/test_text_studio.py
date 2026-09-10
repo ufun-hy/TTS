@@ -8,11 +8,13 @@ from server import text_studio
 
 
 class TextStudioTest(unittest.TestCase):
-    def test_live_control_has_no_second_text_source(self):
+    def test_live_control_uses_candidate_pools_without_second_text_source(self):
         html = (Path(__file__).resolve().parents[1] / "web" / "text-studio.html").read_text(encoding="utf-8")
         self.assertNotIn('id="liveText"', html)
-        self.assertIn("segments", html)
-        self.assertIn("请先完成泛化并确认直播文本", html)
+        self.assertIn("liveCandidatePools", html)
+        self.assertIn("开始循环智播", html)
+        self.assertIn("candidates", html)
+        self.assertIn("p.candidates[ci]=value", html)
         self.assertIn('id="livePlaybackSpeed"', html)
         self.assertIn('id="liveVolume"', html)
         self.assertIn("playback_speed", html)
