@@ -3,5 +3,7 @@
   "cache_dir": "./cache",
   "poll_interval": 1,
   "api_key": "",
-  "timeout": 5
+  "timeout": 5,
+  "playback_speed": 1.0,
+  "playback_volume": 100
 }

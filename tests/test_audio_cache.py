@@ -82,6 +82,7 @@ class AudioCacheTests(unittest.TestCase):
                 item = client.fetch_next()
                 self.assertEqual(item.id, "segment_001")
                 self.assertTrue(item.path.is_file())
+                self.assertEqual(json.loads((root / "client/segment_001.json").read_text())["playback_status"], "cached")
                 self.assertEqual(client.ack(item.id)["status"], "completed")
                 self.assertEqual(manager.stats()["completed"], 1)
             finally:

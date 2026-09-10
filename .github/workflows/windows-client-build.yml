@@ -10,6 +10,7 @@ on:
       - "build/windows/**"
       - "config/audio-client.example.json"
       - "tests/test_audio_cache.py"
+      - "tests/test_playback.py"
       - ".github/workflows/windows-client-build.yml"
   workflow_dispatch:
 
@@ -35,7 +36,7 @@ jobs:
 
       - name: Run audio client tests
         shell: pwsh
-        run: python -m unittest discover -s tests -p "test_audio_cache.py"
+        run: python -m unittest tests.test_audio_cache tests.test_playback
 
       - name: Build installer
         shell: pwsh

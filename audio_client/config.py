@@ -16,6 +16,8 @@ class ClientConfig:
     poll_interval: float = 1.0
     api_key: str = ""
     timeout: int = 5
+    playback_speed: float = 1.0
+    playback_volume: float = 100.0
 
     @classmethod
     def from_dict(cls, raw: Optional[Dict[str, Any]]) -> "ClientConfig":
@@ -30,6 +32,8 @@ class ClientConfig:
             poll_interval=poll_interval,
             api_key=str(raw.get("api_key", cls.api_key)),
             timeout=int(raw.get("timeout", cls.timeout)),
+            playback_speed=float(raw.get("playback_speed", cls.playback_speed)),
+            playback_volume=float(raw.get("playback_volume", cls.playback_volume)),
         )
         if not value.server:
             raise ValueError("server is required")
@@ -37,6 +41,10 @@ class ClientConfig:
             raise ValueError("poll_interval must be positive")
         if value.timeout < 1:
             raise ValueError("timeout must be positive")
+        if value.playback_speed <= 0:
+            raise ValueError("playback_speed must be positive")
+        if not 0 <= value.playback_volume <= 100:
+            raise ValueError("playback_volume must be between 0 and 100")
         return value
 
     def to_dict(self) -> Dict[str, Any]:
@@ -46,6 +54,8 @@ class ClientConfig:
             "poll_interval": self.poll_interval,
             "api_key": self.api_key,
             "timeout": self.timeout,
+            "playback_speed": self.playback_speed,
+            "playback_volume": self.playback_volume,
         }
 
 

@@ -77,12 +77,16 @@ class AudioClient:
         if not item_id:
             raise AudioClientError("next response has no id")
         audio_url = urljoin(self.server, str(payload.get("url", f"audio/files/{item_id}")))
+        server_metadata = payload.get("metadata", {})
+        if not isinstance(server_metadata, dict):
+            server_metadata = {}
         self._write_metadata(item_id, {
             "id": item_id,
             "status": "downloading",
             "duration": payload.get("duration", 0),
             "server": self.server.rstrip("/"),
-            "server_metadata": payload.get("metadata", {}),
+            "sequence": server_metadata.get("sequence"),
+            "server_metadata": server_metadata,
         })
         audio = self._download(audio_url)
         path = self.cache_dir / f"{item_id}.wav"
@@ -93,7 +97,9 @@ class AudioClient:
             "duration": payload.get("duration", 0),
             "server": self.server.rstrip("/"),
             "downloaded_at": _utc_now(),
-            "server_metadata": payload.get("metadata", {}),
+            "sequence": server_metadata.get("sequence"),
+            "server_metadata": server_metadata,
+            "playback_status": "cached",
         }
         self._write_metadata(item_id, metadata)
         return ClientAudio(item_id, path, float(metadata["duration"] or 0), metadata)
@@ -151,6 +157,12 @@ class AudioClient:
                 self._atomic_write(path, audio)
                 metadata["status"] = "downloaded"
                 metadata["downloaded_at"] = _utc_now()
+            if path.is_file() and metadata.get("status") == "downloading":
+                metadata["status"] = "downloaded"
+                metadata["downloaded_at"] = metadata.get("downloaded_at") or _utc_now()
+            if path.is_file() and "playback_status" not in metadata:
+                metadata["playback_status"] = "cached"
+            if path.is_file():
                 self._write_metadata(metadata_path.stem, metadata)
             if not path.is_file():
                 continue
