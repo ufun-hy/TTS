@@ -66,7 +66,7 @@ class PlaybackTests(unittest.TestCase):
             self.assertEqual(json.loads(metadata.read_text())["playback_status"], "cached")
             controller.stop()
 
-    def test_new_live_session_supersedes_unplayed_old_session(self):
+    def test_new_live_session_removes_safe_old_session_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_item(
@@ -108,14 +108,34 @@ class PlaybackTests(unittest.TestCase):
             controller.stop()
 
             self.assertEqual(player.ids, ["new_001", "new_002"])
-            old_cached = json.loads((root / "old_cached.json").read_text())
-            old_played = json.loads((root / "old_played.json").read_text())
-            self.assertEqual(old_cached["playback_status"], "superseded")
-            self.assertEqual(old_played["playback_status"], "played")
+            self.assertFalse((root / "old_cached.wav").exists())
+            self.assertFalse((root / "old_cached.json").exists())
+            self.assertFalse((root / "old_played.wav").exists())
+            self.assertFalse((root / "old_played.json").exists())
             stats = controller.stats()
             self.assertEqual(stats["active_session_id"], "session_new")
-            self.assertEqual(stats["superseded"], 1)
             self.assertEqual(stats["buffered_segments"], 0)
+
+    def test_manual_clear_cache_only_removes_safe_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "played", 1, playback_status="played")
+            _write_item(root, "superseded", 2, playback_status="superseded")
+            _write_item(root, "failed", 3, playback_status="playback_failed")
+            _write_item(root, "cached", 4, playback_status="cached")
+            _write_item(root, "playing", 5, playback_status="playing")
+
+            controller = PlaybackController(root, player=FakePlayer(threading.Event()))
+            # Interrupted "playing" entries are recovered to cached on startup.
+            result = controller.clear_cache()
+
+            self.assertEqual(result["removed_items"], 3)
+            for item_id in ("played", "superseded", "failed"):
+                self.assertFalse((root / f"{item_id}.wav").exists())
+                self.assertFalse((root / f"{item_id}.json").exists())
+            for item_id in ("cached", "playing"):
+                self.assertTrue((root / f"{item_id}.wav").exists())
+                self.assertTrue((root / f"{item_id}.json").exists())
 
     def test_legacy_non_session_items_keep_existing_behavior(self):
         with tempfile.TemporaryDirectory() as directory:
