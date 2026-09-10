@@ -18,8 +18,8 @@ class AudioClientApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("AI Audio Client")
-        self.root.geometry("560x560")
-        self.root.minsize(520, 500)
+        self.root.geometry("560x600")
+        self.root.minsize(520, 540)
         self.events: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
         self.stop_event: Optional[threading.Event] = None
         self.worker: Optional[threading.Thread] = None
@@ -99,8 +99,16 @@ class AudioClientApp:
         ttk.Button(playback_frame, text="暂停播放", command=self.pause_playback).grid(row=0, column=1, sticky="ew", padx=6)
         ttk.Button(playback_frame, text="继续播放", command=self.resume_playback).grid(row=0, column=2, sticky="ew", padx=6)
         ttk.Button(playback_frame, text="停止播放", command=self.stop_playback).grid(row=0, column=3, sticky="ew")
+        ttk.Button(playback_frame, text="清除缓存", command=self.clear_cache).grid(
+            row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0)
+        )
 
-        ttk.Label(outer, text=f"配置文件: {config_path()}").grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(
+            outer,
+            text="清除缓存只会删除已播放、已作废和播放失败的片段；当前待播放内容不会删除。",
+            foreground="#666666",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(outer, text=f"配置文件: {config_path()}").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
     @staticmethod
     def _field(parent: ttk.Frame, row: int, label: str, variable: tk.StringVar, password: bool = False) -> None:
@@ -127,7 +135,6 @@ class AudioClientApp:
             save_config(self.config)
             self.server_status_var.set(self.config.server)
             self.error_var.set("无")
-            self.logger.info("configuration saved")
             return True
         except (OSError, ValueError, TypeError) as exc:
             self.error_var.set(str(exc))
@@ -170,15 +177,19 @@ class AudioClientApp:
         if self.restart_requested:
             self.start()
 
+    def _playback_controller(self) -> PlaybackController:
+        cache_dir = resolve_cache_dir(self.config)
+        if self.playback is None or self.playback.cache_dir != cache_dir:
+            if self.playback and self.playback.is_running():
+                self.playback.stop()
+            self.playback = PlaybackController(cache_dir, self._on_playback_event, self.logger)
+        return self.playback
+
     def start_playback(self) -> None:
         if not self.save():
             return
         try:
-            if self.playback is None or self.playback.cache_dir != resolve_cache_dir(self.config):
-                if self.playback and self.playback.is_running():
-                    self.playback.stop()
-                self.playback = PlaybackController(resolve_cache_dir(self.config), self._on_playback_event, self.logger)
-            self.playback.start()
+            self._playback_controller().start()
         except (OSError, ValueError, RuntimeError) as exc:
             self.error_var.set(str(exc))
             self.logger.error("start playback failed: %s", exc)
@@ -196,6 +207,30 @@ class AudioClientApp:
             self.playback.stop()
         else:
             self.playback_status_var.set("已停止")
+
+    def clear_cache(self) -> None:
+        if not self.save():
+            return
+        if not messagebox.askyesno(
+            "清除缓存",
+            "将删除已播放、已作废和播放失败的声音缓存。\n当前正在播放和待播放的内容会保留。\n\n是否继续？",
+            parent=self.root,
+        ):
+            return
+        try:
+            result = self._playback_controller().clear_cache()
+            removed_items = int(result.get("removed_items", 0))
+            removed_bytes = int(result.get("removed_bytes", 0))
+            self._set_playback_stats(self.playback.stats())
+            messagebox.showinfo(
+                "缓存已清理",
+                f"已删除 {removed_items} 个安全缓存片段，释放 {_format_bytes(removed_bytes)}。",
+                parent=self.root,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.error_var.set(str(exc))
+            self.logger.error("clear cache failed: %s", exc)
+            messagebox.showerror("清除缓存失败", str(exc), parent=self.root)
 
     def close(self) -> None:
         self.restart_requested = False
@@ -292,6 +327,15 @@ class AudioClientApp:
         self.playback_status_var.set(labels.get(state, state))
         if stats.get("playback_error"):
             self.error_var.set(str(stats["playback_error"]))
+
+
+def _format_bytes(value: int) -> str:
+    size = float(max(0, value))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
 
 
 def _make_logger() -> logging.Logger:
