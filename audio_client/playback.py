@@ -101,6 +101,8 @@ class WinMMPlayer:
 class PlaybackController:
     """Play cached items in sequence order on a thread separate from downloads."""
 
+    SAFE_CLEANUP_STATUSES = ("played", "superseded", "playback_failed")
+
     def __init__(
         self,
         cache_dir: Path,
@@ -120,6 +122,7 @@ class PlaybackController:
         self._state = "stopped"
         self._error = ""
         self._active_session_id: Optional[str] = None
+        self._superseded_session_ids: set[str] = set()
         self._recover_interrupted_items()
 
     def start(self) -> None:
@@ -167,6 +170,7 @@ class PlaybackController:
     def stats(self) -> Dict[str, Any]:
         items = self._items()
         self._sync_active_session(items)
+        items = self._items()
         with self._lock:
             state = self._state
             current = self._current
@@ -183,6 +187,27 @@ class PlaybackController:
             "cache": sum(item.path.is_file() for item in items),
             "playback_error": error,
         }
+
+    def clear_cache(self) -> Dict[str, int]:
+        """Delete only audio that is no longer needed for current playback."""
+        items = self._items()
+        self._sync_active_session(items)
+        removed_items = 0
+        removed_bytes = 0
+        for item in self._items():
+            if _playback_status(item.metadata) not in self.SAFE_CLEANUP_STATUSES:
+                continue
+            deleted, size = self._delete_item(item)
+            if deleted:
+                removed_items += 1
+                removed_bytes += size
+        result = {
+            "removed_items": removed_items,
+            "removed_bytes": removed_bytes,
+            "remaining_items": len(self._items()),
+        }
+        self._emit()
+        return result
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -228,30 +253,57 @@ class PlaybackController:
     def _next_item(self) -> Optional[PlaybackItem]:
         items = self._items()
         self._sync_active_session(items)
-        items = [item for item in items if _playback_status(item.metadata) == "cached"]
+        items = [item for item in self._items() if _playback_status(item.metadata) == "cached"]
         return min(items, key=lambda item: (item.sequence, item.item_id)) if items else None
 
     def _sync_active_session(self, items: List[PlaybackItem]) -> None:
         live_items = [item for item in items if _session_id(item.metadata)]
         if not live_items:
             return
+
+        with self._lock:
+            active_session_id = self._active_session_id
+            superseded_session_ids = set(self._superseded_session_ids)
+
+        candidates = [
+            item for item in live_items
+            if _session_id(item.metadata) not in superseded_session_ids
+        ]
+        if not candidates:
+            return
+
         newest = max(
-            live_items,
+            candidates,
             key=lambda item: (_downloaded_at(item.metadata), item.sequence, item.item_id),
         )
-        active_session_id = _session_id(newest.metadata)
-        if not active_session_id:
+        newest_session_id = _session_id(newest.metadata)
+        if not newest_session_id:
             return
+
+        if active_session_id and newest_session_id != active_session_id:
+            with self._lock:
+                self._superseded_session_ids.add(active_session_id)
         with self._lock:
-            self._active_session_id = active_session_id
+            self._active_session_id = newest_session_id
+            superseded_session_ids = set(self._superseded_session_ids)
+
+        # Once a newer Live Session is active, older session files no longer
+        # belong in the playback queue. Cached items are first marked as
+        # superseded; safe old-session artifacts are then physically removed.
         for item in items:
             session_id = _session_id(item.metadata)
-            if (
-                session_id
-                and session_id != active_session_id
-                and _playback_status(item.metadata) == "cached"
-            ):
+            if not session_id or session_id == newest_session_id:
+                continue
+            if session_id not in superseded_session_ids:
+                with self._lock:
+                    self._superseded_session_ids.add(session_id)
+                superseded_session_ids.add(session_id)
+            status = _playback_status(item.metadata)
+            if status == "cached":
                 self._set_status(item, "superseded")
+                status = "superseded"
+            if status in self.SAFE_CLEANUP_STATUSES:
+                self._delete_item(item)
 
     def _items(self) -> List[PlaybackItem]:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -269,6 +321,28 @@ class PlaybackController:
             sequence = _sequence(metadata)
             items.append(PlaybackItem(metadata_path.stem, path, metadata_path, metadata, sequence))
         return items
+
+    def _delete_item(self, item: PlaybackItem) -> tuple[bool, int]:
+        with self._lock:
+            if self._current == item.item_id:
+                return False, 0
+        if _playback_status(item.metadata) not in self.SAFE_CLEANUP_STATUSES:
+            return False, 0
+        size = 0
+        try:
+            if item.path.is_file():
+                size += item.path.stat().st_size
+            if item.metadata_path.is_file():
+                size += item.metadata_path.stat().st_size
+            item.path.unlink(missing_ok=True)
+            item.metadata_path.unlink(missing_ok=True)
+            if self.logger:
+                self.logger.info("cache removed %s", item.item_id)
+            return True, size
+        except OSError as exc:
+            if self.logger:
+                self.logger.warning("cache cleanup failed %s: %s", item.item_id, exc)
+            return False, 0
 
     def _set_status(self, item: PlaybackItem, status: str, error: str = "") -> None:
         item.metadata["playback_status"] = status
