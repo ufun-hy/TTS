@@ -267,6 +267,8 @@ def _processing_payload(result: Any, original: Dict[str, Any]) -> tuple[bytes, D
             "duration": result.duration,
             "speed_factor": result.speed_factor,
             "volume_gain": result.volume_gain,
+            "session_volume": result.session_volume,
+            "session_volume_gain": result.session_volume_gain,
             "processing_warnings": result.warnings,
         }
     if isinstance(result, bytes):

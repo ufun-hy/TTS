@@ -1,5 +1,6 @@
 import io
 import json
+import math
 from pathlib import Path
 import tempfile
 import threading
@@ -16,6 +17,17 @@ from audio_cache.server import AudioCacheServer, make_handler
 def wav_bytes(duration=0.1, rate=8000):
     frames = b"\x00\x00" * int(duration * rate)
     buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(frames)
+    return buffer.getvalue()
+
+
+def tone_wav_bytes(duration=1.0, rate=8000):
+    buffer = io.BytesIO()
+    frames = b"".join(int(10000 * math.sin(2 * math.pi * 440 * index / rate)).to_bytes(2, "little", signed=True) for index in range(int(duration * rate)))
     with wave.open(buffer, "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
@@ -67,6 +79,23 @@ class AudioCacheTests(unittest.TestCase):
         gain, warnings = calculate_volume_gain(-30, config)
         self.assertEqual(gain, 3)
         self.assertIn("volume_gain_out_of_range", warnings)
+
+    def test_session_speed_is_applied_on_mac_processor(self):
+        from audio_cache.processing import AudioProcessor
+
+        processor = AudioProcessor(AudioProcessingConfig(volume_enabled=False))
+        for speed in (1.0, 1.05, 1.10):
+            result = processor.process(tone_wav_bytes(), {"playback_speed": speed, "volume": 100})
+            self.assertTrue(result.audio.startswith(b"RIFF"))
+            self.assertAlmostEqual(result.duration, 1 / speed, delta=0.02)
+
+    def test_session_volume_is_applied_without_changing_source(self):
+        from audio_cache.processing import AudioProcessor
+
+        source = tone_wav_bytes()
+        result = AudioProcessor(AudioProcessingConfig(speed_enabled=False)).process(source, {"playback_speed": 1, "volume": 50})
+        self.assertNotEqual(result.audio, source)
+        self.assertAlmostEqual(result.session_volume_gain, -6.0206, places=2)
 
     def test_http_client_downloads_and_acknowledges(self):
         with tempfile.TemporaryDirectory() as directory:

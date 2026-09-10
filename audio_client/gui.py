@@ -36,8 +36,6 @@ class AudioClientApp:
         self.server_var = tk.StringVar(value=self.config.server)
         self.cache_var = tk.StringVar(value=self.config.cache_dir)
         self.poll_var = tk.StringVar(value=str(self.config.poll_interval))
-        self.speed_var = tk.StringVar(value=str(self.config.playback_speed))
-        self.volume_var = tk.StringVar(value=str(self.config.playback_volume))
         self.api_key_var = tk.StringVar(value=self.config.api_key)
         self.status_var = tk.StringVar(value="等待连接")
         self.server_status_var = tk.StringVar(value=self.config.server)
@@ -67,10 +65,8 @@ class AudioClientApp:
         self._field(config_frame, 0, "AI Server", self.server_var)
         self._field(config_frame, 1, "缓存目录", self.cache_var)
         self._field(config_frame, 2, "轮询间隔(s)", self.poll_var)
-        self._field(config_frame, 3, "播放速度(x)", self.speed_var)
-        self._field(config_frame, 4, "播放音量(%)", self.volume_var)
-        self._field(config_frame, 5, "API Key", self.api_key_var, password=True)
-        ttk.Button(config_frame, text="保存配置", command=self.save).grid(row=6, column=1, sticky="e", pady=(8, 0))
+        self._field(config_frame, 3, "API Key", self.api_key_var, password=True)
+        ttk.Button(config_frame, text="保存配置", command=self.save).grid(row=4, column=1, sticky="e", pady=(8, 0))
 
         status_frame = ttk.LabelFrame(outer, text="运行状态", padding=10)
         status_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -123,8 +119,6 @@ class AudioClientApp:
             "cache_dir": self.cache_var.get(),
             "poll_interval": self.poll_var.get(),
             "api_key": self.api_key_var.get(),
-            "playback_speed": self.speed_var.get(),
-            "playback_volume": self.volume_var.get(),
         })
 
     def save(self) -> bool:
@@ -132,8 +126,6 @@ class AudioClientApp:
             self.config = self._read_form()
             save_config(self.config)
             self.server_status_var.set(self.config.server)
-            if self.playback:
-                self.playback.configure(self.config.playback_speed, self.config.playback_volume)
             self.error_var.set("无")
             self.logger.info("configuration saved")
             return True
@@ -186,7 +178,6 @@ class AudioClientApp:
                 if self.playback and self.playback.is_running():
                     self.playback.stop()
                 self.playback = PlaybackController(resolve_cache_dir(self.config), self._on_playback_event, self.logger)
-            self.playback.configure(self.config.playback_speed, self.config.playback_volume)
             self.playback.start()
         except (OSError, ValueError, RuntimeError) as exc:
             self.error_var.set(str(exc))

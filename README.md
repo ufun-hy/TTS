@@ -214,11 +214,11 @@ python3 scripts/audio-client.py --config config/audio-client.example.json
 
 Windows 图形客户端入口为 `windows_client.py`，使用 Tkinter，不需要额外运行时依赖。Windows 构建机上运行 `build/windows/build.ps1`，先生成 PyInstaller 程序，再由 Inno Setup 生成 `AI-Audio-Client-Setup.exe`。安装后用户只需打开客户端、填写 AI Server 地址并点击“启动”。
 
-Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v1.md)：传输完成状态和本地 `cached/playing/played` 状态分离，下载与播放线程独立，支持顺序播放、暂停、继续、停止、速度和音量控制。
+Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v1.md)：传输完成状态和本地 `cached/playing/played` 状态分离，下载与播放线程独立，支持顺序播放、暂停、继续和停止；语速、音量在 Mac 入缓存前完成。
 
 ## Live Session V1
 
-Text Studio 页面内置 AI 直播控制区：选择可用声音，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终自然段文本调用 TTS Gateway，把 WAV 写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
+Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终自然段文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 ```bash
 export AUDIO_CACHE_URL="http://127.0.0.1:8000"

@@ -13,7 +13,7 @@ class FakePlayer:
         self.done = done
         self.ids = []
 
-    def play(self, path, speed, volume, stop_event, pause_event):
+    def play(self, path, stop_event, pause_event):
         self.ids.append(path.stem)
         self.done.wait(0.01)
 

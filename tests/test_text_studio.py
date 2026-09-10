@@ -13,6 +13,9 @@ class TextStudioTest(unittest.TestCase):
         self.assertNotIn('id="liveText"', html)
         self.assertIn("segments", html)
         self.assertIn("请先完成泛化并确认直播文本", html)
+        self.assertIn('id="livePlaybackSpeed"', html)
+        self.assertIn('id="liveVolume"', html)
+        self.assertIn("playback_speed", html)
 
     def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
         cases = [
@@ -116,6 +119,8 @@ class TextStudioTest(unittest.TestCase):
                 "provider": "codex",
                 "candidate_count": 3,
                 "voice": "default",
+                "playback_speed": 1.05,
+                "volume": 80,
                 "instruction": "保持直播口语",
                 "paragraphs": [
                     {
@@ -146,6 +151,8 @@ class TextStudioTest(unittest.TestCase):
             self.assertEqual(loaded["name"], "桃子直播稿")
             self.assertEqual(loaded["paragraphs"][0]["candidates"][1], "泛化二")
             self.assertEqual(loaded["paragraphs"][0]["selectedIndex"], 1)
+            self.assertEqual(loaded["playback_speed"], 1.05)
+            self.assertEqual(loaded["volume"], 80.0)
             self.assertEqual(summaries[0]["project_id"], project_id)
             self.assertEqual(summaries[0]["paragraph_count"], 2)
             self.assertEqual(summaries[0]["generated_count"], 1)

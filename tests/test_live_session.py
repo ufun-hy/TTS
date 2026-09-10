@@ -28,6 +28,26 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(error.exception.status, 400)
         self.assertIn("segments", str(error.exception))
 
+    def test_start_rejects_invalid_audio_settings(self):
+        manager = LiveSessionManager("http://gateway", "http://cache", synthesize=lambda *_args: b"RIFF")
+        with self.assertRaises(LiveSessionError) as error:
+            manager.start("default", [{"id": "p0001", "text": "测试"}], playback_speed=0)
+        self.assertEqual(error.exception.status, 400)
+
+    def test_audio_settings_are_sent_to_audio_cache(self):
+        requests = []
+        manager = LiveSessionManager("http://gateway", "http://cache", synthesize=lambda *_args: b"RIFF")
+        manager._request_json = lambda method, path, body=None, cache=False: requests.append((method, path, body, cache)) or {}
+        manager.start("default", [{"id": "p0001", "text": "测试"}], playback_speed=1.05, volume=80)
+        deadline = time.monotonic() + 1
+        while manager.status()["status"] in ("starting", "running"):
+            if time.monotonic() >= deadline:
+                self.fail("live session did not finish")
+            time.sleep(0.01)
+        enqueue = next(item for item in requests if item[1] == "/audio/enqueue")
+        self.assertEqual(enqueue[2]["playback_speed"], 1.05)
+        self.assertEqual(enqueue[2]["volume"], 80.0)
+
     def test_session_generates_and_enqueues_each_segment(self):
         enqueued = []
 

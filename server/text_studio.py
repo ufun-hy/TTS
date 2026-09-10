@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -384,6 +385,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     risk_findings = payload.get("risk_findings", [])
     replacement_history = payload.get("replacement_history", [])
     voice = payload.get("voice", "default")
+    playback_speed = payload.get("playback_speed", 1.0)
+    volume = payload.get("volume", 100.0)
     candidate_count = payload.get("candidate_count", 3)
 
     if not isinstance(source_text, str) or not isinstance(source_name, str):
@@ -398,6 +401,15 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid candidate_count") from exc
     if not 1 <= candidate_count <= 5:
         raise ValueError("candidate_count must be between 1 and 5")
+    try:
+        playback_speed = float(playback_speed)
+        volume = float(volume)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("playback_speed and volume must be numeric") from exc
+    if not math.isfinite(playback_speed) or playback_speed <= 0:
+        raise ValueError("playback_speed must be positive")
+    if not math.isfinite(volume) or volume < 0:
+        raise ValueError("volume must not be negative")
 
     path = _project_file(root, project_id)
     created_at = _utc_timestamp()
@@ -420,6 +432,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "model": model,
         "candidate_count": candidate_count,
         "voice": voice[:80],
+        "playback_speed": playback_speed,
+        "volume": volume,
         "instruction": instruction,
         "risk_findings": risk_findings,
         "replacement_history": replacement_history,
@@ -686,7 +700,12 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
-                    result = live.start(body.get("voice", "default"), body.get("segments"))
+                    result = live.start(
+                        body.get("voice", "default"),
+                        body.get("segments"),
+                        body.get("playback_speed", 1.0),
+                        body.get("volume", 100.0),
+                    )
                     self._json(202, result)
                     return
 

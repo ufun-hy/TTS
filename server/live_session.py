@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import json
+import math
 import re
 import threading
 import urllib.error
@@ -34,6 +35,19 @@ class LiveSessionError(RuntimeError):
     def __init__(self, message: str, status: int = 409) -> None:
         super().__init__(message)
         self.status = status
+
+
+def _live_audio_settings(playback_speed: Any, volume: Any) -> tuple[float, float]:
+    try:
+        playback_speed = float(playback_speed)
+        volume = float(volume)
+    except (TypeError, ValueError) as exc:
+        raise LiveSessionError("playback_speed and volume must be numeric", 400) from exc
+    if not math.isfinite(playback_speed) or playback_speed <= 0:
+        raise LiveSessionError("playback_speed must be positive", 400)
+    if not math.isfinite(volume) or volume < 0:
+        raise LiveSessionError("volume must not be negative", 400)
+    return playback_speed, volume
 
 
 def _technical_chunks(text: str) -> list[str]:
@@ -116,6 +130,8 @@ class LiveSession:
         synthesize: Callable[[str, str], bytes],
         enqueue: Callable[[str, int, str, str, bytes], None],
         cache_status: Callable[[str], dict[str, Any]],
+        playback_speed: float = 1.0,
+        volume: float = 100.0,
     ) -> None:
         self.session_id = session_id
         self.voice = voice
@@ -123,6 +139,8 @@ class LiveSession:
         self._synthesize = synthesize
         self._enqueue = enqueue
         self._cache_status = cache_status
+        self.playback_speed = playback_speed
+        self.volume = volume
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -235,9 +253,10 @@ class LiveSessionManager:
         self._lock = threading.RLock()
         self._session: LiveSession | None = None
 
-    def start(self, voice: str, segments: Any) -> dict[str, Any]:
+    def start(self, voice: str, segments: Any, playback_speed: Any = 1.0, volume: Any = 100.0) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
             raise LiveSessionError("voice is invalid", 400)
+        playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
             segments = prepare_live_segments(segments)
         except ValueError as exc:
@@ -254,6 +273,8 @@ class LiveSessionManager:
                 self._synthesize,
                 self._enqueue,
                 self._cache_status,
+                playback_speed,
+                volume,
             )
             self._session = session
             session.start()
@@ -336,6 +357,8 @@ class LiveSessionManager:
             "session_id": session.session_id,
             "text": text,
             "voice": voice,
+            "playback_speed": session.playback_speed,
+            "volume": session.volume,
             "audio_base64": base64.b64encode(audio).decode("ascii"),
         }, cache=True)
 

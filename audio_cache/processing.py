@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import re
 import shutil
 import subprocess
@@ -54,12 +55,24 @@ class ProcessingResult:
     speed_factor: float = 1.0
     volume_gain: float = 0.0
     warnings: List[str] = field(default_factory=list)
+    session_volume: float = 100.0
+    session_volume_gain: Optional[float] = 0.0
 
 
-def calculate_speed_factor(raw_duration: float, target_duration: Optional[float], config: AudioProcessingConfig) -> tuple[float, List[str]]:
-    if not config.speed_enabled or not target_duration or target_duration <= 0 or raw_duration <= 0:
+def calculate_speed_factor(
+    raw_duration: float,
+    target_duration: Optional[float],
+    config: AudioProcessingConfig,
+    playback_speed: float = 1.0,
+) -> tuple[float, List[str]]:
+    if not math.isfinite(playback_speed) or playback_speed <= 0:
+        raise AudioProcessingError("playback_speed must be positive")
+    if not config.speed_enabled:
         return 1.0, []
-    requested = raw_duration / target_duration
+    if not target_duration or target_duration <= 0 or raw_duration <= 0:
+        requested = playback_speed
+    else:
+        requested = (raw_duration / target_duration) * playback_speed
     factor = min(config.speed_max, max(config.speed_min, requested))
     warnings = []
     if abs(requested - factor) > 1e-9:
@@ -89,22 +102,37 @@ class AudioProcessor:
             source = root / "source.wav"
             source.write_bytes(audio)
             raw_duration = wav_duration(source)
-            target = _optional_float(metadata.get("target_duration"))
-            speed_factor, warnings = calculate_speed_factor(raw_duration, target, self.config)
+            target = _optional_float(metadata.get("target_duration"), "target_duration")
+            playback_speed = _optional_float(metadata.get("playback_speed"), "playback_speed")
+            if playback_speed is None:
+                playback_speed = 1.0
+            speed_factor, warnings = calculate_speed_factor(raw_duration, target, self.config, playback_speed)
 
             filters: List[str] = []
             if abs(speed_factor - 1.0) > 1e-9:
                 filters.append(f"atempo={speed_factor:.8f}")
 
             measured_db: Optional[float] = None
+            gain = 0.0
             if self.config.volume_enabled:
                 measured_db = self._measure_volume(source)
                 gain, volume_warnings = calculate_volume_gain(measured_db, self.config)
                 warnings.extend(volume_warnings)
                 if abs(gain) > 1e-9:
                     filters.append(f"volume={gain:.8f}dB")
+
+            session_volume = _optional_float(metadata.get("volume"), "volume")
+            if session_volume is None:
+                session_volume = 100.0
+            if not math.isfinite(session_volume) or session_volume < 0:
+                raise AudioProcessingError("volume must not be negative")
+            if session_volume == 0:
+                filters.append("volume=0")
+                session_volume_gain: Optional[float] = None
             else:
-                gain = 0.0
+                session_volume_gain = 20 * math.log10(session_volume / 100.0)
+                if abs(session_volume_gain) > 1e-9:
+                    filters.append(f"volume={session_volume_gain:.8f}dB")
 
             if not filters:
                 processed = audio
@@ -118,7 +146,7 @@ class AudioProcessor:
             final_path = root / "final.wav"
             final_path.write_bytes(processed)
             duration = wav_duration(final_path)
-            return ProcessingResult(processed, raw_duration, duration, speed_factor, gain, warnings)
+            return ProcessingResult(processed, raw_duration, duration, speed_factor, gain, warnings, session_volume, session_volume_gain)
 
     def _measure_volume(self, source: Path) -> float:
         if not self.ffmpeg:
@@ -159,10 +187,13 @@ class AudioProcessor:
             raise AudioProcessingError(completed.stderr.strip() or "ffmpeg audio processing failed")
 
 
-def _optional_float(value: Any) -> Optional[float]:
+def _optional_float(value: Any, field: str) -> Optional[float]:
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("must be finite")
+        return number
     except (TypeError, ValueError) as exc:
-        raise AudioProcessingError(f"invalid target_duration: {value!r}") from exc
+        raise AudioProcessingError(f"invalid {field}: {value!r}") from exc

@@ -47,8 +47,6 @@ class WinMMPlayer:
     def play(
         self,
         path: Path,
-        speed: float,
-        volume: float,
         stop_event: threading.Event,
         pause_event: threading.Event,
     ) -> None:
@@ -114,8 +112,6 @@ class PlaybackController:
         self.callback = callback
         self.logger = logger
         self.player = player or WinMMPlayer()
-        self.speed = 1.0
-        self.volume = 100.0
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -124,17 +120,6 @@ class PlaybackController:
         self._state = "stopped"
         self._error = ""
         self._recover_interrupted_items()
-
-    def configure(self, speed: float = 1.0, volume: float = 100.0) -> None:
-        speed = float(speed)
-        volume = float(volume)
-        if speed <= 0:
-            raise ValueError("playback_speed must be positive")
-        if not 0 <= volume <= 100:
-            raise ValueError("playback_volume must be between 0 and 100")
-        with self._lock:
-            self.speed = speed
-            self.volume = volume
 
     def start(self) -> None:
         with self._lock:
@@ -211,7 +196,7 @@ class PlaybackController:
                 self._state = "paused" if self._pause.is_set() else "playing"
             self._emit()
             try:
-                self.player.play(item.path, self.speed, self.volume, self._stop, self._pause)
+                self.player.play(item.path, self._stop, self._pause)
             except PlaybackStopped:
                 self._set_status(item, "cached")
                 break

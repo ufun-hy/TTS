@@ -50,6 +50,7 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 ```
 
 如果需要传入已经生成的 WAV，可把 `audio_base64` 放入 `/audio/enqueue` 请求，服务仍会执行同样的处理和状态流转。
+`playback_speed` 和 `volume` 可作为任务 metadata 传入；它们由 Mac Audio Processor 在任务进入 `ready` 前应用，Windows 只播放最终 WAV。
 
 ## API
 

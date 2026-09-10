@@ -24,20 +24,11 @@ playback_status: playback_failed = 单段播放失败
 - `暂停播放` / `继续播放`：只控制播放线程，下载继续运行。
 - `停止播放`：停止当前播放并保留当前段为 `cached`，再次开始时不会跳过它。
 
-播放速度和音量会写入 `config.json`：
-
-```json
-{
-  "playback_speed": 1.0,
-  "playback_volume": 100
-}
-```
-
-速度只影响 Windows 播放命令，音量只影响播放命令，均不改写缓存 WAV。
+播放速度和音量由 Mac Live Session 配置并在进入 Audio Cache 前写入最终 WAV。Windows 不保存、不解释、不二次调整这两个参数。
 
 ## Windows 实现
 
-播放层使用 Windows 自带 `winmm.dll` 的 MCI `waveaudio` 接口，通过 `ctypes` 控制打开、播放、暂停、继续、停止、速度和音量，不弹出外部播放器窗口，也不要求用户另装播放器。
+播放层使用 Windows 自带 `winmm.dll` 的 MCI `waveaudio` 接口，通过 `ctypes` 只控制打开、播放、暂停、继续、停止和关闭，不弹出外部播放器窗口，也不要求用户另装播放器。速度和音量由 Mac 在缓存前处理。
 
 ## 构建安装包
 
