@@ -119,6 +119,7 @@ class PlaybackController:
         self._current: Optional[str] = None
         self._state = "stopped"
         self._error = ""
+        self._active_session_id: Optional[str] = None
         self._recover_interrupted_items()
 
     def start(self) -> None:
@@ -165,16 +166,20 @@ class PlaybackController:
 
     def stats(self) -> Dict[str, Any]:
         items = self._items()
+        self._sync_active_session(items)
         with self._lock:
             state = self._state
             current = self._current
             error = self._error
+            active_session_id = self._active_session_id
         return {
             "playback_status": state,
             "playing": current or "-",
             "buffered_segments": sum(_playback_status(item.metadata) == "cached" for item in items),
             "played": sum(_playback_status(item.metadata) == "played" for item in items),
             "playback_failed": sum(_playback_status(item.metadata) == "playback_failed" for item in items),
+            "superseded": sum(_playback_status(item.metadata) == "superseded" for item in items),
+            "active_session_id": active_session_id or "",
             "cache": sum(item.path.is_file() for item in items),
             "playback_error": error,
         }
@@ -221,8 +226,32 @@ class PlaybackController:
         self._emit()
 
     def _next_item(self) -> Optional[PlaybackItem]:
-        items = [item for item in self._items() if _playback_status(item.metadata) == "cached"]
+        items = self._items()
+        self._sync_active_session(items)
+        items = [item for item in items if _playback_status(item.metadata) == "cached"]
         return min(items, key=lambda item: (item.sequence, item.item_id)) if items else None
+
+    def _sync_active_session(self, items: List[PlaybackItem]) -> None:
+        live_items = [item for item in items if _session_id(item.metadata)]
+        if not live_items:
+            return
+        newest = max(
+            live_items,
+            key=lambda item: (_downloaded_at(item.metadata), item.sequence, item.item_id),
+        )
+        active_session_id = _session_id(newest.metadata)
+        if not active_session_id:
+            return
+        with self._lock:
+            self._active_session_id = active_session_id
+        for item in items:
+            session_id = _session_id(item.metadata)
+            if (
+                session_id
+                and session_id != active_session_id
+                and _playback_status(item.metadata) == "cached"
+            ):
+                self._set_status(item, "superseded")
 
     def _items(self) -> List[PlaybackItem]:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -262,10 +291,23 @@ class PlaybackController:
 
 def _playback_status(metadata: Dict[str, Any]) -> str:
     value = metadata.get("playback_status")
-    if value in ("cached", "playing", "paused", "played", "playback_failed"):
+    if value in ("cached", "playing", "paused", "played", "playback_failed", "superseded"):
         return str(value) if metadata.get("status") == "completed" else "unknown"
     # Cache files created by the transport-only client predate this field.
     return "cached" if metadata.get("status") == "completed" else "unknown"
+
+
+def _session_id(metadata: Dict[str, Any]) -> str:
+    server_metadata = metadata.get("server_metadata")
+    if not isinstance(server_metadata, dict):
+        return ""
+    value = server_metadata.get("session_id")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _downloaded_at(metadata: Dict[str, Any]) -> str:
+    value = metadata.get("downloaded_at")
+    return value if isinstance(value, str) else ""
 
 
 def _sequence(metadata: Dict[str, Any]) -> float:
