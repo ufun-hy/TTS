@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - ".tmp/text-studio-facts-restore.gz.b64"
+      - ".tmp/text-studio-facts-restore.part*"
       - ".github/workflows/apply-text-studio-facts-restore.yml"
 
 permissions:
@@ -26,29 +26,12 @@ jobs:
           from pathlib import Path
           import base64, gzip
 
-          source = Path('.tmp/text-studio-facts-restore.gz.b64')
-          target = Path('web/text-studio.html')
-          html = gzip.decompress(base64.b64decode(source.read_text().strip())).decode('utf-8')
-
-          needle = "function invalidateReview(){state.riskFindings=[];state.riskChecked=false;state.riskFilter='all';renderRiskDrawer();updateLiveSummary()}\n"
-          replacement = needle + "function invalidateFacts(){state.factFindings=[];state.factChecked=false;state.factFocusParagraph=-1;renderFactDrawer();updateLiveSummary()}\n"
-          assert needle in html
-          html = html.replace(needle, replacement, 1)
-
-          edits = {
-              "invalidateReview();refreshSearchMatches(false);return data": "invalidateReview();invalidateFacts();refreshSearchMatches(false);return data",
-              "p.expanded=true;invalidateReview();refreshSearchMatches(false);render();scheduleSave()": "p.expanded=true;invalidateReview();invalidateFacts();refreshSearchMatches(false);render();scheduleSave()",
-              "p.editedText=value;invalidateReview();refreshSearchMatches(false);scheduleSave(650)": "p.editedText=value;invalidateReview();invalidateFacts();refreshSearchMatches(false);scheduleSave(650)",
-              "invalidateReview();refreshSearchMatches(false);render();scheduleSave(0);showMessage('已替换当前匹配并自动保存。','ok')": "invalidateReview();invalidateFacts();refreshSearchMatches(false);render();scheduleSave(0);showMessage('已替换当前匹配并自动保存。','ok')",
-              "invalidateReview();refreshSearchMatches(false);render();scheduleSave(0);showMessage('已替换最终智播文本中的全部匹配并自动保存。','ok')": "invalidateReview();invalidateFacts();refreshSearchMatches(false);render();scheduleSave(0);showMessage('已替换最终智播文本中的全部匹配并自动保存。','ok')",
-              "state.searchQuery='';state.searchMatches=[];state.searchIndex=-1;invalidateReview();if(!$('projectName')": "state.searchQuery='';state.searchMatches=[];state.searchIndex=-1;invalidateReview();invalidateFacts();if(!$('projectName')",
-              "$('sourceText').addEventListener('input',()=>{if(state.projectId)scheduleSave(1200)})": "$('sourceText').addEventListener('input',()=>{state.restoreAnalysis=null;renderRestoreSummary();if(state.projectId)scheduleSave(1200)})",
-          }
-          for old, new in edits.items():
-              assert old in html, old
-              html = html.replace(old, new, 1)
-
-          target.write_text(html, encoding='utf-8')
+          encoded = ''.join(
+              Path(f'.tmp/text-studio-facts-restore.part{i}').read_text(encoding='utf-8').strip()
+              for i in range(6)
+          )
+          html = gzip.decompress(base64.b64decode(encoded)).decode('utf-8')
+          Path('web/text-studio.html').write_text(html, encoding='utf-8')
           PY
 
       - name: Validate Text Studio page
@@ -64,19 +47,20 @@ jobs:
           for key in [
               '原稿还原（重复朗读）', '商品事实', '分析重复轮次', '应用还原稿',
               '检查全篇一致性', '批量修正', 'liveCandidatePools', '开始循环智播',
-              'function invalidateFacts'
+              'function invalidateFacts', 'id="model"', '刷新模型列表'
           ]:
               assert key in html, key
           PY
           node --check /tmp/text-studio.js
           test "$(git hash-object web/text-studio.html)" = "b2efce7656c407dc0684188f9e146f4e7102e8b7"
 
-      - name: Commit feature
+      - name: Commit feature and clean staging files
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .tmp/text-studio-facts-restore.gz.b64
+          git rm -f .tmp/text-studio-facts-restore.gz.b64 .tmp/text-studio-facts-restore.part0 .tmp/text-studio-facts-restore.part1 .tmp/text-studio-facts-restore.part2 .tmp/text-studio-facts-restore.part3 .tmp/text-studio-facts-restore.part4 .tmp/text-studio-facts-restore.part5
+          git rm -f .github/workflows/apply-text-studio-facts-restore.yml
           git add web/text-studio.html
           git commit -m "feat(text-studio): add script restore and fact consistency"
           git pull --rebase origin main
