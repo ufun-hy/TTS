@@ -18,17 +18,33 @@ class FakePlayer:
         self.done.wait(0.01)
 
 
+def _write_item(
+    root: Path,
+    item_id: str,
+    sequence: int,
+    playback_status: str = "cached",
+    session_id: str = "",
+    downloaded_at: str = "",
+) -> None:
+    (root / f"{item_id}.wav").write_bytes(b"RIFF")
+    metadata = {
+        "status": "completed",
+        "sequence": sequence,
+        "playback_status": playback_status,
+    }
+    if session_id:
+        metadata["server_metadata"] = {"session_id": session_id, "sequence": sequence}
+    if downloaded_at:
+        metadata["downloaded_at"] = downloaded_at
+    (root / f"{item_id}.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
 class PlaybackTests(unittest.TestCase):
     def test_sequence_order_and_played_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for item_id, sequence in (("segment_002", 2), ("segment_001", 1), ("segment_003", 3)):
-                (root / f"{item_id}.wav").write_bytes(b"RIFF")
-                (root / f"{item_id}.json").write_text(json.dumps({
-                    "status": "completed",
-                    "sequence": sequence,
-                    "playback_status": "cached",
-                }), encoding="utf-8")
+                _write_item(root, item_id, sequence)
             done = threading.Event()
             player = FakePlayer(done)
             controller = PlaybackController(root, player=player)
@@ -44,12 +60,76 @@ class PlaybackTests(unittest.TestCase):
     def test_interrupted_playback_returns_to_cached(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "segment_001.wav").write_bytes(b"RIFF")
+            _write_item(root, "segment_001", 1, playback_status="playing")
             metadata = root / "segment_001.json"
-            metadata.write_text(json.dumps({"status": "completed", "sequence": 1, "playback_status": "playing"}), encoding="utf-8")
             controller = PlaybackController(root, player=FakePlayer(threading.Event()))
             self.assertEqual(json.loads(metadata.read_text())["playback_status"], "cached")
             controller.stop()
+
+    def test_new_live_session_supersedes_unplayed_old_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(
+                root,
+                "old_played",
+                1,
+                playback_status="played",
+                session_id="session_old",
+                downloaded_at="2026-09-10T08:00:00+00:00",
+            )
+            _write_item(
+                root,
+                "old_cached",
+                2,
+                session_id="session_old",
+                downloaded_at="2026-09-10T08:00:01+00:00",
+            )
+            _write_item(
+                root,
+                "new_001",
+                1,
+                session_id="session_new",
+                downloaded_at="2026-09-10T08:10:00+00:00",
+            )
+            _write_item(
+                root,
+                "new_002",
+                2,
+                session_id="session_new",
+                downloaded_at="2026-09-10T08:10:01+00:00",
+            )
+
+            player = FakePlayer(threading.Event())
+            controller = PlaybackController(root, player=player)
+            controller.start()
+            deadline = time.time() + 2
+            while len(player.ids) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+
+            self.assertEqual(player.ids, ["new_001", "new_002"])
+            old_cached = json.loads((root / "old_cached.json").read_text())
+            old_played = json.loads((root / "old_played.json").read_text())
+            self.assertEqual(old_cached["playback_status"], "superseded")
+            self.assertEqual(old_played["playback_status"], "played")
+            stats = controller.stats()
+            self.assertEqual(stats["active_session_id"], "session_new")
+            self.assertEqual(stats["superseded"], 1)
+            self.assertEqual(stats["buffered_segments"], 0)
+
+    def test_legacy_non_session_items_keep_existing_behavior(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "legacy_002", 2)
+            _write_item(root, "legacy_001", 1)
+            player = FakePlayer(threading.Event())
+            controller = PlaybackController(root, player=player)
+            controller.start()
+            deadline = time.time() + 2
+            while len(player.ids) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+            self.assertEqual(player.ids, ["legacy_001", "legacy_002"])
 
 
 if __name__ == "__main__":
