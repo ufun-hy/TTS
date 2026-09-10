@@ -6,6 +6,7 @@ import base64
 from dataclasses import dataclass
 import json
 import math
+import random
 import re
 import threading
 import urllib.error
@@ -52,7 +53,7 @@ def _live_audio_settings(playback_speed: Any, volume: Any) -> tuple[float, float
 
 def _technical_chunks(text: str) -> list[str]:
     """Only split oversized text for the Gateway request limit."""
-    # ponytail: fixed-size chunks keep this layer deterministic; semantic segmentation belongs to Text Studio.
+    # Fixed-size chunks keep this layer deterministic; semantic segmentation belongs to Text Studio.
     return [text[index:index + MAX_LIVE_SEGMENT_CHARS] for index in range(0, len(text), MAX_LIVE_SEGMENT_CHARS)]
 
 
@@ -89,6 +90,58 @@ def prepare_live_segments(raw_segments: Any) -> list[dict[str, str]]:
     return prepared
 
 
+def prepare_candidate_pools(raw_segments: Any) -> list[dict[str, Any]]:
+    """Validate one candidate pool per Text Studio paragraph."""
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise ValueError("segments must be a non-empty array")
+
+    pools: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    max_round_chars = 0
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            raise ValueError("every segment must be an object")
+        segment_id = item.get("id")
+        candidates = item.get("candidates")
+        if not isinstance(segment_id, str) or not SEGMENT_ID.fullmatch(segment_id):
+            raise ValueError("every segment needs a valid id")
+        if segment_id in seen:
+            raise ValueError(f"duplicate segment id: {segment_id}")
+        if not isinstance(candidates, list):
+            raise ValueError(f"segment {segment_id} needs candidates")
+        cleaned = [value.strip() for value in candidates if isinstance(value, str) and value.strip()]
+        if not cleaned:
+            raise ValueError(f"segment {segment_id} needs non-empty candidates")
+        seen.add(segment_id)
+        max_round_chars += max(len(value) for value in cleaned)
+        pools.append({"id": segment_id, "candidates": cleaned})
+    if max_round_chars > MAX_LIVE_TEXT_CHARS:
+        raise ValueError(f"text is too long; maximum is {MAX_LIVE_TEXT_CHARS} characters per round")
+    return pools
+
+
+def choose_candidate_round(
+    pools: list[dict[str, Any]],
+    previous_indexes: list[int] | None = None,
+    rng: random.Random | None = None,
+) -> tuple[list[dict[str, str]], list[int]]:
+    """Pick one final candidate per paragraph; avoid an identical whole round when possible."""
+    rng = rng or random.Random()
+    indexes = [rng.randrange(len(pool["candidates"])) for pool in pools]
+    if previous_indexes == indexes:
+        changeable = [index for index, pool in enumerate(pools) if len(pool["candidates"]) > 1]
+        if changeable:
+            pool_index = rng.choice(changeable)
+            old_index = indexes[pool_index]
+            offset = rng.randrange(1, len(pools[pool_index]["candidates"]))
+            indexes[pool_index] = (old_index + offset) % len(pools[pool_index]["candidates"])
+    segments = [
+        {"id": pool["id"], "text": pool["candidates"][indexes[index]]}
+        for index, pool in enumerate(pools)
+    ]
+    return segments, indexes
+
+
 @dataclass
 class LiveSnapshot:
     session_id: str
@@ -102,6 +155,8 @@ class LiveSnapshot:
     client_connected: bool
     error: str = ""
     finished: bool = False
+    round_number: int = 0
+    looping: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +173,8 @@ class LiveSnapshot:
             "client_connected": self.client_connected,
             "error": self.error,
             "finished": self.finished,
+            "round_number": self.round_number,
+            "looping": self.looping,
         }
 
 
@@ -132,10 +189,13 @@ class LiveSession:
         cache_status: Callable[[str], dict[str, Any]],
         playback_speed: float = 1.0,
         volume: float = 100.0,
+        candidate_pools: list[dict[str, Any]] | None = None,
     ) -> None:
         self.session_id = session_id
         self.voice = voice
         self.segments = segments
+        self.candidate_pools = candidate_pools or []
+        self.looping = bool(self.candidate_pools)
         self._synthesize = synthesize
         self._enqueue = enqueue
         self._cache_status = cache_status
@@ -146,8 +206,13 @@ class LiveSession:
         self._resume = threading.Event()
         self._resume.set()
         self._thread = threading.Thread(target=self._run, name=f"live-{session_id}", daemon=True)
+        self._random = random.Random()
+        self._previous_candidate_indexes: list[int] | None = None
+        self._sequence = 0
         self.status = "starting"
         self.generated_segments = 0
+        self.total_segments = len(segments)
+        self.round_number = 0
         self.error = ""
         self.finished = False
 
@@ -180,14 +245,16 @@ class LiveSession:
         with self._lock:
             status = self.status
             generated = self.generated_segments
+            total = self.total_segments
             error = self.error
             finished = self.finished
+            round_number = self.round_number
         cache = self._cache_status(self.session_id)
         return LiveSnapshot(
             self.session_id,
             status,
             generated,
-            len(self.segments),
+            total,
             int(cache.get("ready", 0) or 0),
             int(cache.get("processing", 0) or 0),
             int(cache.get("completed", 0) or 0),
@@ -195,30 +262,54 @@ class LiveSession:
             bool(cache.get("client_connected", False)),
             error,
             finished,
+            round_number,
+            self.looping,
         )
+
+    def _round_segments(self) -> list[dict[str, str]]:
+        if not self.looping:
+            if self.round_number:
+                return []
+            return self.segments
+        selected, indexes = choose_candidate_round(
+            self.candidate_pools,
+            self._previous_candidate_indexes,
+            self._random,
+        )
+        self._previous_candidate_indexes = indexes
+        return prepare_live_segments(selected)
 
     def _run(self) -> None:
         try:
             with self._lock:
                 if self.status == "starting":
                     self.status = "running"
-            for sequence, segment in enumerate(self.segments, 1):
-                if self._stop.is_set():
-                    return
-                self._resume.wait()
-                if self._stop.is_set():
-                    return
+            while not self._stop.is_set():
+                round_segments = self._round_segments()
+                if not round_segments:
+                    break
                 with self._lock:
-                    if self.status == "paused":
-                        self.status = "running"
-                audio = self._synthesize(segment["text"], self.voice)
-                if self._stop.is_set():
-                    return
-                self._enqueue(segment["id"], sequence, segment["text"], self.voice, audio)
-                with self._lock:
-                    self.generated_segments += 1
+                    self.round_number += 1
+                    self.generated_segments = 0
+                    self.total_segments = len(round_segments)
+                for position, segment in enumerate(round_segments, 1):
+                    if self._stop.is_set():
+                        return
+                    self._resume.wait()
+                    if self._stop.is_set():
+                        return
+                    audio = self._synthesize(segment["text"], self.voice)
+                    if self._stop.is_set():
+                        return
+                    self._sequence += 1
+                    item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
+                    self._enqueue(item_id, self._sequence, segment["text"], self.voice, audio)
+                    with self._lock:
+                        self.generated_segments += 1
+                if not self.looping:
+                    break
             with self._lock:
-                if self.status != "failed":
+                if self.status != "failed" and not self._stop.is_set():
                     self.status = "stopped"
                     self.finished = True
         except Exception as exc:  # keep the HTTP server alive when one segment fails
@@ -258,7 +349,13 @@ class LiveSessionManager:
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
-            segments = prepare_live_segments(segments)
+            loop_mode = bool(
+                isinstance(segments, list)
+                and segments
+                and all(isinstance(item, dict) and "candidates" in item for item in segments)
+            )
+            candidate_pools = prepare_candidate_pools(segments) if loop_mode else []
+            prepared_segments = [] if loop_mode else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
         with self._lock:
@@ -269,16 +366,17 @@ class LiveSessionManager:
             session = LiveSession(
                 uuid.uuid4().hex[:12],
                 voice.strip(),
-                segments,
+                prepared_segments,
                 self._synthesize,
                 self._enqueue,
                 self._cache_status,
                 playback_speed,
                 volume,
+                candidate_pools=candidate_pools,
             )
             self._session = session
             session.start()
-            return {"session_id": session.session_id, "status": "starting"}
+            return {"session_id": session.session_id, "status": "starting", "looping": session.looping}
 
     def status(self) -> dict[str, Any]:
         with self._lock:
