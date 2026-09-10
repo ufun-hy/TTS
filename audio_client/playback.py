@@ -58,8 +58,8 @@ class WinMMPlayer:
         self._command(f'open "{str(path).replace(chr(34), "")}" type waveaudio alias {alias}')
         try:
             self._command(f"set {alias} time format milliseconds")
-            self._command(f"set {alias} speed {max(1, round(speed * 1000))}")
-            self._command(f"setaudio {alias} volume to {round(max(0.0, min(100.0, volume)) * 10)}")
+            # Keep Windows playback intentionally simple. Speed and volume are
+            # applied on the Mac before the WAV enters Audio Cache.
             self._command(f"play {alias}")
             paused = False
             while True:
