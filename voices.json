@@ -4,5 +4,11 @@
   },
   "speaker_c": {
     "prompt_speech": "runtime/models/voices/speaker_c.gguf"
+  },
+  "speaker_a": {
+    "prompt_speech": "runtime/models/voices/speaker_a.gguf"
+  },
+  "speaker_b": {
+    "prompt_speech": "runtime/models/voices/speaker_b.gguf"
   }
 }
