@@ -33,3 +33,11 @@ Text Studio 可直接选择“稿清理结果”，或接收上述链接。导�
 API：录音服务 `GET /api/transcript/results` 列出清理结果，`GET /api/transcript/jobs/<job_id>` 也可读取持久化结果；Text Studio 提供 `GET /api/transcript/results` 与 `GET /api/transcript/result?job_id=<id>`。不需要跨服务写请求或跨域配置。
 
 共享持久化代码位于 `recording_transcript/results.py`；`tests/test_transcript_handoff.py` 覆盖任务完成落盘、服务重建后恢复、Text Studio 接续与无效/失败结果隔离。已有仅存在内存、且服务已退出的旧任务无法追溯恢复；可重新转录。
+
+## 一键启动故障修复
+
+`stack-start.sh` 会设置 `PYTHONPATH`。直接运行 `server/*.py` 时，Python 又把 `server/` 放到搜索路径首位；此前代码仅在根目录不存在时插入根目录，造成同名 `server/recording_transcript.py` 遮蔽 `recording_transcript/` 包，8770 与 8771 均报 `recording_transcript is not a package`。两个服务现在始终将仓库根目录优先放入搜索路径。`tests/test_service_entrypoints.py` 使用一键启动相同的环境，验证三个脚本入口都能导入并显示帮助。
+
+一键启动使用 `server/text_studio_entry.py`，加载 `web/text-studio-recording-link.js`，顶部提供“录音转文稿”入口。start 自动替换本仓库的旧 `server/text_studio.py` 监听；stop 同时处理新旧入口，并继续检查仓库路径以避免终止其他项目进程。Gateway 停止后等待监听退出，避免 restart 把尚未退出的旧监听误判为已启动。最终 status 非 READY 时 start 返回失败状态。
+
+录音服务 `/api/health` 中 `asr_ready` 表示模型目录存在；服务 READY 不代表已完成真实音频识别或 TTS 播放验证。

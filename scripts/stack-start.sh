@@ -129,4 +129,4 @@ else
 fi
 
 echo
-/bin/bash "$ROOT/scripts/stack-status.sh" || true
+/bin/bash "$ROOT/scripts/stack-status.sh"

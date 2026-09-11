@@ -17,8 +17,8 @@ import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# Put the package root before server/ even when PYTHONPATH already contains it.
+sys.path.insert(0, str(ROOT))
 
 from recording_transcript.results import save_result, load_result, list_results
 from recording_transcript.pipeline import TranscriptError, transcribe_recording

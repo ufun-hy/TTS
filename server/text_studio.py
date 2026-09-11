@@ -29,8 +29,8 @@ else:
     from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
     from live_session import LiveSessionError, build_live_manager
 
-if str(Path(__file__).resolve().parents[1]) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Direct script execution puts server/ first; prefer the real shared package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from recording_transcript.results import list_results, load_result
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
