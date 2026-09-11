@@ -229,7 +229,7 @@ Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v
 
 ## Live Session V1
 
-Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终自然段文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
+Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终话术单元文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 ```bash
 export AUDIO_CACHE_URL="http://127.0.0.1:8000"
@@ -244,3 +244,5 @@ export AUDIO_CACHE_URL="http://127.0.0.1:8000"
 - FIFO 是单 worker，返回成功前必须完成合成和本机播放。
 - 日志记录 job ID、来源、音色、文本长度、排队/合成/播放耗时和结果，不记录全文文本或 API Key。
 - 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端 `auto`；当前 Mac mini M4 Pro 实测使用 Metal。
+
+Text Studio 支持接续已有清洗版项目、按完整句子和话题整理话术单元、统一全部候选事实，以及临时/正式项目分离。用法与限制见 [Text Studio 验收说明](docs/text-studio-facts-restore.md#本轮验收候选导入与项目保存)。

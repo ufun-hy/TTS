@@ -57,21 +57,6 @@
     return false;
   }
 
-  function sentenceRangesAdvanced(text) {
-    const out = [];
-    const re = /[^。！？!?；;\n]+[。！？!?；;]?/g;
-    let m;
-    while ((m = re.exec(String(text || '')))) {
-      const value = m[0].trim();
-      if (value) out.push({text: value, start: m.index});
-    }
-    return out;
-  }
-
-  function workingText(p) {
-    return p?.candidates?.length ? selectedText(p) : String(p?.original_text || '').trim();
-  }
-
   function extractProductPrices(sentence) {
     const found = [];
     const seen = new Set();
@@ -98,51 +83,5 @@
     return found;
   }
 
-  function renderEnhancedFactDrawer() {
-    if (!$('factSummary') || !$('factResults')) return;
-    const counts = state.factFindings.reduce((m, x) => (m[x.type] = (m[x.type] || 0) + 1, m), {});
-    const types = ['价格', '包邮', '运费险', '包赔', '发货时间', '主播人设'];
-    $('factSummary').innerHTML = types.filter(t => counts[t]).map(t => `<span class="fact-chip">${t} ${counts[t]}</span>`).join('') || '<span class="fact-chip">没有待处理冲突</span>';
-    $('factResults').innerHTML = state.factFindings.length ? state.factFindings.map(x => `<div class="fact-item"><div class="fact-top"><span class="fact-type">${escapeHtml(x.type)}</span><b>${escapeHtml(x.paragraph_id)}</b></div><div class="fact-context">${highlightText(x.context, x.phrase)}</div><div class="fact-reason">${escapeHtml(x.reason)} 目标口径：${escapeHtml(x.expected)}</div><div class="fact-actions"><button class="btn ghost small" data-price-patch-locate="${x.paragraph_index}">定位修改</button></div></div>`).join('') : '<div class="risk-empty">当前没有商品事实冲突。</div>';
-    if ($('factFixBtn')) $('factFixBtn').disabled = !state.factFindings.length;
-    $('factResults').querySelectorAll('[data-price-patch-locate]').forEach(btn => btn.addEventListener('click', () => {
-      const pi = Number(btn.dataset.pricePatchLocate);
-      if (!state.paragraphs[pi]) return;
-      state.riskFocusParagraph = pi;
-      state.searchFocusParagraph = -1;
-      state.paragraphs[pi].expanded = true;
-      $('factDrawer')?.classList.remove('open');
-      $('drawerBackdrop')?.classList.remove('open');
-      switchView('prepare');
-      render();
-      requestAnimationFrame(() => document.getElementById(`para-${pi}`)?.scrollIntoView({behavior:'smooth', block:'center'}));
-    }));
-  }
-
-  function supplementPriceFindings() {
-    const configured = canonicalPriceAdvanced($('factPrice')?.value || '');
-    if (!configured || !state.paragraphs?.length) return;
-    const existing = new Set((state.factFindings || []).filter(x => x.type === '价格').map(x => `${x.paragraph_index}:${x.position}:${x.phrase}`));
-    let added = 0;
-    state.paragraphs.forEach((p, pi) => {
-      for (const sentence of sentenceRangesAdvanced(workingText(p))) {
-        for (const hit of extractProductPrices(sentence.text)) {
-          if (hit.value === configured) continue;
-          const position = sentence.start + hit.index;
-          const key = `${pi}:${position}:${hit.phrase}`;
-          if (existing.has(key)) continue;
-          existing.add(key);
-          state.factFindings.push({paragraph_id:p.id, paragraph_index:pi, position, type:'价格', phrase:hit.phrase, context:sentence.text, expected:`${configured}元`, reason:`当前配置到手价为 ${configured}元。`});
-          added++;
-        }
-      }
-    });
-    if (!added) return;
-    state.factFindings.sort((a,b) => a.paragraph_index - b.paragraph_index || a.position - b.position);
-    renderEnhancedFactDrawer();
-    showMessage(`发现 ${state.factFindings.length} 处商品事实疑似不一致，其中补充识别 ${added} 处价格话术。`, 'info');
-  }
-
-  const checkBtn = $('factCheckBtn');
-  if (checkBtn) checkBtn.addEventListener('click', () => setTimeout(supplementPriceFindings, 0));
+  window.ttsExtractProductPrices = extractProductPrices;
 })();

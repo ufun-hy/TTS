@@ -21,9 +21,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 if __package__:
+    from .speech_units import speech_units
     from .text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
     from .live_session import LiveSessionError, build_live_manager
 else:
+    from speech_units import speech_units
     from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
     from live_session import LiveSessionError, build_live_manager
 
@@ -43,14 +45,19 @@ def split_paragraphs(text: str) -> list[dict[str, Any]]:
         return []
     raw = [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
     paragraphs: list[dict[str, Any]] = []
-    for index, paragraph in enumerate(raw, 1):
-        sentences = [part.strip() for part in SENTENCE_RE.split(paragraph) if part.strip()]
-        paragraphs.append({
-            "id": f"p{index:04d}",
-            "index": index,
-            "original_text": paragraph,
-            "sentences": sentences,
-        })
+    for source_index, paragraph in enumerate(raw, 1):
+        offset = 0
+        for unit in speech_units(paragraph):
+            index = len(paragraphs) + 1
+            start = paragraph.index(unit, offset)
+            offset = start + len(unit)
+            paragraphs.append({
+                "id": f"p{index:04d}", "index": index,
+                "original_text": unit,
+                "source_paragraph_index": source_index,
+                "source_start": start, "source_end": offset,
+                "sentences": [part.strip() for part in SENTENCE_RE.split(unit) if part.strip()],
+            })
     return paragraphs
 
 
@@ -341,6 +348,16 @@ def _new_project_id() -> str:
     return f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
 
+def project_kind(project: dict[str, Any]) -> str:
+    if project.get("project_kind") in {"saved", "draft"}:
+        return project["project_kind"]
+    # Legacy saves did not record intent; hide only known validation IDs and
+    # unparsed states, and keep them available through the draft filter.
+    if "-smoke-" in str(project.get("project_id", "")) or not project.get("paragraphs"):
+        return "draft"
+    return "saved"
+
+
 def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
     paragraphs = project.get("paragraphs") if isinstance(project.get("paragraphs"), list) else []
     generated = sum(
@@ -352,6 +369,7 @@ def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
         "project_id": project.get("project_id", ""),
         "name": project.get("name", "未命名项目"),
         "source_name": project.get("source_name", ""),
+        "project_kind": project_kind(project),
         "created_at": project.get("created_at", ""),
         "updated_at": project.get("updated_at", ""),
         "paragraph_count": len(paragraphs),
@@ -413,6 +431,7 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
 
     path = _project_file(root, project_id)
     created_at = _utc_timestamp()
+    existing = {}
     if path.is_file():
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
@@ -421,8 +440,12 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
+    kind = payload.get("project_kind", project_kind(existing) if existing else "saved")
+    if kind not in {"saved", "draft"}:
+        raise ValueError("invalid project_kind")
     now = _utc_timestamp()
     project = {
+        "project_kind": kind,
         "schema_version": PROJECT_SCHEMA_VERSION,
         "project_id": project_id,
         "name": name,
@@ -459,7 +482,7 @@ def load_project(root: Path, project_id: str) -> dict[str, Any]:
     return raw
 
 
-def list_projects(root: Path) -> list[dict[str, Any]]:
+def list_projects(root: Path, include_drafts: bool = False) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     projects_root = _projects_root(root)
     for path in projects_root.glob("*/project.json"):
@@ -472,7 +495,8 @@ def list_projects(root: Path) -> list[dict[str, Any]]:
         project_id = raw.get("project_id")
         if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
             continue
-        items.append(_project_summary(raw))
+        if include_drafts or project_kind(raw) == "saved":
+            items.append(_project_summary(raw))
     items.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
     return items
 
@@ -617,7 +641,7 @@ def make_handler(
                 return
 
             if path == "/api/projects":
-                self._json(200, {"projects": list_projects(root)})
+                self._json(200, {"projects": list_projects(root, (query.get("include_drafts") or [""])[0] == "1")})
                 return
 
             if path == "/api/project":
@@ -627,7 +651,7 @@ def make_handler(
                 except FileNotFoundError:
                     self._json(404, {"error": "project_not_found"})
                     return
-                self._json(200, {"project": project})
+                self._json(200, {"project": {**project, "project_kind": project_kind(project)}})
                 return
 
             self._json(404, {"error": "not_found"})

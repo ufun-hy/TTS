@@ -180,7 +180,7 @@
     out.push({paragraph_id: p.id, paragraph_index: pi, position: sentence.start + (position || 0), type, phrase, context: sentence.text, expected, reason});
   }
 
-  function detectFactConflicts() {
+  function detectFactConflicts(silent = false) {
     if (!state.paragraphs.length) {
       showMessage('请先解析原稿，再检查商品事实。', 'err');
       return;
@@ -189,16 +189,16 @@
     const wantedPrice = canonicalPrice(f.price);
     const out = [];
     state.paragraphs.forEach((p, pi) => {
-      const text = factWorkingText(p);
+      const versions = [{candidate_index: -1, text: p.original_text || ''},
+        ...(p.candidates || []).map((text, candidate_index) => ({candidate_index, text: candidate_index === (p.selectedIndex || 0) ? factWorkingText(p) : text}))];
+      for (const version of versions) {
+      const begin = out.length;
+      const text = version.text;
       for (const sentence of sentenceRanges(text)) {
         if (wantedPrice) {
-          pricePattern.lastIndex = 0;
-          for (const m of sentence.text.matchAll(pricePattern)) {
-            const around = sentence.text.slice(Math.max(0, (m.index || 0) - 10), Math.min(sentence.text.length, (m.index || 0) + m[0].length + 10));
-            if (/补贴|立减|优惠|省\d|券/.test(around)) continue;
-            if (!/价格|到手|只要|仅需|卖|买|拍|链接|今天|现在|拿下|带走/.test(around)) continue;
-            const got = canonicalPrice(m[0]);
-            if (got && got !== wantedPrice) pushFinding(out, pi, p, sentence, '价格', m[0], `${wantedPrice}元`, `当前配置到手价为 ${wantedPrice}元。`, m.index);
+          const hits = window.ttsExtractProductPrices ? window.ttsExtractProductPrices(sentence.text) : [];
+          for (const hit of hits) {
+            if (Number(hit.value) !== Number(wantedPrice)) pushFinding(out, pi, p, sentence, '价格', hit.phrase, `${wantedPrice}元`, `当前配置到手价为 ${wantedPrice}元。`, hit.index);
           }
         }
         if (f.free_shipping !== 'unknown') {
@@ -231,9 +231,12 @@
           for (const m of sentence.text.matchAll(personaBad)) pushFinding(out, pi, p, sentence, '主播人设', m[0], f.host_persona === 'female' ? '女性自称' : f.host_persona === 'male' ? '男性自称' : '中性自称', `当前主播人设为${f.host_persona === 'female' ? '女性' : f.host_persona === 'male' ? '男性' : '中性'}。`, m.index);
         }
       }
+      out.slice(begin).forEach(finding => finding.candidate_index = version.candidate_index);
+      }
     });
     state.factFindings = out;
     state.factChecked = true;
+    if (silent) return out;
     syncFactMeta();
     renderFactDrawer();
     scheduleSave(0);
@@ -273,33 +276,51 @@
     $('sourceText').value = state.paragraphs.map(p => p.original_text || '').join('\n\n');
   }
 
-  async function polishParagraphs(indexes) {
+  function targetText(pi, ci) {
+    const p = state.paragraphs[pi];
+    return ci < 0 ? p.original_text : ci === (p.selectedIndex || 0) ? factWorkingText(p) : p.candidates[ci];
+  }
+
+  function writeTarget(pi, ci, text) {
+    const p = state.paragraphs[pi];
+    if (ci < 0) { p.original_text = text; p.sentences = sentenceRanges(text).map(x => x.text); }
+    else { p.candidates[ci] = text; if (ci === (p.selectedIndex || 0)) p.editedText = text; }
+  }
+
+  async function polishParagraphs(targets) {
     const provider = $('provider').value;
-    if (!indexes.length || !state.providerStatus[provider]) return false;
-    const f = readFactsFromForm();
-    const facts = `商品事实：到手价=${f.price || '未设置'}；包邮=${f.free_shipping}；运费险=${f.shipping_insurance}；包赔=${f.compensation}；发货时间=${f.shipping_time || '未设置'}；主播人设=${f.host_persona}。`;
-    const paragraphs = indexes.map(i => ({id: state.paragraphs[i].id, original_text: factWorkingText(state.paragraphs[i])}));
-    const data = await api('/api/generalize', {project_id: state.projectId, paragraph_indexes: indexes, provider, model: state.selectedModel, candidate_count: 1, instruction: `${facts} 这是已按商品事实做过确定性修正的文本。只做必要的自然口语润色，消除替换后可能出现的病句；不得恢复旧价格、运费险、包赔、包邮或发货承诺，不得新增任何商品事实。`, paragraphs});
-    const byId = Object.fromEntries(data.paragraphs.map(p => [p.id, p]));
-    indexes.forEach(i => {
-      const candidate = byId[state.paragraphs[i].id]?.candidates?.[0];
-      if (candidate) setFinalText(i, candidate);
+    if (!targets.length || !state.providerStatus[provider]) return false;
+    const snapshot = state.paragraphs;
+    const paragraphs = targets.map(([pi, ci], i) => ({id: `fix${i}`, original_text: targetText(pi, ci)}));
+    const data = await api('/api/generalize', {project_id: state.projectId, paragraph_indexes: targets.map(t => t[0]), provider, model: state.selectedModel, candidate_count: 1,
+      instruction: `商品事实：${JSON.stringify(readFactsFromForm())}。只做必要的自然口语润色，不得恢复旧事实或新增事实。`, paragraphs});
+    if (state.paragraphs !== snapshot) return false;
+    targets.forEach(([pi, ci], i) => {
+      const candidate = data.paragraphs.find(p => p.id === `fix${i}`)?.candidates?.[0];
+      if (candidate && targetText(pi, ci) === paragraphs[i].original_text) {
+        writeTarget(pi, ci, candidate);
+        if (detectFactConflicts(true).some(f => f.paragraph_index === pi && f.candidate_index === ci))
+          writeTarget(pi, ci, paragraphs[i].original_text);
+      }
     });
     return true;
   }
 
   async function fixFactConflicts() {
+    detectFactConflicts(true);
     if (!state.factFindings.length) return;
     const facts = readFactsFromForm();
     const byParagraph = new Map();
     const complex = new Set();
     for (const finding of state.factFindings) {
-      if (!byParagraph.has(finding.paragraph_index)) byParagraph.set(finding.paragraph_index, []);
-      byParagraph.get(finding.paragraph_index).push(finding);
-      if (!['价格', '主播人设'].includes(finding.type)) complex.add(finding.paragraph_index);
+      const key = `${finding.paragraph_index}:${finding.candidate_index}`;
+      if (!byParagraph.has(key)) byParagraph.set(key, []);
+      byParagraph.get(key).push(finding);
+      if (!['价格', '主播人设'].includes(finding.type)) complex.add(key);
     }
-    for (const [pi, findings] of byParagraph) {
-      let text = factWorkingText(state.paragraphs[pi]);
+    for (const [key, findings] of byParagraph) {
+      const [pi, ci] = key.split(':').map(Number);
+      let text = targetText(pi, ci);
       const contexts = new Map();
       for (const f of findings) {
         if (!contexts.has(f.context)) contexts.set(f.context, []);
@@ -316,14 +337,14 @@
             const parts = fixed.split(/([，；])/);
             let changed = false;
             fixed = parts.map(part => {
-              if (!changed && part.includes(finding.phrase)) { changed = true; return replacement; }
+              if (!changed && part.includes(finding.phrase)) { changed = true; return replacement + (part.match(/[。！？!?][”’」』）)]*$/)?.[0] || ''); }
               return part;
             }).join('').replace(/(?:，|；){2,}/g, '，');
           }
         }
         text = text.replace(context, fixed);
       }
-      setFinalText(pi, text);
+      writeTarget(pi, ci, text);
     }
     updateSourceIfUngenerated();
     invalidateReview();
@@ -332,17 +353,19 @@
     renderFactDrawer();
     render();
     showMessage('商品事实已做确定性修正，正在处理必要的自然口语润色…', 'info');
+    scheduleSave(0);
     let polished = false;
+    let polishError = '';
     try {
-      const indexes = [...complex].filter(i => state.paragraphs[i].candidates?.length);
+      const indexes = [...complex].map(key => key.split(':').map(Number));
       polished = await polishParagraphs(indexes);
     } catch (e) {
-      showMessage(`事实已修正；模型润色未完成：${e.message}`, 'info');
+      polishError = e.message;
     }
     detectFactConflicts();
     closeFact();
     scheduleSave(0);
-    showMessage(polished ? '商品事实已批量修正，并用当前模型完成必要润色。' : '商品事实已批量修正。', 'ok');
+    showMessage(polishError ? `事实已修正；模型润色未完成：${polishError}` : state.factFindings.length ? `已修正，仍有 ${state.factFindings.length} 处需要人工确认。` : polished ? '商品事实已批量修正，并用当前模型完成必要润色。' : '商品事实已批量修正。', polishError || state.factFindings.length ? 'info' : 'ok');
   }
 
   function counts() {
@@ -354,12 +377,13 @@
     const c = counts();
     const types = ['价格', '包邮', '运费险', '包赔', '发货时间', '主播人设'];
     $('factSummary').innerHTML = types.filter(t => c[t]).map(t => `<span class="fact-chip">${t} ${c[t]}</span>`).join('') || '<span class="fact-chip">没有待处理冲突</span>';
-    $('factResults').innerHTML = state.factFindings.length ? state.factFindings.map(x => `<div class="fact-item"><div class="fact-top"><span class="fact-type">${escapeHtml(x.type)}</span><b>${escapeHtml(x.paragraph_id)}</b></div><div class="fact-context">${highlightText(x.context, x.phrase)}</div><div class="fact-reason">${escapeHtml(x.reason)} 目标口径：${escapeHtml(x.expected)}</div><div class="fact-actions"><button class="btn ghost small" data-fact-locate="${x.paragraph_index}">定位修改</button></div></div>`).join('') : '<div class="risk-empty">当前没有商品事实冲突。</div>';
+    $('factResults').innerHTML = state.factFindings.length ? state.factFindings.map(x => `<div class="fact-item"><div class="fact-top"><span class="fact-type">${escapeHtml(x.type)}</span><b>${escapeHtml(x.paragraph_id)} · ${x.candidate_index < 0 ? '原稿' : '候选 ' + (x.candidate_index + 1)}</b></div><div class="fact-context">${highlightText(x.context, x.phrase)}</div><div class="fact-reason">${escapeHtml(x.reason)} 目标口径：${escapeHtml(x.expected)}</div><div class="fact-actions"><button class="btn ghost small" data-fact-locate="${x.paragraph_index}" data-candidate="${x.candidate_index}">定位修改</button></div></div>`).join('') : '<div class="risk-empty">当前没有商品事实冲突。</div>';
     $('factFixBtn').disabled = !state.factFindings.length;
-    $('factResults').querySelectorAll('[data-fact-locate]').forEach(btn => btn.addEventListener('click', () => locateFact(Number(btn.dataset.factLocate))));
+    $('factResults').querySelectorAll('[data-fact-locate]').forEach(btn => btn.addEventListener('click', () => locateFact(Number(btn.dataset.factLocate), Number(btn.dataset.candidate))));
   }
 
-  function locateFact(pi) {
+  function locateFact(pi, ci) {
+    if (ci >= 0) selectCandidate(pi, ci);
     if (!state.paragraphs[pi]) return;
     state.riskFocusParagraph = pi;
     state.searchFocusParagraph = -1;
@@ -381,7 +405,7 @@
     if (!$('riskDrawer')?.classList.contains('open')) $('drawerBackdrop')?.classList.remove('open');
   }
 
-  $('factCheckBtn')?.addEventListener('click', detectFactConflicts);
+  $('factCheckBtn')?.addEventListener('click', () => detectFactConflicts());
   $('factFixBtn')?.addEventListener('click', fixFactConflicts);
   $('closeFact')?.addEventListener('click', closeFact);
   $('drawerBackdrop')?.addEventListener('click', closeFact);
