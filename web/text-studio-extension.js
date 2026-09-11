@@ -136,19 +136,6 @@
   }
 
   const zhDigits = {'零':'0','〇':'0','一':'1','二':'2','两':'2','三':'3','四':'4','五':'5','六':'6','七':'7','八':'8','九':'9'};
-  function canonicalPrice(value) {
-    let v = String(value || '').trim().replace(/[￥¥\s]/g, '');
-    const direct = v.match(/\d+(?:\.\d+)?/);
-    if (direct) return String(Number(direct[0]));
-    const block = v.match(/([零〇一二两三四五六七八九十]+)块(?:钱)?([零〇一二两三四五六七八九])?/);
-    if (block) {
-      const integer = chineseInteger(block[1]);
-      const decimal = block[2] ? zhDigits[block[2]] : '';
-      return decimal ? `${integer}.${decimal}` : String(integer);
-    }
-    return '';
-  }
-
   function chineseInteger(s) {
     if (!s) return 0;
     if (s.includes('十')) {
@@ -160,12 +147,28 @@
     return Number([...s].map(ch => zhDigits[ch] || '').join('') || 0);
   }
 
-  const pricePattern = /(?:[￥¥]\s*)?(?:\d+(?:\.\d+)?\s*(?:元|块钱?|块)|[零〇一二两三四五六七八九十]+块(?:钱)?[零〇一二两三四五六七八九]?)/g;
+  function canonicalPrice(value) {
+    const v = String(value || '').trim().replace(/[￥¥\s]/g, '');
+    const arabicBlock = v.match(/(\d+)(?:块钱?|元)(\d)?/);
+    if (arabicBlock) return arabicBlock[2] ? `${Number(arabicBlock[1])}.${arabicBlock[2]}` : String(Number(arabicBlock[1]));
+    const direct = v.match(/\d+(?:\.\d+)?/);
+    if (direct) return String(Number(direct[0]));
+    const block = v.match(/([零〇一二两三四五六七八九十]+)块(?:钱)?([零〇一二两三四五六七八九])?/);
+    if (block) {
+      const integer = chineseInteger(block[1]);
+      const decimal = block[2] ? zhDigits[block[2]] : '';
+      return decimal ? `${integer}.${decimal}` : String(integer);
+    }
+    return '';
+  }
+
+  const pricePattern = /(?:[￥¥]\s*)?(?:\d+(?:\.\d+)?\s*元|\d+(?:块钱?|元)\d?|[零〇一二两三四五六七八九十]+块(?:钱)?[零〇一二两三四五六七八九]?)/g;
+  const insuranceWord = '(?:运费险|晕飞险|运飞险|云飞险|孕飞险)';
   const patterns = {
     free_yes: /全国包邮|包邮|免邮|邮费(?:我们|商家|我)?(?:出|承担)/g,
     free_no: /不包邮|不含邮费|运费自理|邮费自理|需要[^，。！？]{0,8}(?:运费|邮费)/g,
-    insurance_yes: /(?:有|带|送|赠送|买|购买|安排)[^，。！？]{0,8}运费险|运费险[^，。！？]{0,8}(?:有|送|赠送|买|购买|安排)/g,
-    insurance_no: /没有运费险|无运费险|不含运费险|不送运费险|不买运费险/g,
+    insurance_yes: new RegExp(`(?:有|带|送|赠送|买|购买|安排)[^，。！？]{0,8}${insuranceWord}|${insuranceWord}[^，。！？]{0,8}(?:有|送|赠送|买|购买|安排)`, 'g'),
+    insurance_no: new RegExp(`没有${insuranceWord}|无${insuranceWord}|不含${insuranceWord}|不送${insuranceWord}|不买${insuranceWord}`, 'g'),
     comp_yes: /包赔|坏果[^，。！？]{0,10}(?:赔|赔付|赔偿)|烂果[^，。！？]{0,10}(?:赔|赔付|赔偿)|磕碰[^，。！？]{0,10}(?:赔|赔付|赔偿)|有问题[^，。！？]{0,10}直接赔|直接给你赔|直接赔付|直接赔偿/g,
     comp_no: /不包赔|没有包赔|不赔付|不赔偿/g,
     shipping: /当天发货|今天发货|明天发货|马上发货|立即发货|次日发|(?:24|48|72|\d+)小时内发货|\d+天内发货|\d+天左右(?:到|送达)|当天(?:发走|发出)/g,
@@ -247,7 +250,7 @@
     if (finding.type === '主播人设') {
       if (facts.host_persona === 'neutral') return '我';
       if (facts.host_persona === 'female') return finding.phrase.replace(/哥哥我|兄弟我|老哥我/g, '妹妹我').replace(/哥跟你说/g, '妹跟你说').replace(/哥哥给你|哥给你/g, '妹妹给你');
-      return finding.phrase.replace(/妹妹我|姐姐我/g, '哥我').replace(/姐跟你说|妹跟你说/g, '哥跟你说').replace(/姐姐给你|姐给你/g, '哥给你');
+      return finding.phrase.replace(/妹妹我|姐姐我/g, '我').replace(/姐跟你说|妹跟你说/g, '哥跟你说').replace(/姐姐给你|姐给你/g, '哥给你');
     }
     return finding.phrase;
   }
