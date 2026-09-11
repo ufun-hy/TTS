@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HTML_PATH = (ROOT / "web" / "text-studio.html").resolve()
 EXTENSION_PATHS = [
     ROOT / "web" / "text-studio-extension.js",
+    ROOT / "web" / "text-studio-price-patch.js",
     ROOT / "web" / "text-studio-restore.js",
 ]
 _ORIGINAL_READ_BYTES = Path.read_bytes
