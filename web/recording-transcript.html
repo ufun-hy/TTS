@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>录音转文稿</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#172033;background:#f5f7fb}
+*{box-sizing:border-box}body{margin:0}.page{max-width:900px;margin:0 auto;padding:48px 20px 72px}h1{margin:0;font-size:30px}h2{margin:0;font-size:18px}.intro{margin:8px 0 28px;color:#667085}.card{background:#fff;border:1px solid #e4e7ec;border-radius:16px;padding:24px;box-shadow:0 10px 30px #1720330d}.dropzone{display:block;padding:38px 20px;border:1.5px dashed #98a2b3;border-radius:13px;text-align:center;cursor:pointer;background:#fafbff;transition:.15s}.dropzone:hover,.dropzone.dragover{border-color:#2f6fed;background:#f1f5ff}.drop-title{font-size:17px;font-weight:700}.drop-hint{margin-top:7px;color:#667085;font-size:13px}.meta{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:18px}.meta-item{padding:12px 14px;background:#f8fafc;border-radius:10px}.meta-label{display:block;color:#667085;font-size:12px;margin-bottom:5px}.meta-value{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.actions{display:flex;gap:10px;align-items:center;margin-top:20px}.button{border:0;border-radius:10px;padding:10px 16px;font:inherit;font-weight:700;cursor:pointer;background:#e9eef7;color:#172033}.button.primary{background:#2f6fed;color:#fff}.button:disabled{opacity:.45;cursor:not-allowed}.status{margin:20px 0 0;color:#475467}.status strong{color:#172033}.hint{min-height:20px;margin:8px 0 0;color:#667085;font-size:13px}.error{color:#b42318}.result{margin-top:26px}.result-head{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.transcript{min-height:180px;padding:20px;white-space:pre-wrap;line-height:1.9;font-size:16px;border:1px solid #e4e7ec;border-radius:12px;background:#fcfcfd;word-break:break-word}.result-actions{display:flex;gap:10px;margin-top:14px}.hidden{display:none}@media(max-width:600px){.page{padding-top:28px}.card{padding:16px}.meta{grid-template-columns:1fr}.result-head{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<main class="page">
+  <h1>录音转文稿</h1>
+  <p class="intro">上传一段录音，生成可以直接阅读的中文文稿。</p>
+
+  <section class="card" aria-labelledby="upload-title">
+    <h2 id="upload-title" class="hidden">上传录音</h2>
+    <label class="dropzone" id="dropzone" for="fileInput">
+      <input id="fileInput" type="file" accept=".wav,.mp3,.m4a,.mp4,audio/wav,audio/mpeg,audio/mp4,video/mp4" hidden />
+      <div class="drop-title">选择录音 / 拖入文件</div>
+      <div class="drop-hint">支持 wav、mp3、m4a、mp4</div>
+    </label>
+
+    <div class="meta">
+      <div class="meta-item"><span class="meta-label">文件名</span><span class="meta-value" id="fileName">尚未选择</span></div>
+      <div class="meta-item"><span class="meta-label">文件大小</span><span class="meta-value" id="fileSize">—</span></div>
+    </div>
+
+    <div class="actions"><button class="button primary" id="startButton" type="button" disabled>开始转录</button></div>
+    <p class="status" aria-live="polite">状态：<strong id="statusText">等待上传</strong></p>
+    <p class="hint" id="hintText">长录音处理需要一些时间，请不要关闭页面。</p>
+
+    <section class="result hidden" id="resultPanel" aria-labelledby="resultTitle">
+      <div class="result-head"><h2 id="resultTitle">文稿</h2></div>
+      <article class="transcript" id="transcript" aria-live="polite"></article>
+      <div class="result-actions">
+        <button class="button" id="copyButton" type="button" disabled>复制全文</button>
+        <button class="button" id="downloadButton" type="button" disabled>下载 TXT</button>
+      </div>
+    </section>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const allowed=new Set(['.wav','.mp3','.m4a','.mp4']);
+let selectedFile=null,jobId='',finalText='';
+let pollTimer=null;
+
+function extension(name){const at=name.lastIndexOf('.');return at<0?'':name.slice(at).toLowerCase()}
+function formatSize(bytes){if(bytes<1024)return `${bytes} B`;if(bytes<1024*1024)return `${(bytes/1024).toFixed(1)} KB`;if(bytes<1024*1024*1024)return `${(bytes/1024/1024).toFixed(1)} MB`;return `${(bytes/1024/1024/1024).toFixed(2)} GB`}
+function setHint(message,error=false){$('hintText').textContent=message;$('hintText').classList.toggle('error',error)}
+function setStatus(stage){const labels={queued:'排队中',recognizing:'正在识别',cleaning:'正在整理',completed:'已完成',failed:'失败'};$('statusText').textContent=labels[stage]||stage}
+function setFile(file){if(!file)return;if(!allowed.has(extension(file.name))){setHint('文件格式不支持，请选择 wav、mp3、m4a 或 mp4。',true);return}selectedFile=file;jobId='';finalText='';$('fileName').textContent=file.name;$('fileSize').textContent=formatSize(file.size);$('startButton').disabled=false;$('resultPanel').classList.add('hidden');$('transcript').textContent='';$('copyButton').disabled=true;$('downloadButton').disabled=true;setStatus('queued');$('statusText').textContent='等待开始';setHint('文件已准备好，点击“开始转录”。')}
+async function readResponse(response){let data={};try{data=await response.json()}catch(_){data={}}if(!response.ok)throw new Error(data.error||`请求失败（${response.status}）`);return data}
+async function getJob(){return readResponse(await fetch(`/api/transcript/jobs/${jobId}`,{cache:'no-store'}))}
+function stopPolling(){if(pollTimer){clearTimeout(pollTimer);pollTimer=null}}
+async function poll(){try{const data=await getJob();setStatus(data.stage);if(data.stage==='completed'){finalText=data.text||'';$('transcript').textContent=finalText;$('resultPanel').classList.remove('hidden');$('copyButton').disabled=!finalText;$('downloadButton').disabled=!finalText;setHint('文稿已生成，可以复制或下载。');return}if(data.stage==='failed'){setHint(data.error||'录音转文稿失败，请重试。',true);$('startButton').disabled=false;return}pollTimer=setTimeout(poll,1000)}catch(error){setHint(`读取处理状态失败：${error.message}`,true);$('startButton').disabled=false}}
+async function start(){if(!selectedFile)return;stopPolling();$('startButton').disabled=true;finalText='';$('resultPanel').classList.add('hidden');setStatus('queued');setHint('正在上传录音…');try{const response=await fetch('/api/transcript/jobs',{method:'POST',headers:{'Content-Type':selectedFile.type||'application/octet-stream','X-Filename':encodeURIComponent(selectedFile.name)},body:selectedFile});const data=await readResponse(response);jobId=data.job_id;setStatus(data.stage||'queued');setHint('任务已开始，正在处理录音。');poll()}catch(error){setStatus('failed');setHint(`开始转录失败：${error.message}`,true);$('startButton').disabled=false}}
+async function copyText(){if(!finalText)return;try{await navigator.clipboard.writeText(finalText)}catch(_){const area=document.createElement('textarea');area.value=finalText;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}setHint('已复制全文。')}
+function downloadText(){if(!finalText)return;const base=(selectedFile?.name||'录音转文稿').replace(/\.[^.]+$/,'')||'录音转文稿';const blob=new Blob(['\ufeff',finalText],{type:'text/plain;charset=utf-8'});const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`${base}.txt`;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);setHint('TXT 已下载。')}
+
+$('fileInput').addEventListener('change',event=>setFile(event.target.files?.[0]));$('startButton').addEventListener('click',start);$('copyButton').addEventListener('click',copyText);$('downloadButton').addEventListener('click',downloadText);
+for(const eventName of ['dragenter','dragover'])$('dropzone').addEventListener(eventName,event=>{event.preventDefault();$('dropzone').classList.add('dragover')});for(const eventName of ['dragleave','drop'])$('dropzone').addEventListener(eventName,event=>{event.preventDefault();$('dropzone').classList.remove('dragover')});$('dropzone').addEventListener('drop',event=>setFile(event.dataTransfer.files?.[0]));
+</script>
+</body>
+</html>

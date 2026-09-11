@@ -168,6 +168,17 @@ Mac Apple Silicon 首测已验证 `mlx-whisper 0.4.3 + mlx 0.29.3 + whisper-larg
 
 模型路径必须显式指定；脚本不会在运行时联网下载模型。
 
+### 录音转文稿 V1
+
+独立的录音转文稿页面支持 wav/mp3/m4a/mp4，使用同一套本地 `mlx-whisper + whisper-large-v3-turbo`，只输出轻度整理后的连续中文文稿，不显示时间戳或 ASR JSON：
+
+```bash
+./scripts/recording-transcript-start.sh
+# 打开 http://127.0.0.1:8771
+```
+
+详见 [docs/recording-transcript-v1.md](docs/recording-transcript-v1.md)。该入口不修改 Text Studio、Semantic Coverage、Timeline Runtime、TTS Gateway、Audio Cache 或 Windows Client。
+
 文本层入口见 [docs/timeline-speech-v1.md](docs/timeline-speech-v1.md)。它接收带时间戳的 ASR JSON，使用本机 Ollama 提取意图并生成多版本话术，保持 Segment 顺序和原节奏，输出可供后续 `/speak` 使用的模板。
 
 Generalize 默认采用 Semantic Coverage V1：Analyze 提取语义骨架和 `semantic_points` 后统一生成完整 `candidates[]`，Rewrite 不再携带完整原文，程序执行 hard_keep、semantic coverage、similarity 和 Natural Duration 审核；旧的 slots/combination 逻辑保留为 legacy mode。详见 [docs/timeline-generalize-robustness-v1.md](docs/timeline-generalize-robustness-v1.md)。
