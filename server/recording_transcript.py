@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from recording_transcript.results import save_result, load_result, list_results
 from recording_transcript.pipeline import TranscriptError, transcribe_recording
 
 
@@ -71,7 +72,15 @@ class TranscriptJobStore:
 
     def get(self, job_id: str) -> TranscriptJob | None:
         with self._lock:
-            return self._jobs.get(job_id)
+            job = self._jobs.get(job_id)
+        if job is not None:
+            return job
+        try:
+            result = load_result(self.project_root, job_id)
+        except FileNotFoundError:
+            return None
+        return TranscriptJob(job_id, result['filename'], result['size'], Path(),
+                             stage='completed', text=result['text'], updated_at=result['updated_at'])
 
     def _set_stage(self, job: TranscriptJob, stage: str) -> None:
         with self._lock:
@@ -88,6 +97,7 @@ class TranscriptJobStore:
                     self.model,
                     on_stage=lambda stage: self._set_stage(job, stage),
                 )
+            save_result(self.project_root, job.job_id, job.filename, job.size, final_text)
             with self._lock:
                 job.text = final_text
                 job.stage = "completed"
@@ -194,7 +204,10 @@ def make_handler(project_root: Path, model: Path):
                 self._html()
                 return
             if path == "/api/health":
-                self._json(200, {"status": "ok", "asr_ready": model.exists()})
+                self._json(200, {"status": "ok", "asr_ready": model.exists(), "text_studio_url": os.environ.get("TEXT_STUDIO_URL", "")})
+                return
+            if path == "/api/transcript/results":
+                self._json(200, {"results": list_results(project_root)})
                 return
             prefix = "/api/transcript/jobs/"
             if path.startswith(prefix):
@@ -202,7 +215,11 @@ def make_handler(project_root: Path, model: Path):
                 if not JOB_ID_RE.fullmatch(job_id):
                     self._json(404, {"error": "任务不存在"})
                     return
-                job = jobs.get(job_id)
+                try:
+                    job = jobs.get(job_id)
+                except (ValueError, OSError) as exc:
+                    self._json(500, {"error": f"读取清理结果失败：{exc}"})
+                    return
                 if job is None:
                     self._json(404, {"error": "任务不存在"})
                     return

@@ -51,16 +51,17 @@ def _window_similarity(units: list[dict[str, Any]], start_a: int, start_b: int, 
 
 def detect_rounds(text: str, window: int = 6) -> dict[str, Any]:
     units = split_units(text)
-    if len(units) < window * 3:
+    probe = min(max(window, 6), 12)
+    # Two full, non-overlapping probe windows are enough to find short rounds.
+    if len(units) < probe * 2:
         return {"units": units, "rounds": [], "confidence": 0.0, "message": "文本太短，未检测到重复朗读轮次"}
 
-    probe = min(max(window, 6), 12)
     candidates: list[tuple[int, float]] = []
-    min_gap = max(probe * 3, len(units) // 8)
+    min_gap = probe
     for start in range(min_gap, len(units) - probe + 1):
         score = _window_similarity(units, 0, start, probe)
         if score >= 0.60:
-            if not candidates or start - candidates[-1][0] > probe:
+            if not candidates or start - candidates[-1][0] >= probe:
                 candidates.append((start, score))
             elif score > candidates[-1][1]:
                 candidates[-1] = (start, score)
@@ -73,7 +74,7 @@ def detect_rounds(text: str, window: int = 6) -> dict[str, Any]:
     rounds = []
     for idx, start in enumerate(starts):
         end = starts[idx + 1] if idx + 1 < len(starts) else len(units)
-        if end - start < probe * 2:
+        if end - start < probe:
             continue
         rounds.append({"index": len(rounds) + 1, "start": start, "end": end, "length": end - start})
 

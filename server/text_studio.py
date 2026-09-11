@@ -29,6 +29,10 @@ else:
     from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
     from live_session import LiveSessionError, build_live_manager
 
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from recording_transcript.results import list_results, load_result
+
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
 MAX_PARAGRAPH_CHARS = 4000
@@ -351,11 +355,9 @@ def _new_project_id() -> str:
 def project_kind(project: dict[str, Any]) -> str:
     if project.get("project_kind") in {"saved", "draft"}:
         return project["project_kind"]
-    # Legacy saves did not record intent; hide only known validation IDs and
-    # unparsed states, and keep them available through the draft filter.
-    if "-smoke-" in str(project.get("project_id", "")) or not project.get("paragraphs"):
-        return "draft"
-    return "saved"
+    # Old autosaves and explicit saves have identical schemas. Require an
+    # explicit promotion instead of guessing intent from names or candidates.
+    return "draft"
 
 
 def _project_summary(project: dict[str, Any]) -> dict[str, Any]:
@@ -638,6 +640,20 @@ def make_handler(
                     self._json(400, {"error": "provider must be codex, chatgpt, gemini or agy"})
                     return
                 self._json(200, list_models(provider, root))
+                return
+
+            if path == "/api/transcript/results":
+                self._json(200, {"results": list_results(root)})
+                return
+
+            if path == "/api/transcript/result":
+                try:
+                    result = load_result(root, (query.get("job_id") or [""])[0])
+                    self._json(200, {"result": result})
+                except FileNotFoundError:
+                    self._json(404, {"error": "清理结果不存在"})
+                except (ValueError, OSError) as exc:
+                    self._json(400, {"error": str(exc)})
                 return
 
             if path == "/api/projects":

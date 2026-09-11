@@ -177,7 +177,7 @@ Mac Apple Silicon 首测已验证 `mlx-whisper 0.4.3 + mlx 0.29.3 + whisper-larg
 # 打开 http://127.0.0.1:8771
 ```
 
-详见 [docs/recording-transcript-v1.md](docs/recording-transcript-v1.md)。该入口不修改 Text Studio、Semantic Coverage、Timeline Runtime、TTS Gateway、Audio Cache 或 Windows Client。
+详见 [docs/recording-transcript-v1.md](docs/recording-transcript-v1.md)。清理结果会持久化，并可直接接续到 Text Studio；不改变 Semantic Coverage、Timeline Runtime、TTS Gateway、Audio Cache 或 Windows Client。
 
 文本层入口见 [docs/timeline-speech-v1.md](docs/timeline-speech-v1.md)。它接收带时间戳的 ASR JSON，使用本机 Ollama 提取意图并生成多版本话术，保持 Segment 顺序和原节奏，输出可供后续 `/speak` 使用的模板。
 

@@ -27,8 +27,8 @@ Text Studio 扫描最终话术中的冲突表达，支持定位与批量修正�
 
 - 一致性检查覆盖每个话术单元的原稿及全部候选，结果标注候选编号，支持定位。批量修正保留候选数量和选中位置；同步修正泛化输入，避免重生成再次使用旧事实。复杂表达的模型润色如果重新引入规则可识别的冲突，会回退到确定性修正文本。模型不可用时保留修正结果及句末标点。
 - “接续已有项目文稿”读取 `runtime/text-studio/projects/*/project.json` 的各段当前候选，未泛化段使用 `original_text`，没有段落时使用 `source_text`；复制到新的临时项目后重新整理话术单元。来源项目保留。清洗版真实项目存在 `source_text` 为空、正文位于 `paragraphs` 的情况，不能仅导入 `source_text`。
-- 目前仓库的 `recording_transcript` 服务只保留内存任务，没有独立的稿清理项目持久化格式。因此上述入口支持仓库中现存的清洗版 Text Studio 项目；若“稿清理项目”来自其他工具，需要确认其目录或格式再接入。
-- 自动保存写入 `project_kind: draft`，点击“立即保存”转为 `saved`。默认列表显示正式项目；“显示临时记录”可恢复草稿和历史验证记录，当前草稿单独显示为“当前临时”。既有项目只对未解析记录及 ID 含 `-smoke-` 的验证记录默认隐藏，其他旧项目保守保留。没有删除或迁移任何现存项目文件。
+- `recording_transcript` 完成清理后将结果持久化到 `runtime/recording-transcript/results/<job_id>.json`，正文为 `text`。录音页面提供历史结果及“在 Text Studio 继续”；Text Studio 的独立“稿清理结果”入口读取同一结果目录，以副本整理为话术单元。原清理文件不改写，来源 ID 和文件名保存到 `source_name`。这与复制其他 Text Studio 项目是两个明确区分的入口。
+- 自动保存写入 `project_kind: draft`，点击“立即保存”转为 `saved`。默认列表显示正式项目；“显示临时 / 历史记录”可恢复草稿和历史项目，当前草稿单独显示为“当前临时”。历史自动保存与手动保存的数据结构相同；所有缺少 `project_kind` 标记的历史记录默认归入临时记录，不再根据名字或候选数量推测正式保存意图。打开历史项目后点击“立即保存”即可原 ID 转正。没有删除或迁移任何现存项目文件。
 - `GET /api/projects` 默认隐藏临时记录，`?include_drafts=1` 返回全部记录。省略保存类型的旧 API 调用保留现有类型，新建默认正式，兼容旧客户端。
 
 ## 话术单元
@@ -45,12 +45,15 @@ Text Studio 扫描最终话术中的冲突表达，支持定位与批量修正�
 python3 -m unittest discover -s tests -p 'test_speech_units.py'
 python3 -m unittest discover -s tests -p 'test_text_studio*.py'
 python3 -m unittest discover -s tests -p 'test_live_session.py'
+python3 -m unittest discover -s tests -p 'test_script_restore.py'
+python3 -m unittest discover -s tests -p 'test_recording_transcript.py'
+python3 -m unittest discover -s tests -p 'test_transcript_handoff.py'
 ```
 
-上述 35 项测试通过。`tests/text_studio_browser_checks.js` 可在独立临时数据目录的 Text Studio 页面中执行（例如 ego-browser `page.evaluate` 加载该文件内容）。它会创建验证项目，覆盖隐藏候选修正、句末标点、拒绝润色恢复旧事实、切换候选、保存恢复、临时列表隔离及导入不覆盖来源，勿在真实项目服务运行。
+上述 46 项测试通过，包括完成清理、落盘、服务重建后恢复，以及 Text Studio HTTP 读取的集成测试。`tests/text_studio_browser_checks.js` 可在独立临时数据目录的 Text Studio 页面中执行（例如 ego-browser `page.evaluate` 加载该文件内容）。它会创建验证项目，覆盖隐藏候选修正、句末标点、拒绝润色恢复旧事实、切换候选、保存恢复、临时列表隔离及导入不覆盖来源，勿在真实项目服务运行。
 
 真实“石榴田间甜果-自然语言清洗版”项目的当前文稿由 44 段分为 122 单元，中位长度 85 字、最长 174 字；忽略排版空白后的全文及顺序完全保留。验证未调用实际模型、TTS 或 Windows 播放端。
 
-`test_script_restore.py` 的重复轮次用例失败；使用 Git HEAD 的原始 `script_restore.py` 也复现同一失败，属于本轮之前的问题，未在本轮扩展修复。
+`test_script_restore.py` 已恢复 PASS。原算法最少间隔 18 句才搜索重复起点，且丢弃少于 12 句的轮次；现统一以六句探测窗口为最小完整轮次，支持两轮及三轮短稿重复，保留短文本和非重复文稿。
 
-更新后需重新启动 Text Studio 服务并刷新页面才能加载后端拆分及列表逻辑。验证使用独立 18770 端口，未重启原有服务。
+更新后需重新启动 Text Studio 和录音转文稿服务并刷新页面才能加载后端拆分及列表逻辑。验证使用独立 18770 / 18771 端口及临时数据目录，未重启原有服务。浏览器验收通过录音页面上传、清理结果持久化、继续链接及话术单元导入（ASR 使用测试替身，清理函数为真实实现）。本轮不修改清理算法；其既有小数点标点转换问题仍存在（例如 `9.9` 可能变为 `9。9`），接续会原样保留清理输出，使用前仍需事实检查。

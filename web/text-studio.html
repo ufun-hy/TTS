@@ -57,9 +57,9 @@ function download(name,content,type){const blob=new Blob([content],{type}),a=doc
 $('searchToggle').onclick=()=>{$('searchPanel').classList.toggle('open');if($('searchPanel').classList.contains('open'))$('findText').focus()};$('findText').addEventListener('input',()=>{refreshSearchMatches(false);render()});$('prevMatch').onclick=()=>jumpToMatch(-1);$('nextMatch').onclick=()=>jumpToMatch(1);$('replaceCurrent').onclick=replaceCurrent;$('replaceAll').onclick=replaceAll;$('riskBtn').onclick=detectRisks;$('closeRisk').onclick=closeRisk;$('drawerBackdrop').onclick=closeRisk;$('prepareTab').onclick=()=>switchView('prepare');$('liveTab').onclick=()=>switchView('live');$('goLiveBtn').onclick=()=>switchView('live');$('backToPrepare').onclick=()=>switchView('prepare');$('liveStartBtn').onclick=startLive;$('livePauseBtn').onclick=toggleLivePause;$('liveStopBtn').onclick=stopLive;$('expandAll').onclick=()=>{state.paragraphs.forEach(p=>p.expanded=true);render()};$('collapseAll').onclick=()=>{state.paragraphs.forEach(p=>p.expanded=false);render()};
 $('fileInput').addEventListener('change',async e=>{const f=e.target.files?.[0];if(!f)return;await newProject(true);state.sourceName=f.name;$('sourceText').value=await f.text();$('projectName').value=f.name.replace(/\.[^.]+$/,'');state.projectName=$('projectName').value;$('fileHint').textContent=f.name;showMessage(`已载入 ${f.name}，点击“解析话术单元”。`,'info')});$('projectSelect').addEventListener('change',async e=>{const id=e.target.value;if(!id){await newProject(true);return}try{if(state.projectId&&state.projectId!==id)await queueSave(true);await loadProject(id)}catch(err){showMessage('加载项目失败：'+err.message,'err')}});$('newProjectBtn').onclick=()=>newProject(true);$('saveBtn').onclick=()=>queueSave(false).catch(()=>{});$('parseBtn').onclick=parseText;$('generalizeBtn').onclick=generalizeAll;$('projectName').addEventListener('input',()=>{state.projectName=$('projectName').value;scheduleSave()});$('provider').addEventListener('change',()=>{state.selectedModel='';refreshModels();scheduleSave()});$('model').addEventListener('change',()=>{state.selectedModel=$('model').value;renderModels();scheduleSave(0)});$('refreshModels').onclick=refreshModels;$('candidateCount').addEventListener('change',()=>scheduleSave());$('voice').addEventListener('change',()=>{scheduleSave(0);updateLiveSummary()});$('instruction').addEventListener('input',()=>scheduleSave(1000));$('sourceText').addEventListener('input',()=>{if(state.projectId)scheduleSave(1200)});$('livePlaybackSpeed').addEventListener('input',()=>scheduleSave());$('liveVolume').addEventListener('input',()=>scheduleSave());
 const importBox=document.createElement('div');importBox.className='field';
-importBox.innerHTML='<label for="importProjectSelect">接续已有项目文稿</label><select id="importProjectSelect"><option value="">选择已清理的项目</option></select><button class="btn ghost small" id="importProjectBtn" type="button">导入为新话术单元</button><div class="hint">使用项目各段当前候选（未泛化段使用原稿），保留来源项目。长句不硬切，导入后请检查分段。</div>';
+importBox.innerHTML='<label for="importProjectSelect">复制 Text Studio 项目文稿</label><select id="importProjectSelect"><option value="">选择 Text Studio 项目</option></select><button class="btn ghost small" id="importProjectBtn" type="button">导入为新话术单元</button><div class="hint">使用项目各段当前候选（未泛化段使用原稿），保留来源项目。长句不硬切，导入后请检查分段。</div>';
 $('sourceText').closest('details').before(importBox);
-function renderImportProjects() { const el=$('importProjectSelect'), selected=el.value;el.innerHTML='<option value="">选择已清理的项目</option>'+state.projects.map(p=>`<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.name)}</option>`).join('');el.value=selected; }
+function renderImportProjects() { const el=$('importProjectSelect'), selected=el.value;el.innerHTML='<option value="">选择 Text Studio 项目</option>'+state.projects.map(p=>`<option value="${escapeHtml(p.project_id)}">${escapeHtml(p.name)}</option>`).join('');el.value=selected; }
 $('importProjectBtn').onclick=async()=>{
  const id=$('importProjectSelect').value;if(!id){showMessage('请选择要导入的项目。','err');return}
  try{
@@ -70,8 +70,28 @@ $('importProjectBtn').onclick=async()=>{
   await newProject(false);state.sourceName=p.name||p.source_name;state.projectName=(p.name||'项目')+'-话术单元';$('projectName').value=state.projectName;$('sourceText').value=text;$('fileHint').textContent='来源项目：'+(p.name||id);await parseText();
  }catch(e){showMessage('导入失败：'+e.message,'err')}
 };
-const draftLabel=document.createElement('label');draftLabel.className='hint';draftLabel.innerHTML='<input type="checkbox" id="showDrafts"> 显示临时记录';$('projectSelect').after(draftLabel);$('showDrafts').onchange=renderProjectSelect;
-async function startup(){await health();await loadVoices();await refreshLiveStatus();try{await refreshProjects();const last=localStorage.getItem('ttsTextStudioProjectId'),target=(last&&state.projects.some(p=>p.project_id===last))?last:(state.projects.find(p=>p.project_kind!=='draft')?.project_id||'');if(target)await loadProject(target);else{render();renderRiskDrawer();refreshModels()}}catch(e){render();renderRiskDrawer();showMessage('读取本地项目失败：'+e.message,'err')}}startup();
+const transcriptBox=document.createElement('div');transcriptBox.className='field';
+transcriptBox.innerHTML='<label for="transcriptSelect">稿清理结果</label><select id="transcriptSelect"><option value="">选择录音转文稿的清理结果</option></select><button class="btn ghost small" id="importTranscriptBtn" type="button">接续稿清理结果</button><div class="hint">读取录音转文稿已保存的结果，整理为新话术单元。保留清理结果。</div>';
+importBox.before(transcriptBox);
+async function refreshTranscripts(){
+ const data=await apiGet('/api/transcript/results'),select=$('transcriptSelect');
+ select.replaceChildren(new Option('选择录音转文稿的清理结果',''));
+ for(const result of data.results||[])select.add(new Option(result.filename+' · '+new Date(result.updated_at*1000).toLocaleString(),result.job_id));
+}
+async function importTranscript(id){
+ if(!id){showMessage('请选择稿清理结果。','err');return}
+ try{
+  const {result}=await apiGet('/api/transcript/result?job_id='+encodeURIComponent(id));
+  await newProject(true);
+  state.sourceName='recording_transcript/'+result.job_id+'/'+result.filename;
+  state.projectName=result.filename.replace(/\.[^.]+$/,'')+'-话术单元';
+  $('projectName').value=state.projectName;$('sourceText').value=result.text;
+  $('fileHint').textContent='稿清理结果：'+result.filename;await parseText();
+ }catch(e){showMessage('接续稿清理结果失败：'+e.message,'err')}
+}
+$('importTranscriptBtn').onclick=()=>importTranscript($('transcriptSelect').value);
+const draftLabel=document.createElement('label');draftLabel.className='hint';draftLabel.innerHTML='<input type="checkbox" id="showDrafts"> 显示临时 / 历史记录';$('projectSelect').after(draftLabel);$('showDrafts').onchange=renderProjectSelect;draftLabel.title='历史记录没有正式保存标记。打开后点击立即保存，即可加入默认项目列表。';
+async function startup(){await health();await loadVoices();await refreshLiveStatus();try{await refreshProjects();await refreshTranscripts();const last=localStorage.getItem('ttsTextStudioProjectId'),target=(last&&state.projects.some(p=>p.project_id===last))?last:(state.projects.find(p=>p.project_kind!=='draft')?.project_id||'');if(target)await loadProject(target);else{render();renderRiskDrawer();refreshModels()}const transcriptId=new URLSearchParams(location.search).get('transcript_id');if(transcriptId){await importTranscript(transcriptId);const url=new URL(location.href);url.searchParams.delete('transcript_id');history.replaceState(null,'',url)}}catch(e){render();renderRiskDrawer();showMessage('读取本地项目失败：'+e.message,'err')}}startup();
 </script>
 </body>
 </html>
