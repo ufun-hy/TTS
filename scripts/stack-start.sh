@@ -93,10 +93,13 @@ else
     >"$STACK_LOG_DIR/text-studio.log" 2>&1 </dev/null &
   printf '%s\n' "$!" >"$STUDIO_PID"
   if ! stack_wait_http "$STUDIO_HEALTH" 30; then
-    echo "Text Studio: failed to become ready. Check $STACK_LOG_DIR/text-studio.log" >&2
-    exit 1
+    echo "Text Studio: failed to become ready." >&2
+    echo "--- text-studio.log ---" >&2
+    /usr/bin/tail -n 80 "$STACK_LOG_DIR/text-studio.log" >&2 2>/dev/null || true
+    echo "--- end text-studio.log ---" >&2
+  else
+    echo "Text Studio: ready"
   fi
-  echo "Text Studio: ready"
 fi
 
 if stack_http_ok "$TRANSCRIPT_HEALTH"; then
