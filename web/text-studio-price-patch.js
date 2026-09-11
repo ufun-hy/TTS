@@ -30,14 +30,15 @@
   function canonicalPriceAdvanced(value) {
     const raw = String(value || '').trim().replace(/[￥¥\s]/g, '');
     if (!raw) return '';
-    const direct = raw.match(/\d+(?:\.\d{1,2})?/);
-    if (direct && !/[块元]/.test(raw.slice(0, direct.index + direct[0].length))) return String(Number(direct[0]));
     const block = raw.match(/^([0-9零〇一二两三四五六七八九十百]+)(?:块钱?|块|元)(.*)$/);
-    if (!block) return direct ? String(Number(direct[0])) : '';
-    const integer = parseChineseInteger(block[1]);
-    if (!Number.isFinite(integer)) return '';
-    const tailDigits = [...block[2]].map(ch => (/\d/.test(ch) ? ch : (zhDigit[ch] ?? ''))).join('').slice(0, 2);
-    return tailDigits ? `${integer}.${tailDigits}` : String(integer);
+    if (block) {
+      const integer = parseChineseInteger(block[1]);
+      if (!Number.isFinite(integer)) return '';
+      const tailDigits = [...block[2]].map(ch => (/\d/.test(ch) ? ch : (zhDigit[ch] ?? ''))).join('').slice(0, 2);
+      return tailDigits ? `${integer}.${tailDigits}` : String(integer);
+    }
+    const direct = raw.match(/\d+(?:\.\d{1,2})?/);
+    return direct ? String(Number(direct[0])) : '';
   }
 
   const explicitPricePattern = /(?:[￥¥]\s*)?(?:\d+(?:\.\d{1,2})?|[零〇一二两三四五六七八九十百]+)\s*(?:块钱?|块|元)(?:\s*(?:\d|[零〇一二两三四五六七八九])(?:\s*(?:毛|角))?(?:\s*(?:\d|[零〇一二两三四五六七八九])(?:分)?)?)?/g;
