@@ -11,7 +11,6 @@ WEAK_BREAK = "\x1f"
 PARAGRAPH_BREAK = "\x1d"
 _PUNCTUATION = str.maketrans({
     ",": "，",
-    ".": "。",
     "?": "？",
     "!": "！",
     ";": "；",
@@ -23,8 +22,16 @@ _STUTTER_WORDS = (
 )
 
 
+def _normalize_periods(text: str) -> str:
+    """Convert sentence dots while preserving decimal points between digits."""
+    return re.sub(r"(?<!\d)\.|\.(?!\d)", "。", text)
+
+
 def _text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).translate(_PUNCTUATION).strip()
+    text = re.sub(r"\s+", "", str(value or ""))
+    text = text.translate(_PUNCTUATION)
+    text = _normalize_periods(text)
+    return text.strip()
 
 
 def _remove_fillers(text: str) -> str:
