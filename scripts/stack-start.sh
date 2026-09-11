@@ -8,8 +8,10 @@ source "$ROOT/scripts/stack-common.sh"
 TTS_HEALTH="http://127.0.0.1:8765/health"
 CACHE_HEALTH="http://127.0.0.1:8000/health"
 STUDIO_HEALTH="http://127.0.0.1:8770/api/health"
+TRANSCRIPT_HEALTH="http://127.0.0.1:8771/api/health"
 CACHE_PID="$STACK_PID_DIR/audio-cache.pid"
 STUDIO_PID="$STACK_PID_DIR/text-studio.pid"
+TRANSCRIPT_PID="$STACK_PID_DIR/recording-transcript.pid"
 
 stack_load_tts_api_key
 
@@ -57,6 +59,32 @@ else
     exit 1
   fi
   echo "Audio Cache: ready"
+fi
+
+if stack_http_ok "$TRANSCRIPT_HEALTH"; then
+  stack_adopt_pid 8771 "server/recording_transcript.py" "$TRANSCRIPT_PID" || true
+  echo "Recording Transcript: already ready"
+else
+  if stack_port_has_unknown_listener 8771 "server/recording_transcript.py"; then
+    echo "Recording Transcript: port 8771 is occupied by another process; refusing to replace it." >&2
+    exit 1
+  fi
+  existing_transcript_pid="$(stack_find_project_pid 8771 "server/recording_transcript.py" || true)"
+  if [[ -n "$existing_transcript_pid" ]]; then
+    printf '%s\n' "$existing_transcript_pid" >"$TRANSCRIPT_PID"
+    stack_stop_project_process "Recording Transcript" 8771 "server/recording_transcript.py" "$TRANSCRIPT_PID"
+  fi
+  echo "Recording Transcript: starting"
+  nohup /usr/bin/env \
+    PYTHONPATH="$ROOT" \
+    /bin/bash "$ROOT/scripts/recording-transcript-start.sh" \
+    >"$STACK_LOG_DIR/recording-transcript.log" 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$TRANSCRIPT_PID"
+  if ! stack_wait_http "$TRANSCRIPT_HEALTH" 30; then
+    echo "Recording Transcript: failed to become ready. Check $STACK_LOG_DIR/recording-transcript.log" >&2
+    exit 1
+  fi
+  echo "Recording Transcript: ready"
 fi
 
 if stack_http_ok "$STUDIO_HEALTH"; then
