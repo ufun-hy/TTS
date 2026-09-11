@@ -13,6 +13,7 @@ EXTENSION_PATHS = [
     ROOT / "web" / "text-studio-extension.js",
     ROOT / "web" / "text-studio-price-patch.js",
     ROOT / "web" / "text-studio-restore.js",
+    ROOT / "web" / "text-studio-recording-link.js",
 ]
 _ORIGINAL_READ_BYTES = Path.read_bytes
 
