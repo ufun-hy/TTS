@@ -53,11 +53,12 @@ class TextStudioTest(unittest.TestCase):
             if error is not ValueError:
                 self.assertEqual(record["model"], "test-model")
 
-    def test_split_paragraphs_preserves_natural_paragraphs(self):
+    def test_split_paragraphs_preserves_source_paragraph_mapping(self):
         data = text_studio.split_paragraphs("第一句。第二句？\n\n第三段！")
-        self.assertEqual([item["id"] for item in data], ["p0001", "p0002"])
-        self.assertEqual(data[0]["original_text"], "第一句。第二句？")
-        self.assertEqual(data[0]["sentences"], ["第一句。", "第二句？"])
+        self.assertEqual([item["id"] for item in data], ["p0001", "p0002", "p0003"])
+        self.assertEqual([item["original_text"] for item in data], ["第一句。", "第二句？", "第三段！"])
+        self.assertEqual(data[0]["sentences"], ["第一句。"])
+        self.assertEqual([item["source_paragraph_index"] for item in data], [1, 1, 2])
 
     def test_extract_json_from_fenced_output(self):
         raw = '```json\n{"paragraphs":[{"id":"p0001","candidates":["A"]}]}\n```'
