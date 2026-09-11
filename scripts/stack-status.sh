@@ -8,6 +8,7 @@ source "$ROOT/scripts/stack-common.sh"
 TTS_HEALTH="http://127.0.0.1:8765/health"
 CACHE_HEALTH="http://127.0.0.1:8000/health"
 STUDIO_HEALTH="http://127.0.0.1:8770/api/health"
+TRANSCRIPT_HEALTH="http://127.0.0.1:8771/api/health"
 all_ready=1
 cache_body=""
 
@@ -29,6 +30,13 @@ if stack_http_ok "$STUDIO_HEALTH"; then
   echo "Text Studio   READY    http://127.0.0.1:8770"
 else
   echo "Text Studio   DOWN     http://127.0.0.1:8770"
+  all_ready=0
+fi
+
+if stack_http_ok "$TRANSCRIPT_HEALTH"; then
+  echo "Transcript    READY    http://127.0.0.1:8771"
+else
+  echo "Transcript    DOWN     http://127.0.0.1:8771"
   all_ready=0
 fi
 
