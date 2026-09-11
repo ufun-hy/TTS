@@ -88,17 +88,17 @@ else
 fi
 
 if stack_http_ok "$STUDIO_HEALTH"; then
-  stack_adopt_pid 8770 "server/text_studio.py" "$STUDIO_PID" || true
+  stack_adopt_pid 8770 "server/text_studio_entry.py" "$STUDIO_PID" || true
   echo "Text Studio: already ready"
 else
-  if stack_port_has_unknown_listener 8770 "server/text_studio.py"; then
+  if stack_port_has_unknown_listener 8770 "server/text_studio_entry.py"; then
     echo "Text Studio: port 8770 is occupied by another process; refusing to replace it." >&2
     exit 1
   fi
-  existing_studio_pid="$(stack_find_project_pid 8770 "server/text_studio.py" || true)"
+  existing_studio_pid="$(stack_find_project_pid 8770 "server/text_studio_entry.py" || true)"
   if [[ -n "$existing_studio_pid" ]]; then
     printf '%s\n' "$existing_studio_pid" >"$STUDIO_PID"
-    stack_stop_project_process "Text Studio" 8770 "server/text_studio.py" "$STUDIO_PID"
+    stack_stop_project_process "Text Studio" 8770 "server/text_studio_entry.py" "$STUDIO_PID"
   fi
   echo "Text Studio: starting"
   nohup /usr/bin/env \
