@@ -15,6 +15,18 @@ class RecordingTranscriptTests(unittest.TestCase):
         self.assertEqual(clean_transcript("我我今天主要主要介绍这个这个产品"), "我今天主要介绍这个产品。")
         self.assertEqual(clean_transcript("这个东西好吃好吃"), "这个东西好吃好吃。")
 
+    def test_preserves_decimal_points_while_normalizing_sentence_periods(self):
+        self.assertEqual(clean_transcript("今天9.9到手"), "今天9.9到手。")
+        self.assertEqual(
+            clean_transcript("19.99元一份,一共3.5斤.喜欢可以拍."),
+            "19.99元一份，一共3.5斤。喜欢可以拍。",
+        )
+        segments = [
+            {"text": "今天9.9到手.", "start": 0, "end": 1},
+            {"text": "一共3.5斤", "start": 1, "end": 2},
+        ]
+        self.assertEqual(clean_transcript("", segments), "今天9.9到手。一共3.5斤。")
+
     def test_segment_pause_creates_paragraph_without_exposing_timing(self):
         segments = [
             {"text": "今天介绍这个产品", "start": 0, "end": 2},
