@@ -10,5 +10,8 @@
   },
   "speaker_b": {
     "prompt_speech": "runtime/models/voices/speaker_b.gguf"
+  },
+  "shiliu_1": {
+    "prompt_speech": "runtime/models/voices/shiliu_1.gguf"
   }
 }

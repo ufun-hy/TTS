@@ -27,6 +27,7 @@ VOICE_LABELS = {
     "speaker_a": "主播A",
     "speaker_b": "主播B",
     "speaker_c": "主播C",
+    "shiliu_1": "石榴1",
 }
 
 
