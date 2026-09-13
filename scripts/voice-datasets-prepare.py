@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate all three speakers' checkpointed ASR candidates using an installed local model."""
+"""Generate checkpointed voice-dataset ASR candidates with local Qwen3-ASR-1.7B."""
 
 import argparse
 import fcntl
@@ -10,17 +10,25 @@ import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from recording_transcript.qwen_asr import validate_model
 from voice_datasets.transcription import local_backend, prepare_speaker, write_json
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", type=Path, default=ROOT / "runtime/voice-datasets")
-    parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=ROOT / "runtime/models/asr/qwen3-asr-1.7b-bf16",
+        help="local Qwen3-ASR-1.7B MLX model directory",
+    )
     parser.add_argument("--speaker", choices=["a", "b", "c"], action="append")
     args = parser.parse_args()
-    if not (args.model / "weights.safetensors").is_file() or not (args.model / "config.json").is_file():
-        parser.error("An installed local MLX model directory is required; no downloads are performed")
+    try:
+        args.model = validate_model(args.model)
+    except ValueError as exc:
+        parser.error(str(exc))
     args.datasets.mkdir(parents=True, exist_ok=True)
     lock = (args.datasets / "asr-job.lock").open("a")
     try:
