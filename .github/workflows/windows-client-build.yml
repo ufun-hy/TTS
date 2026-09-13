@@ -7,11 +7,13 @@ on:
     paths:
       - "audio_client/**"
       - "audio_cache/**"
+      - "server/live_session.py"
       - "server/tts_gateway.py"
       - "windows_client.py"
       - "build/windows/**"
       - "config/audio-client.example.json"
       - "tests/test_audio_cache.py"
+      - "tests/test_live_session.py"
       - "tests/test_playback.py"
       - "tests/test_stage1_efficiency.py"
       - "tests/test_winmm_smoke.py"
@@ -38,9 +40,9 @@ jobs:
           python -m pip install pyinstaller
           choco install innosetup ffmpeg -y --no-progress
 
-      - name: Run audio client tests
+      - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_playback tests.test_stage1_efficiency
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_stage1_efficiency
 
       - name: Run WinMM smoke test
         shell: pwsh
