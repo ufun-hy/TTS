@@ -1,4 +1,4 @@
-"""Filesystem-backed ordered audio cache with atomic state transitions."""
+"""Filesystem-backed ordered audio cache with in-memory state indexes."""
 
 from __future__ import annotations
 
@@ -47,14 +47,18 @@ class AudioItem:
 
 
 class AudioCacheManager:
-    """Keep one item per directory so a state move is a single filesystem rename."""
+    """Keep filesystem durability while serving hot-path state from memory."""
 
     def __init__(self, root: Path, processor: Optional[Callable[[bytes, Dict[str, Any]], Any]] = None) -> None:
         self.root = Path(root)
         self._lock = threading.RLock()
         self._processor = processor or AudioProcessor().process
+        self._items: Dict[str, AudioItem] = {}
+        self._state_counts: Dict[str, int] = {state: 0 for state in STATES}
+        self._session_counts: Dict[str, Dict[str, int]] = {}
         for state in STATES:
             (self.root / state).mkdir(parents=True, exist_ok=True)
+        self._load_index()
 
     def create_pending(self, metadata: Dict[str, Any], item_id: Optional[str] = None) -> AudioItem:
         with self._lock:
@@ -68,7 +72,9 @@ class AudioCacheManager:
             self._write_metadata(temporary, payload)
             destination = self.root / "pending" / item_id
             os.replace(temporary, destination)
-            return AudioItem(item_id, "pending", destination, payload)
+            item = AudioItem(item_id, "pending", destination, payload)
+            self._register(item)
+            return item
 
     def add_audio(self, audio: bytes, metadata: Dict[str, Any], item_id: Optional[str] = None) -> AudioItem:
         item = self.create_pending(metadata, item_id)
@@ -99,10 +105,7 @@ class AudioCacheManager:
                 if existing:
                     return existing
                 raise AudioCacheError(f"pending audio not found: {item_id}")
-            processing = self.root / "processing" / item.id
-            os.replace(item.directory, processing)
-            item = self._read_item(processing, "processing")
-            self._update_status(item, "processing")
+            self._move_state(item, "processing")
         try:
             if not item.audio_path.is_file():
                 raise AudioCacheError("pending item has no audio.wav")
@@ -111,55 +114,42 @@ class AudioCacheManager:
             temporary = item.directory / ".audio.wav.tmp"
             temporary.write_bytes(processed_audio)
             os.replace(temporary, item.audio_path)
-            item.metadata.update(processing_metadata)
-            item.metadata["status"] = "ready"
-            self._write_metadata(item.directory, item.metadata)
-            ready = self.root / "ready" / item.id
             with self._lock:
-                os.replace(item.directory, ready)
-                return self._read_item(ready, "ready")
+                item.metadata.update(processing_metadata)
+                return self._move_state(item, "ready")
         except Exception as exc:
             self._mark_failed(item.id, str(exc), current_state="processing")
             raise
 
     def claim_next(self) -> Optional[AudioItem]:
         with self._lock:
-            items = sorted(self.list_items("ready"), key=_sort_key)
+            items = sorted(
+                (item for item in self._items.values() if item.status == "ready"),
+                key=_sort_key,
+            )
             if not items:
                 return None
-            item = items[0]
-            processing = self.root / "processing" / item.id
-            os.replace(item.directory, processing)
-            item = self._read_item(processing, "processing")
-            self._update_status(item, "processing")
-            return item
+            return self._move_state(items[0], "processing")
 
     def ack(self, item_id: str, status: str = "completed") -> AudioItem:
         if status not in ("completed", "failed"):
             raise AudioCacheError("ack status must be completed or failed")
         with self._lock:
-            current = self._find(item_id, ("processing",))
+            current = self.get(item_id)
             if current is None:
-                current = self._find(item_id, (status,))
-                if current is not None:
-                    return current
-                other = self.get(item_id)
-                if other:
-                    raise AudioCacheError(f"cannot ack {item_id} from {other.status}")
                 raise AudioCacheError(f"audio not found: {item_id}")
-            self._update_status(current, status)
-            destination = self.root / status / item_id
-            os.replace(current.directory, destination)
-            return self._read_item(destination, status)
+            if current.status == status:
+                return current
+            if current.status != "processing":
+                raise AudioCacheError(f"cannot ack {item_id} from {current.status}")
+            current = self._move_state(current, status)
+            self._release_audio(current)
+            return current
 
     def get(self, item_id: str) -> Optional[AudioItem]:
         item_id = self._validate_id(item_id)
         with self._lock:
-            for state in STATES:
-                item = self._find(item_id, (state,))
-                if item:
-                    return item
-        return None
+            return self._items.get(item_id)
 
     def has(self, item_id: str) -> bool:
         return self.get(item_id) is not None
@@ -171,32 +161,23 @@ class AudioCacheManager:
         return item.audio_path
 
     def list_items(self, state: Optional[str] = None) -> List[AudioItem]:
-        states = (state,) if state else STATES
-        if any(value not in STATES for value in states):
+        if state is not None and state not in STATES:
             raise AudioCacheError(f"invalid state: {state}")
         with self._lock:
-            items: List[AudioItem] = []
-            for value in states:
-                directory = self.root / value
-                for child in directory.iterdir():
-                    if child.is_dir() and ITEM_ID.fullmatch(child.name):
-                        try:
-                            items.append(self._read_item(child, value))
-                        except (OSError, ValueError, json.JSONDecodeError):
-                            continue
-            return items
+            if state is None:
+                return list(self._items.values())
+            return [item for item in self._items.values() if item.status == state]
 
     def stats(self) -> Dict[str, int]:
-        return {state: len(self.list_items(state)) for state in STATES}
+        with self._lock:
+            return dict(self._state_counts)
 
     def session_stats(self, session_id: str) -> Dict[str, int]:
         if not session_id:
             raise AudioCacheError("session_id is required")
-        items = [item for item in self.list_items() if item.metadata.get("session_id") == session_id]
-        stats = {state: 0 for state in STATES}
-        for item in items:
-            stats[item.status] += 1
-        return stats
+        with self._lock:
+            counts = self._session_counts.get(session_id)
+            return dict(counts) if counts else {state: 0 for state in STATES}
 
     def cleanup_session(self, session_id: str) -> int:
         """Remove only cache items tagged with one live session."""
@@ -204,34 +185,112 @@ class AudioCacheManager:
             raise AudioCacheError("session_id is required")
         removed = 0
         with self._lock:
-            for state in STATES:
-                for item in self.list_items(state):
-                    if item.metadata.get("session_id") != session_id:
-                        continue
+            items = [item for item in self._items.values() if item.metadata.get("session_id") == session_id]
+            for item in items:
+                try:
                     shutil.rmtree(item.directory)
-                    removed += 1
+                except FileNotFoundError:
+                    pass
+                self._unregister(item)
+                removed += 1
         return removed
+
+    def _load_index(self) -> None:
+        """Scan durable cache once at startup; hot paths use memory afterwards."""
+        with self._lock:
+            for state in STATES:
+                directory = self.root / state
+                for child in directory.iterdir():
+                    if not child.is_dir() or not ITEM_ID.fullmatch(child.name):
+                        continue
+                    try:
+                        item = self._read_item(child, state)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        continue
+                    existing = self._items.get(item.id)
+                    if existing is not None:
+                        # Keep the most recently updated durable copy if an old
+                        # interrupted run left a duplicate directory behind.
+                        if str(existing.metadata.get("updated_at", existing.metadata.get("created_at", ""))) >= str(
+                            item.metadata.get("updated_at", item.metadata.get("created_at", ""))
+                        ):
+                            continue
+                        self._unregister(existing)
+                    self._register(item)
+
+    def _register(self, item: AudioItem) -> None:
+        self._items[item.id] = item
+        self._state_counts[item.status] += 1
+        session_id = item.metadata.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            counts = self._session_counts.setdefault(session_id, {state: 0 for state in STATES})
+            counts[item.status] += 1
+
+    def _unregister(self, item: AudioItem) -> None:
+        current = self._items.get(item.id)
+        if current is None:
+            return
+        self._state_counts[current.status] = max(0, self._state_counts[current.status] - 1)
+        session_id = current.metadata.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            counts = self._session_counts.get(session_id)
+            if counts:
+                counts[current.status] = max(0, counts[current.status] - 1)
+                if not any(counts.values()):
+                    self._session_counts.pop(session_id, None)
+        self._items.pop(item.id, None)
+
+    def _move_state(self, item: AudioItem, status: str) -> AudioItem:
+        if status not in STATES:
+            raise AudioCacheError(f"invalid state: {status}")
+        old_status = item.status
+        if old_status == status:
+            return item
+        destination = self.root / status / item.id
+        item.metadata["status"] = status
+        item.metadata["updated_at"] = _utc_now()
+        self._write_metadata(item.directory, item.metadata)
+        os.replace(item.directory, destination)
+
+        self._state_counts[old_status] = max(0, self._state_counts[old_status] - 1)
+        self._state_counts[status] += 1
+        session_id = item.metadata.get("session_id")
+        if isinstance(session_id, str) and session_id:
+            counts = self._session_counts.setdefault(session_id, {state: 0 for state in STATES})
+            counts[old_status] = max(0, counts[old_status] - 1)
+            counts[status] += 1
+
+        item.status = status
+        item.directory = destination
+        return item
+
+    def _release_audio(self, item: AudioItem) -> None:
+        """Drop the Mac WAV after Windows has durably acknowledged receipt."""
+        try:
+            size = item.audio_path.stat().st_size
+        except FileNotFoundError:
+            return
+        try:
+            item.audio_path.unlink()
+        except FileNotFoundError:
+            return
+        item.metadata["audio_released"] = True
+        item.metadata["audio_released_bytes"] = size
+        item.metadata["audio_released_at"] = _utc_now()
+        self._write_metadata(item.directory, item.metadata)
 
     def _find(self, item_id: str, states: Iterable[str]) -> Optional[AudioItem]:
         item_id = self._validate_id(item_id)
-        for state in states:
-            directory = self.root / state / item_id
-            if directory.is_dir():
-                return self._read_item(directory, state)
-        return None
+        item = self._items.get(item_id)
+        return item if item and item.status in set(states) else None
 
     def _read_item(self, directory: Path, state: str) -> AudioItem:
         with (directory / "metadata.json").open(encoding="utf-8") as handle:
             metadata = json.load(handle)
         if not isinstance(metadata, dict):
             raise ValueError(f"invalid metadata: {directory}")
+        metadata["status"] = state
         return AudioItem(str(metadata.get("id") or directory.name), state, directory, metadata)
-
-    def _update_status(self, item: AudioItem, status: str) -> None:
-        item.status = status
-        item.metadata["status"] = status
-        item.metadata["updated_at"] = _utc_now()
-        self._write_metadata(item.directory, item.metadata)
 
     def _mark_failed(self, item_id: str, error: str, current_state: str = "pending") -> None:
         with self._lock:
@@ -239,9 +298,7 @@ class AudioCacheManager:
             if not item:
                 return
             item.metadata["error"] = error
-            self._update_status(item, "failed")
-            destination = self.root / "failed" / item_id
-            os.replace(item.directory, destination)
+            self._move_state(item, "failed")
 
     @staticmethod
     def _write_metadata(directory: Path, payload: Dict[str, Any]) -> None:
