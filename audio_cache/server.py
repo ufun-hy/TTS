@@ -5,11 +5,12 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from timeline.tts_client import TTSClient
 
@@ -23,9 +24,50 @@ class AudioCacheServer(ThreadingHTTPServer):
         super().__init__(*args, **kwargs)
         self.last_client_at = 0.0
         self.client_timeout = 10.0
+        self._client_state: Dict[str, Any] = {}
+        self._client_state_at = 0.0
+        self._client_state_lock = threading.RLock()
 
     def client_connected(self) -> bool:
         return time.monotonic() - self.last_client_at <= self.client_timeout
+
+    def update_client_state(self, query: Dict[str, list[str]]) -> None:
+        def first(name: str, default: str = "") -> str:
+            values = query.get(name, [])
+            return values[0] if values else default
+
+        try:
+            buffered_segments = max(0, int(first("client_buffered_segments", "0") or 0))
+        except (TypeError, ValueError):
+            buffered_segments = 0
+        try:
+            buffered_seconds = max(0.0, float(first("client_buffered_seconds", "0") or 0))
+        except (TypeError, ValueError):
+            buffered_seconds = 0.0
+        playback_status = first("client_playback_status", "idle")
+        if playback_status not in ("idle", "buffered", "playing", "paused"):
+            playback_status = "idle"
+        state = {
+            "session_id": first("client_session_id").strip(),
+            "buffered_segments": buffered_segments,
+            "buffered_seconds": round(buffered_seconds, 3),
+            "playback_status": playback_status,
+        }
+        now = time.monotonic()
+        with self._client_state_lock:
+            self._client_state = state
+            self._client_state_at = now
+            self.last_client_at = now
+
+    def client_state(self, session_id: str = "") -> Dict[str, Any]:
+        with self._client_state_lock:
+            state = dict(self._client_state)
+            state_at = self._client_state_at
+        if not state or time.monotonic() - state_at > self.client_timeout:
+            return {}
+        if session_id and state.get("session_id") != session_id:
+            return {}
+        return state
 
 
 def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, api_key: str = ""):
@@ -63,7 +105,8 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             if not self._authorized():
                 self._json(401, {"error": "unauthorized"})
                 return
-            path = urlsplit(self.path).path
+            split = urlsplit(self.path)
+            path = split.path
             if path in ("/health", "/healthz"):
                 self._json(200, {
                     "status": "ok",
@@ -72,7 +115,7 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 })
                 return
             if path == "/audio/next":
-                self.server.last_client_at = time.monotonic()  # type: ignore[attr-defined]
+                self.server.update_client_state(parse_qs(split.query, keep_blank_values=True))  # type: ignore[attr-defined]
                 item = manager.claim_next()
                 if not item:
                     self.send_response(204)
@@ -82,9 +125,13 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 return
             if path.startswith("/audio/session-status/"):
                 session_id = unquote(path.rsplit("/", 1)[-1])
+                client_state = self.server.client_state(session_id)  # type: ignore[attr-defined]
                 self._json(200, {
                     **manager.session_stats(session_id),
                     "client_connected": self.server.client_connected(),  # type: ignore[attr-defined]
+                    "client_state": client_state,
+                    "client_buffered_segments": int(client_state.get("buffered_segments", 0) or 0),
+                    "client_buffered_seconds": float(client_state.get("buffered_seconds", 0) or 0),
                 })
                 return
             if path.startswith("/audio/files/"):
