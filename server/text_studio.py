@@ -596,14 +596,15 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html"}:
+            if path in {"/", "/index.html", "/text-studio-risk.js"}:
+                is_risk_script = path == "/text-studio-risk.js"
                 try:
-                    body = html_path.read_bytes()
+                    body = (root / "web" / "text-studio-risk.js" if is_risk_script else html_path).read_bytes()
                 except OSError as exc:
                     self._json(500, {"error": str(exc)})
                     return
                 self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Type", "application/javascript; charset=utf-8" if is_risk_script else "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()

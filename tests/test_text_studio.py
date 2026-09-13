@@ -1,13 +1,33 @@
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest import mock
+from urllib.request import urlopen
 
 from server import text_studio
 
 
 class TextStudioTest(unittest.TestCase):
+    def test_risk_module_is_served_and_loaded_before_page_code(self):
+        root = Path(__file__).resolve().parents[1]
+        server = text_studio.StudioServer(('127.0.0.1', 0), text_studio.make_handler(root, 'http://127.0.0.1:1'))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f'http://127.0.0.1:{server.server_port}'
+            with urlopen(url + '/text-studio-risk.js') as response:
+                self.assertEqual(response.headers.get_content_type(), 'application/javascript')
+                self.assertEqual(response.read(), (root / 'web' / 'text-studio-risk.js').read_bytes())
+            with urlopen(url) as response:
+                html = response.read().decode('utf-8')
+            self.assertLess(html.index('<script src="/text-studio-risk.js">'), html.index('TextStudioRisk.scan'))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_live_control_uses_candidate_pools_without_second_text_source(self):
         html = (Path(__file__).resolve().parents[1] / "web" / "text-studio.html").read_text(encoding="utf-8")
         self.assertNotIn('id="liveText"', html)
