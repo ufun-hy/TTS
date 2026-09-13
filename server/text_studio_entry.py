@@ -44,6 +44,11 @@ Path.read_bytes = _read_bytes_with_extension
 import text_studio  # noqa: E402
 from script_restore import restore_script  # noqa: E402
 
+# "paragraphs" is now the speech-unit collection. Sentence-first splitting can
+# legitimately create more than the historical 2,000 natural-paragraph limit.
+# Keep a finite safety cap while allowing long cleaned recordings to be stored.
+text_studio.MAX_PARAGRAPHS_PER_REQUEST = 5000
+
 _BASE_MAKE_HANDLER = text_studio.make_handler
 
 
