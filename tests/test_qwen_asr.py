@@ -1,9 +1,8 @@
 import json
 from pathlib import Path
 import tempfile
-from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from recording_transcript import pipeline, qwen_asr
 
@@ -21,35 +20,42 @@ class QwenASRTests(unittest.TestCase):
         self.source = self.root/'real.mp3'
         self.source.write_bytes(b'test')
 
-    def test_rejects_whisper_missing_and_smaller_models(self):
+    def test_rejects_non_qwen_missing_and_smaller_models(self):
         self.assertEqual(qwen_asr.validate_model(self.model), self.model)
-        for config in ({'model_type':'whisper'}, {'model_type':'qwen3_asr', 'thinker_config':{'text_config':{'hidden_size':1024,'num_hidden_layers':28}}}):
+        for config in (
+            {'model_type': 'other_asr'},
+            {'model_type': 'qwen3_asr', 'thinker_config': {'text_config': {'hidden_size': 1024, 'num_hidden_layers': 28}}},
+        ):
             (self.model/'config.json').write_text(json.dumps(config))
             with self.assertRaises(ValueError):
                 qwen_asr.validate_model(self.model)
         with self.assertRaises(ValueError):
             qwen_asr.validate_model(self.root/'missing')
 
-    def test_decode_clean_and_never_call_whisper(self):
-        ingest = SimpleNamespace(IngestError=RuntimeError, _audio_for_asr=Mock(return_value=self.root/'decoded.wav'), transcribe_mlx=Mock())
-        output = {'text':'今天9.9元到手。', 'segments':[{'text':'今天9.9元到手。','start':0,'end':5}]}
+    def test_decode_clean_and_call_qwen(self):
+        decoded = self.root/'decoded.wav'
+        output = {'text': '今天9.9元到手。', 'segments': [{'text': '今天9.9元到手。', 'start': 0, 'end': 5}]}
         stages = []
-        with patch.object(pipeline, '_audio_ingest_module', return_value=ingest), patch.object(pipeline, 'transcribe_qwen', return_value=output) as qwen:
+        with patch.object(pipeline, 'decode_audio', return_value=decoded) as decode, \
+             patch.object(pipeline, 'transcribe_qwen', return_value=output) as qwen:
             result = pipeline.transcribe_recording(self.source, self.root, self.model, stages.append)
         self.assertEqual(result, '今天9.9元到手。')
         self.assertEqual(stages, ['recognizing', 'cleaning'])
-        qwen.assert_called_once_with(self.root/'decoded.wav', self.model)
-        ingest.transcribe_mlx.assert_not_called()
+        decode.assert_called_once()
+        qwen.assert_called_once_with(decoded, self.model)
 
-    def test_qwen_error_does_not_fall_back(self):
-        ingest = SimpleNamespace(IngestError=RuntimeError, _audio_for_asr=Mock(return_value=self.root/'decoded.wav'), transcribe_mlx=Mock())
-        with patch.object(pipeline, '_audio_ingest_module', return_value=ingest), patch.object(pipeline, 'transcribe_qwen', side_effect=ValueError('Qwen inference failed')):
+    def test_qwen_error_does_not_use_another_backend(self):
+        with patch.object(pipeline, 'decode_audio', return_value=self.root/'decoded.wav'), \
+             patch.object(pipeline, 'transcribe_qwen', side_effect=ValueError('Qwen inference failed')):
             with self.assertRaisesRegex(pipeline.TranscriptError, 'Qwen inference failed'):
                 pipeline.transcribe_recording(self.source, self.root, self.model)
-        ingest.transcribe_mlx.assert_not_called()
 
     def test_empty_output_is_not_published(self):
-        ingest = SimpleNamespace(IngestError=RuntimeError, _audio_for_asr=Mock(return_value=self.root/'decoded.wav'))
-        with patch.object(pipeline, '_audio_ingest_module', return_value=ingest), patch.object(pipeline, 'transcribe_qwen', return_value={'segments':[]}):
+        with patch.object(pipeline, 'decode_audio', return_value=self.root/'decoded.wav'), \
+             patch.object(pipeline, 'transcribe_qwen', return_value={'segments': []}):
             with self.assertRaises(pipeline.TranscriptError):
                 pipeline.transcribe_recording(self.source, self.root, self.model)
+
+
+if __name__ == '__main__':
+    unittest.main()
