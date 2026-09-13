@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import io
 import math
 import re
 import shutil
@@ -10,8 +11,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from timeline.cache import wav_duration
+import wave
 
 
 class AudioProcessingError(RuntimeError):
@@ -97,16 +97,44 @@ class AudioProcessor:
         self.ffmpeg = ffmpeg or shutil.which("ffmpeg")
 
     def process(self, audio: bytes, metadata: Dict[str, Any]) -> ProcessingResult:
+        raw_duration = _wav_duration_bytes(audio)
+        target = _optional_float(metadata.get("target_duration"), "target_duration")
+        playback_speed = _optional_float(metadata.get("playback_speed"), "playback_speed")
+        if playback_speed is None:
+            playback_speed = 1.0
+
+        session_volume = _optional_float(metadata.get("volume"), "volume")
+        if session_volume is None:
+            session_volume = 100.0
+        if not math.isfinite(session_volume) or session_volume < 0:
+            raise AudioProcessingError("volume must not be negative")
+
+        # Live Session defaults are already suitable for Windows playback.
+        # Keep this fast path before tempfile/ffmpeg work so the Mac only
+        # forwards the original CosyVoice WAV when no user adjustment exists.
+        if (
+            metadata.get("source") == "live_session"
+            and target is None
+            and abs(playback_speed - 1.0) <= 1e-9
+            and abs(session_volume - 100.0) <= 1e-9
+        ):
+            return ProcessingResult(
+                audio=audio,
+                raw_duration=raw_duration,
+                duration=raw_duration,
+                speed_factor=1.0,
+                volume_gain=0.0,
+                warnings=[],
+                session_volume=100.0,
+                session_volume_gain=0.0,
+            )
+
+        speed_factor, warnings = calculate_speed_factor(raw_duration, target, self.config, playback_speed)
+
         with tempfile.TemporaryDirectory(prefix="audio-cache-") as directory:
             root = Path(directory)
             source = root / "source.wav"
             source.write_bytes(audio)
-            raw_duration = wav_duration(source)
-            target = _optional_float(metadata.get("target_duration"), "target_duration")
-            playback_speed = _optional_float(metadata.get("playback_speed"), "playback_speed")
-            if playback_speed is None:
-                playback_speed = 1.0
-            speed_factor, warnings = calculate_speed_factor(raw_duration, target, self.config, playback_speed)
 
             filters: List[str] = []
             if abs(speed_factor - 1.0) > 1e-9:
@@ -121,11 +149,6 @@ class AudioProcessor:
                 if abs(gain) > 1e-9:
                     filters.append(f"volume={gain:.8f}dB")
 
-            session_volume = _optional_float(metadata.get("volume"), "volume")
-            if session_volume is None:
-                session_volume = 100.0
-            if not math.isfinite(session_volume) or session_volume < 0:
-                raise AudioProcessingError("volume must not be negative")
             if session_volume == 0:
                 filters.append("volume=0")
                 session_volume_gain: Optional[float] = None
@@ -143,10 +166,17 @@ class AudioProcessor:
                 self._run_ffmpeg(source, output, ",".join(filters))
                 processed = output.read_bytes()
 
-            final_path = root / "final.wav"
-            final_path.write_bytes(processed)
-            duration = wav_duration(final_path)
-            return ProcessingResult(processed, raw_duration, duration, speed_factor, gain, warnings, session_volume, session_volume_gain)
+        duration = _wav_duration_bytes(processed)
+        return ProcessingResult(
+            processed,
+            raw_duration,
+            duration,
+            speed_factor,
+            gain,
+            warnings,
+            session_volume,
+            session_volume_gain,
+        )
 
     def _measure_volume(self, source: Path) -> float:
         if not self.ffmpeg:
@@ -185,6 +215,17 @@ class AudioProcessor:
         )
         if completed.returncode or not output.is_file():
             raise AudioProcessingError(completed.stderr.strip() or "ffmpeg audio processing failed")
+
+
+def _wav_duration_bytes(audio: bytes) -> float:
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as handle:
+            rate = handle.getframerate()
+            if rate <= 0:
+                raise AudioProcessingError("WAV sample rate must be positive")
+            return handle.getnframes() / rate
+    except (EOFError, wave.Error) as exc:
+        raise AudioProcessingError("invalid WAV audio") from exc
 
 
 def _optional_float(value: Any, field: str) -> Optional[float]:
