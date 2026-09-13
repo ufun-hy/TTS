@@ -36,6 +36,19 @@ def tone_wav_bytes(duration=1.0, rate=8000):
     return buffer.getvalue()
 
 
+def write_client_item(root, item_id, session_id, duration, playback_status, downloaded_at):
+    (root / f"{item_id}.wav").write_bytes(wav_bytes(duration=min(duration, 0.1)))
+    (root / f"{item_id}.json").write_text(json.dumps({
+        "id": item_id,
+        "status": "completed",
+        "duration": duration,
+        "downloaded_at": downloaded_at,
+        "sequence": int(item_id.rsplit("_", 1)[-1]),
+        "playback_status": playback_status,
+        "server_metadata": {"session_id": session_id},
+    }), encoding="utf-8")
+
+
 class AudioCacheTests(unittest.TestCase):
     def test_state_flow_keeps_order_and_ack_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -126,6 +139,41 @@ class AudioCacheTests(unittest.TestCase):
             (cache / "segment_001.wav").write_bytes(wav_bytes())
             (cache / "segment_001.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
             self.assertEqual(AudioClient(config.server, cache).local_stats(), {"received": 1, "completed": 1, "failed": 0, "cache": 1})
+
+    def test_local_playback_state_reports_newest_session_buffer_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            write_client_item(cache, "old_001", "session_old", 9.0, "cached", "2026-09-13T10:00:00+00:00")
+            write_client_item(cache, "new_001", "session_new", 7.5, "cached", "2026-09-13T10:10:00+00:00")
+            write_client_item(cache, "new_002", "session_new", 4.0, "playing", "2026-09-13T10:10:01+00:00")
+            write_client_item(cache, "new_003", "session_new", 5.5, "cached", "2026-09-13T10:10:02+00:00")
+            state = AudioClient("http://server:8000", cache).local_playback_state()
+            self.assertEqual(state["session_id"], "session_new")
+            self.assertEqual(state["buffered_segments"], 2)
+            self.assertAlmostEqual(state["buffered_seconds"], 13.0, places=2)
+            self.assertEqual(state["playback_status"], "playing")
+
+    def test_next_poll_reports_client_buffer_even_when_server_has_no_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                cache = root / "client"
+                cache.mkdir()
+                write_client_item(cache, "live_001", "live_session_1", 18.25, "cached", "2026-09-13T10:20:00+00:00")
+                client = AudioClient(f"http://127.0.0.1:{server.server_port}", cache)
+                self.assertIsNone(client.fetch_next())
+                state = server.client_state("live_session_1")
+                self.assertEqual(state["session_id"], "live_session_1")
+                self.assertEqual(state["buffered_segments"], 1)
+                self.assertAlmostEqual(state["buffered_seconds"], 18.25, places=2)
+                self.assertTrue(server.client_connected())
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":
