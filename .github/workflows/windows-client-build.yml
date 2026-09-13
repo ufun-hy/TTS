@@ -10,6 +10,7 @@ on:
       - "server/engine_runtime.py"
       - "server/live_session.py"
       - "server/tts_gateway.py"
+      - "scripts/stack-status.sh"
       - "start.sh"
       - "windows_client.py"
       - "build/windows/**"
