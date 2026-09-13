@@ -6,11 +6,14 @@ on:
       - main
     paths:
       - "audio_client/**"
+      - "audio_cache/**"
+      - "server/tts_gateway.py"
       - "windows_client.py"
       - "build/windows/**"
       - "config/audio-client.example.json"
       - "tests/test_audio_cache.py"
       - "tests/test_playback.py"
+      - "tests/test_stage1_efficiency.py"
       - "tests/test_winmm_smoke.py"
       - ".github/workflows/windows-client-build.yml"
   workflow_dispatch:
@@ -37,7 +40,7 @@ jobs:
 
       - name: Run audio client tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_playback
+        run: python -m unittest tests.test_audio_cache tests.test_playback tests.test_stage1_efficiency
 
       - name: Run WinMM smoke test
         shell: pwsh
