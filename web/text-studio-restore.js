@@ -152,6 +152,44 @@
     }
   }
 
+  async function importTranscriptBeforeParse(id) {
+    if (!id) {
+      showMessage('请选择稿清理结果。', 'err');
+      return;
+    }
+    try {
+      const {result} = await apiGet('/api/transcript/result?job_id=' + encodeURIComponent(id));
+      await newProject(true);
+      state.sourceName = 'recording_transcript/' + result.job_id + '/' + result.filename;
+      state.projectName = result.filename.replace(/\.[^.]+$/, '') + '-待处理';
+      $('projectName').value = state.projectName;
+      $('sourceText').value = result.text;
+      $('fileHint').textContent = '稿清理结果：' + result.filename;
+      state.paragraphs = [];
+      render();
+      const sourceDetails = $('sourceText')?.closest('details');
+      if (sourceDetails) sourceDetails.open = true;
+      if ($('restoreSettings')) $('restoreSettings').open = true;
+      if ($('transcriptSelect') && Array.from($('transcriptSelect').options).some(option => option.value === id)) {
+        $('transcriptSelect').value = id;
+      }
+      await queueSave(true);
+      showMessage('已载入稿清理结果。若这是多轮重复朗读，请先在“原稿还原”中分析并应用标准原稿；确认原稿后再点击“解析话术单元”。若没有重复朗读，可直接解析。', 'info');
+    } catch (e) {
+      showMessage('接续稿清理结果失败：' + e.message, 'err');
+    }
+  }
+
+  // The base page historically parsed transcript results immediately. Override
+  // that global entry so long/repeated recordings can be restored first.
+  if (typeof window.importTranscript === 'function') {
+    window.importTranscript = importTranscriptBeforeParse;
+  }
+  const transcriptButton = $('importTranscriptBtn');
+  if (transcriptButton) transcriptButton.textContent = '载入待处理原稿';
+  const transcriptHint = $('transcriptSelect')?.closest('.field')?.querySelector('.hint');
+  if (transcriptHint) transcriptHint.textContent = '先载入清理后的整稿；多轮重复朗读先做“原稿还原”，确认标准原稿后再解析话术单元。';
+
   $('restoreAnalyzeBtn')?.addEventListener('click', analyzeRestore);
   $('restoreApplyBtn')?.addEventListener('click', applyRestore);
   $('sourceText')?.addEventListener('input', () => {
