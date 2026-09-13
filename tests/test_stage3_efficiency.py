@@ -6,6 +6,7 @@ import unittest
 import wave
 
 from audio_cache.manager import AudioCacheManager
+from server.engine_runtime import ManagedEngine
 
 
 def wav_bytes(duration=0.2, rate=8000):
@@ -17,6 +18,38 @@ def wav_bytes(duration=0.2, rate=8000):
         audio.setframerate(rate)
         audio.writeframes(frames)
     return buffer.getvalue()
+
+
+class FakeClock:
+    def __init__(self):
+        self.value = 100.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
+class FakeProcess:
+    def __init__(self, state):
+        self.state = state
+        self.alive = True
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def terminate(self):
+        self.alive = False
+        self.state["ready"] = False
+
+    def wait(self, timeout=None):
+        if self.alive:
+            raise TimeoutError(timeout)
+        return 0
+
+    def kill(self):
+        self.terminate()
 
 
 class StageThreeEfficiencyTests(unittest.TestCase):
@@ -83,6 +116,47 @@ class StageThreeEfficiencyTests(unittest.TestCase):
                 "failed": 0,
             })
             self.assertFalse((root / "completed" / "segment_001").exists())
+
+    def test_managed_engine_starts_on_demand_sleeps_when_idle_and_wakes_again(self):
+        state = {"ready": False, "launches": 0}
+        clock = FakeClock()
+
+        def launch():
+            state["launches"] += 1
+            state["ready"] = True
+            return FakeProcess(state)
+
+        engine = ManagedEngine(
+            "http://engine",
+            launcher=launch,
+            probe=lambda: state["ready"],
+            idle_seconds=4,
+            startup_timeout=1,
+            clock=clock,
+        )
+        try:
+            self.assertEqual(engine.state(), "sleeping")
+            self.assertTrue(engine.run(lambda restarted: restarted))
+            self.assertEqual(engine.state(), "ready")
+            self.assertEqual(state["launches"], 1)
+
+            clock.advance(5)
+            self.assertTrue(engine.sleep_if_idle())
+            self.assertEqual(engine.state(), "sleeping")
+
+            def protected_request(restarted):
+                self.assertTrue(restarted)
+                clock.advance(5)
+                self.assertFalse(engine.sleep_if_idle())
+                return "ok"
+
+            self.assertEqual(engine.run(protected_request), "ok")
+            self.assertEqual(state["launches"], 2)
+            stats = engine.stats()
+            self.assertEqual(stats["wake_count"], 2)
+            self.assertEqual(stats["sleep_count"], 1)
+        finally:
+            engine.close()
 
 
 if __name__ == "__main__":
