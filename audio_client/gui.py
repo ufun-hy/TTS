@@ -6,7 +6,7 @@ import logging
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, Optional, Tuple
 
 from .client import AudioClient, AudioClientError
@@ -63,7 +63,7 @@ class AudioClientApp:
         config_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
         config_frame.columnconfigure(1, weight=1)
         self._field(config_frame, 0, "AI Server", self.server_var)
-        self._field(config_frame, 1, "缓存目录", self.cache_var)
+        self._cache_field(config_frame, 1)
         self._field(config_frame, 2, "轮询间隔(s)", self.poll_var)
         self._field(config_frame, 3, "API Key", self.api_key_var, password=True)
         ttk.Button(config_frame, text="保存配置", command=self.save).grid(row=4, column=1, sticky="e", pady=(8, 0))
@@ -116,6 +116,14 @@ class AudioClientApp:
         entry = ttk.Entry(parent, textvariable=variable, show="*" if password else "")
         entry.grid(row=row, column=1, sticky="ew", pady=3)
 
+    def _cache_field(self, parent: ttk.Frame, row: int) -> None:
+        ttk.Label(parent, text="缓存目录").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=3)
+        container = ttk.Frame(parent)
+        container.grid(row=row, column=1, sticky="ew", pady=3)
+        container.columnconfigure(0, weight=1)
+        ttk.Entry(container, textvariable=self.cache_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(container, text="浏览…", command=self.choose_cache_dir).grid(row=0, column=1, padx=(6, 0))
+
     @staticmethod
     def _status_row(parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 16), pady=2)
@@ -128,6 +136,31 @@ class AudioClientApp:
             "poll_interval": self.poll_var.get(),
             "api_key": self.api_key_var.get(),
         })
+
+    def choose_cache_dir(self) -> None:
+        try:
+            current = resolve_cache_dir(self._read_form())
+            initial = current if current.is_dir() else current.parent
+            if not initial.is_dir():
+                initial = install_dir()
+        except (OSError, ValueError, TypeError):
+            initial = install_dir()
+        selected = filedialog.askdirectory(
+            title="选择音频缓存目录",
+            initialdir=str(initial),
+            mustexist=True,
+            parent=self.root,
+        )
+        if not selected:
+            return
+        self.cache_var.set(selected)
+        if self.save():
+            self.playback = None
+            messagebox.showinfo(
+                "缓存目录已更新",
+                "新的缓存目录已保存。\n如果客户端正在运行，请点击“重新连接”使下载线程立即切换到新目录。",
+                parent=self.root,
+            )
 
     def save(self) -> bool:
         try:
