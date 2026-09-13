@@ -1,15 +1,16 @@
-"""Checkpointed local ASR. Decoder windows are NOT training utterances."""
+"""Checkpointed local Qwen ASR candidates. Decoder windows are NOT training utterances."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 from importlib.metadata import version
 import json
 import math
 from pathlib import Path
 import subprocess
 import time
+
+from recording_transcript.qwen_asr import transcribe as transcribe_qwen, validate_model
 
 
 def write_json(path: Path, value) -> None:
@@ -24,6 +25,17 @@ def sha256(path: Path) -> str:
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def model_weights_sha256(model: Path) -> str:
+    digest = hashlib.sha256()
+    files = sorted(model.glob("*.safetensors"))
+    if not files:
+        raise ValueError("Qwen ASR model has no safetensors weights")
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(sha256(path).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -73,14 +85,8 @@ def candidate_segments(checkpoint, source, source_duration):
             flags.append("invalid_timing")
         if start <= window["core_start"] or end >= window["core_end"]:
             flags.append("window_seam_review")
-        if float(segment.get("no_speech_prob", 0)) > 0.6:
-            flags.append("asr_no_speech_probability")
-        if float(segment.get("avg_logprob", 0)) < -1:
-            flags.append("asr_low_confidence")
-        if float(segment.get("compression_ratio", 0)) > 2.4:
-            flags.append("asr_repetition")
         words = []
-        for word in segment.get("words", []):
+        for word in segment.get("words", []) or []:
             item = dict(word)
             item["start"] = offset + float(item["start"])
             item["end"] = offset + float(item["end"])
@@ -95,10 +101,10 @@ def candidate_segments(checkpoint, source, source_duration):
             "candidate_id": f"{source['speaker_id']}_w{window['index']:04d}_s{index:04d}",
             "source_file": source["source_file"], "speaker_id": source["speaker_id"],
             "start_time": start, "end_time": end, "duration": end - start,
-            "text": text, "text_source": "mlx-whisper candidate; NOT verified truth",
+            "text": text, "text_source": "Qwen3-ASR-1.7B candidate; NOT verified truth",
             "text_verified": False, "speaker_verified": False, "natural_boundary_verified": False,
             "quality_status": "pending", "reviewer": None, "review_flags": sorted(set(flags)),
-            "avg_logprob": segment.get("avg_logprob"), "words": words,
+            "words": words,
         })
     return result
 
@@ -143,13 +149,22 @@ def prepare_speaker(speaker_dir: Path, model: Path, transcribe, size=600.0, over
         raise ValueError("This batch entry expects exactly one original recording per speaker")
     source = sources[0]
     original = Path(source["original_path"])
+    model = validate_model(model)
     asr_dir = speaker_dir / "asr"
     asr_dir.mkdir(exist_ok=True)
-    identity = {"source_sha256": sha256(original), "duration": source["duration"],
-                "model_path": str(model.resolve()), "model_sha256": sha256(model / "weights.safetensors"),
-                "model_config_sha256": sha256(model / "config.json"), "backend_version": version("mlx-whisper"),
-                "window_seconds": size, "overlap_seconds": overlap, "language": "zh",
-                "word_timestamps": True, "backend": "mlx-whisper"}
+    identity = {
+        "source_sha256": sha256(original),
+        "duration": source["duration"],
+        "model_path": str(model.resolve()),
+        "model_sha256": model_weights_sha256(model),
+        "model_config_sha256": sha256(model / "config.json"),
+        "backend_version": version("mlx-audio"),
+        "window_seconds": size,
+        "overlap_seconds": overlap,
+        "language": "zh",
+        "word_timestamps": False,
+        "backend": "qwen3-asr-1.7b-mlx",
+    }
     identity_path = asr_dir / "identity.json"
     if identity_path.exists():
         if json.loads(identity_path.read_text(encoding="utf-8")) != identity:
@@ -168,13 +183,16 @@ def prepare_speaker(speaker_dir: Path, model: Path, transcribe, size=600.0, over
         # Keep decoded work audio; no automatic deletion of user-related data.
         if not wave.exists():
             partial_wave = wave.with_suffix(".partial.wav")
-            subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-y", "-ss", str(window["decode_start"]),
-                            "-i", str(original), "-t", str(window["decode_end"] - window["decode_start"]),
-                            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(partial_wave)], check=True)
+            subprocess.run([
+                "ffmpeg", "-v", "error", "-nostdin", "-y",
+                "-ss", str(window["decode_start"]), "-i", str(original),
+                "-t", str(window["decode_end"] - window["decode_start"]),
+                "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(partial_wave),
+            ], check=True)
             partial_wave.replace(wave)
         began = time.monotonic()
         print(json.dumps({"speaker": source["speaker_id"], "window": window["index"], "state": "transcribing"}), flush=True)
-        result = transcribe(wave, str(model.resolve()), "zh")
+        result = transcribe(wave, model)
         write_json(checkpoint, {"identity": identity, "window": window,
                                "elapsed_seconds": time.monotonic() - began, "result": result})
         status = assemble(asr_dir, source, all_windows)
@@ -183,8 +201,5 @@ def prepare_speaker(speaker_dir: Path, model: Path, transcribe, size=600.0, over
 
 
 def local_backend(project_root: Path):
-    # Reuse the existing local MLX adapter, keeping its strict training normalizer out of candidate ASR.
-    spec = importlib.util.spec_from_file_location("audio_ingest", project_root / "scripts/audio-ingest.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.transcribe_mlx
+    del project_root  # Compatibility with the existing script entrypoint.
+    return transcribe_qwen
