@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -20,6 +21,12 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Queue
+from typing import Callable
+
+try:
+    from server.engine_runtime import EngineRuntimeError, ManagedEngine
+except ModuleNotFoundError:  # direct execution: python server/tts_gateway.py
+    from engine_runtime import EngineRuntimeError, ManagedEngine
 
 
 VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -55,6 +62,20 @@ class VoiceStore:
         if "default" not in voices:
             raise ValueError("default voice is not available")
         return voices
+
+    def load_local(self) -> None:
+        """Refresh prompt metadata without waking a sleeping engine."""
+        with self._lock:
+            mtime = self.config_path.stat().st_mtime_ns
+            if self._voices and mtime == self._mtime:
+                return
+            self._voices = self._load_config()
+            self._mtime = mtime
+            self._initialized = False
+
+    def invalidate_registration(self) -> None:
+        with self._lock:
+            self._initialized = False
 
     def _request(self, method: str, path: str, body: dict | None = None) -> int:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -93,11 +114,13 @@ class VoiceStore:
             self._initialized = True
 
     def ids(self) -> list[str]:
+        self.load_local()
         with self._lock:
             return sorted(self._voices)
 
     def cache_fingerprint(self, voice_id: str) -> str:
         """Fingerprint the current prompt so changed voices miss old cache entries."""
+        self.load_local()
         with self._lock:
             prompt = self._voices.get(voice_id)
             config_mtime = self._mtime
@@ -212,11 +235,11 @@ def _engine_request_text(text: str, voice: str, engine_url: str) -> bytes:
         return response.read()
 
 
-def _engine_request(job: Job, engine_url: str) -> bytes:
-    return _engine_request_text(job.text, job.voice, engine_url)
-
-
-def synthesize_and_play(job: Job, engine_url: str, result_cache: TTSResultCache | None = None) -> None:
+def synthesize_and_play(
+    job: Job,
+    synthesize_text: Callable[[str, str], bytes],
+    result_cache: TTSResultCache | None = None,
+) -> None:
     started = time.monotonic()
     queue_wait_ms = (started - job.enqueued_at) * 1000
     cache_hit = False
@@ -225,10 +248,10 @@ def synthesize_and_play(job: Job, engine_url: str, result_cache: TTSResultCache 
             audio, cache_hit = result_cache.get_or_create(
                 job.text,
                 job.voice,
-                lambda: _engine_request(job, engine_url),
+                lambda: synthesize_text(job.text, job.voice),
             )
         else:
-            audio = _engine_request(job, engine_url)
+            audio = synthesize_text(job.text, job.voice)
         job.audio_path.write_bytes(audio)
         synthesized = time.monotonic()
         subprocess.run(["/usr/bin/afplay", str(job.audio_path)], check=True)
@@ -245,7 +268,7 @@ def synthesize_and_play(job: Job, engine_url: str, result_cache: TTSResultCache 
             "cache_hit": cache_hit,
             "result": "ok",
         }), flush=True)
-    except (OSError, ValueError, subprocess.CalledProcessError, urllib.error.URLError) as exc:
+    except (EngineRuntimeError, OSError, ValueError, subprocess.CalledProcessError, urllib.error.URLError) as exc:
         job.error = str(exc)
         print(json.dumps({
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -269,7 +292,8 @@ def make_handler(
     voice_store: VoiceStore,
     rate_limiter: RateLimiter,
     api_key: str,
-    engine_url: str,
+    engine_runtime: ManagedEngine,
+    synthesize_text: Callable[[str, str], bytes],
     max_chars: int,
     result_cache: TTSResultCache | None = None,
 ):
@@ -291,25 +315,19 @@ def make_handler(
             prefix = "Bearer "
             return supplied.startswith(prefix) and hmac.compare_digest(supplied[len(prefix):], api_key)
 
-        def _engine_ready(self) -> bool:
-            try:
-                request = urllib.request.Request(f"{engine_url.rstrip('/')}/status")
-                with urllib.request.urlopen(request, timeout=2) as response:
-                    status = json.load(response)
-                return status.get("status") == "ok" and status.get("model_loaded") is True
-            except (OSError, ValueError, urllib.error.URLError):
-                return False
-
         def do_GET(self) -> None:  # noqa: N802
             if self.path in ("/health", "/healthz"):
-                engine_ready = self._engine_ready()
                 worker_ready = self.server.worker_thread.is_alive()  # type: ignore[attr-defined]
-                ready = engine_ready and worker_ready
+                engine = engine_runtime.stats()
+                engine_state = engine["state"]
+                engine_available = engine_state in ("ready", "sleeping", "starting") if engine_runtime.managed else engine_state == "ready"
+                ready = worker_ready and engine_available
                 self._json(200 if ready else 503, {
                     "status": "ok" if ready else "error",
-                    "tts": "ready" if engine_ready else "not_ready",
+                    "tts": engine_state,
                     "queue": "ready" if worker_ready else "not_ready",
                     "queue_depth": queue.qsize(),
+                    "engine": engine,
                     "tts_cache": result_cache.stats() if result_cache else {"hits": 0, "misses": 0},
                 })
                 return
@@ -318,7 +336,7 @@ def make_handler(
                     self._json(401, {"success": False, "error": "unauthorized"})
                     return
                 try:
-                    voice_store.sync()
+                    voice_store.load_local()
                     self._json(200, {"voices": [{"id": voice_id, "available": True} for voice_id in voice_store.ids()]})
                 except (OSError, ValueError, RuntimeError) as exc:
                     self._json(503, {"voices": [], "error": str(exc)})
@@ -357,7 +375,7 @@ def make_handler(
                 text = text.strip()
                 if len(text) > max_chars:
                     raise ValueError(f"text is too long; maximum is {max_chars} characters")
-                voice_store.sync()
+                voice_store.load_local()
                 if voice not in voice_store.ids():
                     self._json(404, {"success": False, "error": "voice_not_found"})
                     return
@@ -371,12 +389,12 @@ def make_handler(
                         audio, cache_hit = result_cache.get_or_create(
                             text,
                             voice,
-                            lambda: _engine_request_text(text, voice, engine_url),
+                            lambda: synthesize_text(text, voice),
                         )
                     else:
-                        audio = _engine_request_text(text, voice, engine_url)
+                        audio = synthesize_text(text, voice)
                         cache_hit = False
-                except (OSError, ValueError, urllib.error.URLError) as exc:
+                except (EngineRuntimeError, OSError, ValueError, urllib.error.URLError) as exc:
                     self._json(502, {"success": False, "error": "tts_failed", "detail": str(exc)})
                     return
                 self.send_response(200)
@@ -396,16 +414,21 @@ def make_handler(
                 self._json(200, {"success": True, "job_id": job.job_id})
 
         def log_message(self, fmt: str, *args) -> None:
-            print(f"gateway {self.address_string()} - {fmt % args}", flush=True)
+            if os.environ.get("TTS_HTTP_LOG", "0") == "1":
+                print(f"gateway {self.address_string()} - {fmt % args}", flush=True)
 
     return Handler
 
 
-def worker_loop(queue: Queue[Job], engine_url: str, result_cache: TTSResultCache | None = None) -> None:
+def worker_loop(
+    queue: Queue[Job],
+    synthesize_text: Callable[[str, str], bytes],
+    result_cache: TTSResultCache | None = None,
+) -> None:
     while True:
         job = queue.get()
         try:
-            synthesize_and_play(job, engine_url, result_cache)
+            synthesize_and_play(job, synthesize_text, result_cache)
         finally:
             queue.task_done()
 
@@ -415,6 +438,13 @@ def main() -> int:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--engine-url", default="http://127.0.0.1:8766")
+    parser.add_argument("--engine-bin", type=Path)
+    parser.add_argument("--engine-model", type=Path)
+    parser.add_argument("--engine-backend", default="auto")
+    parser.add_argument("--engine-log", type=Path, default=Path("runtime/logs/cosyvoice-server.log"))
+    parser.add_argument("--engine-idle-seconds", type=float, default=600.0)
+    parser.add_argument("--engine-startup-timeout", type=float, default=180.0)
+    parser.add_argument("--engine-verbose", action="store_true")
     parser.add_argument("--audio-dir", type=Path, default=Path("runtime/audio"))
     parser.add_argument("--tts-cache-dir", type=Path, default=Path("runtime/tts-cache"))
     parser.add_argument("--voices-config", type=Path, default=Path("voices.json"))
@@ -432,13 +462,60 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     args.audio_dir = args.audio_dir if args.audio_dir.is_absolute() else root / args.audio_dir
     args.tts_cache_dir = args.tts_cache_dir if args.tts_cache_dir.is_absolute() else root / args.tts_cache_dir
+    args.engine_log = args.engine_log if args.engine_log.is_absolute() else root / args.engine_log
     args.audio_dir.mkdir(parents=True, exist_ok=True)
+
     voice_store = VoiceStore(root, args.voices_config, args.engine_url)
     try:
-        voice_store.sync()
+        voice_store.load_local()
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"voice configuration is not ready: {exc}", file=sys.stderr)
         return 1
+
+    engine_command: list[str] = []
+    if args.engine_bin or args.engine_model:
+        if not args.engine_bin or not args.engine_model:
+            print("--engine-bin and --engine-model must be provided together", file=sys.stderr)
+            return 2
+        engine_bin = args.engine_bin if args.engine_bin.is_absolute() else root / args.engine_bin
+        engine_model = args.engine_model if args.engine_model.is_absolute() else root / args.engine_model
+        engine_command = [
+            str(engine_bin),
+            "--model", str(engine_model),
+            "--served-model-name", "cosyvoice-3",
+            "--backend", args.engine_backend,
+            "--host", "127.0.0.1",
+            "--port", args.engine_url.rsplit(":", 1)[-1],
+            "--concurrency", "1",
+        ]
+        if args.engine_verbose:
+            engine_command.append("--verbose")
+
+    engine_runtime = ManagedEngine(
+        args.engine_url,
+        command=engine_command,
+        log_path=args.engine_log if engine_command else None,
+        idle_seconds=args.engine_idle_seconds,
+        startup_timeout=args.engine_startup_timeout,
+    )
+
+    def synthesize_text(text: str, voice: str) -> bytes:
+        def perform(restarted: bool) -> bytes:
+            if restarted:
+                voice_store.invalidate_registration()
+            voice_store.sync()
+            return _engine_request_text(text, voice, args.engine_url)
+
+        return engine_runtime.run(perform)
+
+    # External-engine mode preserves the previous deployment contract and
+    # validates readiness at startup. Managed mode intentionally starts cold.
+    if not engine_runtime.managed:
+        try:
+            engine_runtime.run(lambda _restarted: voice_store.sync())
+        except (EngineRuntimeError, OSError, ValueError, RuntimeError) as exc:
+            print(f"voice configuration is not ready: {exc}", file=sys.stderr)
+            return 1
 
     result_cache = TTSResultCache(
         args.tts_cache_dir,
@@ -447,7 +524,7 @@ def main() -> int:
     )
     queue: Queue[Job] = Queue()
     worker_thread = threading.Thread(
-        target=lambda: worker_loop(queue, args.engine_url, result_cache),
+        target=lambda: worker_loop(queue, synthesize_text, result_cache),
         name="tts-playback",
         daemon=True,
     )
@@ -457,15 +534,25 @@ def main() -> int:
         voice_store,
         RateLimiter(args.rate_limit_per_minute),
         api_key,
-        args.engine_url,
+        engine_runtime,
+        synthesize_text,
         args.max_chars,
         result_cache,
     ))
     server.audio_dir = args.audio_dir  # type: ignore[attr-defined]
     server.worker_thread = worker_thread  # type: ignore[attr-defined]
+
+    def shutdown_handler(_signum, _frame) -> None:
+        threading.Thread(target=server.shutdown, name="tts-shutdown", daemon=True).start()
+
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, shutdown_handler)
+        signal.signal(signal.SIGINT, shutdown_handler)
+
     print(f"API: http://{args.host}:{args.port}/speak", flush=True)
     print(f"Voices: {', '.join(voice_store.ids())}", flush=True)
     print(f"TTS cache: {args.tts_cache_dir}", flush=True)
+    print(f"Engine idle sleep: {args.engine_idle_seconds:g}s" if engine_runtime.managed else "Engine mode: external", flush=True)
     print("Authentication: Bearer API key", flush=True)
     try:
         server.serve_forever()
@@ -473,6 +560,7 @@ def main() -> int:
         pass
     finally:
         server.server_close()
+        engine_runtime.close()
     return 0
 
 
