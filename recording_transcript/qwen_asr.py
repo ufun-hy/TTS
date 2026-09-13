@@ -1,4 +1,4 @@
-"""Local Qwen3-ASR-1.7B MLX backend; no ASR backend selection or fallback."""
+"""Local Qwen3-ASR-1.7B MLX backend with no backend selection or fallback."""
 from __future__ import annotations
 
 from functools import lru_cache
@@ -27,7 +27,7 @@ def validate_model(model: Path) -> Path:
     except (OSError, ValueError, KeyError, TypeError):
         correct = False
     if not correct:
-        raise ValueError('仅支持 Qwen3-ASR-1.7B MLX 权重，不能使用 Whisper 或其他 ASR 模型')
+        raise ValueError('仅支持 Qwen3-ASR-1.7B MLX 权重')
     required = ('tokenizer_config.json', 'preprocessor_config.json', 'vocab.json', 'merges.txt')
     if any(not (model / name).is_file() for name in required) or not any(model.glob('*.safetensors')):
         raise ValueError('Qwen3-ASR-1.7B 本地模型文件不完整，请完成安装；服务不会自动下载')
