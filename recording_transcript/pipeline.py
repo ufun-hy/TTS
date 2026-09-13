@@ -2,27 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 import tempfile
 from typing import Any, Callable
 
+from .audio import AudioDecodeError, SUPPORTED_EXTENSIONS, decode_audio
 from .cleaner import clean_transcript
 from .qwen_asr import transcribe as transcribe_qwen, validate_model
 
 
 class TranscriptError(RuntimeError):
     """A user-facing recording transcription error."""
-
-
-def _audio_ingest_module(project_root: Path) -> Any:
-    path = project_root / "scripts" / "audio-ingest.py"
-    spec = importlib.util.spec_from_file_location("tts_audio_ingest", path)
-    if spec is None or spec.loader is None:
-        raise TranscriptError("无法加载现有音频解码模块")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _segment_texts(result: Any) -> list[dict[str, Any]]:
@@ -53,27 +43,27 @@ def transcribe_recording(
     model: Path,
     on_stage: Callable[[str], None] | None = None,
 ) -> str:
-    """Decode input and run only the local Qwen3-ASR-1.7B MLX model."""
+    """Decode input and run the local Qwen3-ASR-1.7B MLX model."""
+    del project_root  # Kept in the public signature for existing callers.
     source = source.expanduser()
     if not source.is_file():
         raise TranscriptError("上传的录音文件不存在")
-    if source.suffix.lower() not in {".wav", ".mp3", ".m4a", ".mp4"}:
+    if source.suffix.lower() not in SUPPORTED_EXTENSIONS:
         raise TranscriptError("仅支持 wav、mp3、m4a、mp4 录音")
     try:
         model = validate_model(model)
     except ValueError as exc:
         raise TranscriptError(str(exc)) from exc
 
-    ingest = _audio_ingest_module(project_root)
     try:
         if on_stage:
             on_stage("recognizing")
         with tempfile.TemporaryDirectory(prefix="recording-transcript-") as workdir:
-            audio = ingest._audio_for_asr(source, Path(workdir))
+            audio = decode_audio(source, Path(workdir))
             result = transcribe_qwen(audio, model)
     except ImportError as exc:
         raise TranscriptError("当前 Python 环境缺少 Qwen MLX 依赖，请使用 Qwen ASR 环境启动") from exc
-    except ingest.IngestError as exc:
+    except AudioDecodeError as exc:
         raise TranscriptError(str(exc)) from exc
     except OSError as exc:
         raise TranscriptError(f"录音处理失败：{exc}") from exc
