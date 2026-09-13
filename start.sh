@@ -51,6 +51,11 @@ done
 mkdir -p "$LOG_DIR" "$ROOT/runtime/audio"
 export DYLD_LIBRARY_PATH="/opt/homebrew/opt/icu4c/lib:$BIN_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
+ENGINE_VERBOSE_ARGS=()
+if [[ "${COSYVOICE_VERBOSE:-0}" == "1" ]]; then
+  ENGINE_VERBOSE_ARGS+=(--verbose)
+fi
+
 "$BIN_DIR/cosyvoice-server" \
   --model "$MODEL_DIR/CosyVoice3-2512_Q8_0.gguf" \
   --served-model-name cosyvoice-3 \
@@ -58,7 +63,7 @@ export DYLD_LIBRARY_PATH="/opt/homebrew/opt/icu4c/lib:$BIN_DIR${DYLD_LIBRARY_PAT
   --host 127.0.0.1 \
   --port "$ENGINE_PORT" \
   --concurrency 1 \
-  --verbose \
+  "${ENGINE_VERBOSE_ARGS[@]}" \
   >"$LOG_DIR/cosyvoice-server.log" 2>&1 &
 ENGINE_PID=$!
 
