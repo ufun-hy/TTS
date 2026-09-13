@@ -11,7 +11,7 @@ import tempfile
 import time
 from typing import Any, Callable, Dict, Optional
 from urllib import error, request
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 
 
 class AudioClientError(RuntimeError):
@@ -61,11 +61,90 @@ class AudioClient:
                 stats[status] += 1
         return stats
 
+    def local_playback_state(self) -> Dict[str, Any]:
+        """Summarize the newest Live Session still represented in local cache."""
+        live_items = []
+        for metadata_path in self.cache_dir.glob("*.json"):
+            metadata = self._read_metadata(metadata_path.stem)
+            if not metadata:
+                continue
+            wav_path = self.cache_dir / f"{metadata_path.stem}.wav"
+            if not wav_path.is_file():
+                continue
+            server_metadata = metadata.get("server_metadata")
+            if not isinstance(server_metadata, dict):
+                continue
+            session_id = server_metadata.get("session_id")
+            if not isinstance(session_id, str) or not session_id.strip():
+                continue
+            live_items.append((metadata_path.stem, metadata, session_id.strip()))
+
+        if not live_items:
+            return {
+                "session_id": "",
+                "buffered_segments": 0,
+                "buffered_seconds": 0.0,
+                "playback_status": "idle",
+            }
+
+        def newest_key(item: tuple[str, Dict[str, Any], str]) -> tuple[str, float, str]:
+            item_id, metadata, _session_id = item
+            downloaded_at = metadata.get("downloaded_at")
+            downloaded_at = downloaded_at if isinstance(downloaded_at, str) else ""
+            sequence = metadata.get("sequence")
+            if sequence is None and isinstance(metadata.get("server_metadata"), dict):
+                sequence = metadata["server_metadata"].get("sequence")
+            try:
+                order = float(sequence)
+            except (TypeError, ValueError):
+                order = -1.0
+            return downloaded_at, order, item_id
+
+        active_session_id = max(live_items, key=newest_key)[2]
+        active_items = [item for item in live_items if item[2] == active_session_id]
+        buffered_segments = 0
+        buffered_seconds = 0.0
+        statuses = []
+        for _item_id, metadata, _session_id in active_items:
+            playback_status = str(metadata.get("playback_status") or "")
+            statuses.append(playback_status)
+            if playback_status != "cached":
+                continue
+            buffered_segments += 1
+            try:
+                duration = float(metadata.get("duration", 0) or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration > 0:
+                buffered_seconds += duration
+
+        if "paused" in statuses:
+            playback_status = "paused"
+        elif "playing" in statuses:
+            playback_status = "playing"
+        elif buffered_segments:
+            playback_status = "buffered"
+        else:
+            playback_status = "idle"
+        return {
+            "session_id": active_session_id,
+            "buffered_segments": buffered_segments,
+            "buffered_seconds": round(buffered_seconds, 3),
+            "playback_status": playback_status,
+        }
+
     def fetch_next(self) -> Optional[ClientAudio]:
         existing = self._recoverable()
         if existing:
             return existing
-        response = self._request("GET", "audio/next")
+        state = self.local_playback_state()
+        query = urlencode({
+            "client_session_id": state["session_id"],
+            "client_buffered_segments": state["buffered_segments"],
+            "client_buffered_seconds": state["buffered_seconds"],
+            "client_playback_status": state["playback_status"],
+        })
+        response = self._request("GET", f"audio/next?{query}")
         if response is None:
             return None
         if response.status == 204:
