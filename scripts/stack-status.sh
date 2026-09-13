@@ -10,12 +10,16 @@ CACHE_HEALTH="http://127.0.0.1:8000/health"
 STUDIO_HEALTH="http://127.0.0.1:8770/api/health"
 TRANSCRIPT_HEALTH="http://127.0.0.1:8771/api/health"
 all_ready=1
+tts_body=""
 cache_body=""
 
-if stack_http_ok "$TTS_HEALTH"; then
+if tts_body="$(/usr/bin/curl -fsS --max-time 2 "$TTS_HEALTH" 2>/dev/null)"; then
   echo "TTS Gateway   READY    http://127.0.0.1:8765"
+  engine_state="$(python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("tts", "unknown")).upper())' <<<"$tts_body" 2>/dev/null || echo UNKNOWN)"
+  echo "CosyVoice     $engine_state"
 else
   echo "TTS Gateway   DOWN     http://127.0.0.1:8765"
+  echo "CosyVoice     UNKNOWN"
   all_ready=0
 fi
 
