@@ -9,7 +9,7 @@ import unittest
 class ServiceEntrypointTests(unittest.TestCase):
     def test_script_entrypoints_with_stack_pythonpath(self):
         root = Path(__file__).resolve().parents[1]
-        for script in ('text_studio.py', 'text_studio_entry.py', 'recording_transcript.py'):
+        for script in ('text_studio.py', 'text_studio_entry.py', 'recording_transcript.py', 'tts_gateway.py'):
             with self.subTest(script=script):
                 result = subprocess.run([sys.executable, str(root/'server'/script), '--help'],
                                         cwd=root, env={**os.environ, 'PYTHONPATH': str(root)},
