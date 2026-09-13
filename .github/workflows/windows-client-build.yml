@@ -16,6 +16,7 @@ on:
       - "tests/test_live_session.py"
       - "tests/test_playback.py"
       - "tests/test_stage1_efficiency.py"
+      - "tests/test_stage3_efficiency.py"
       - "tests/test_winmm_smoke.py"
       - ".github/workflows/windows-client-build.yml"
   workflow_dispatch:
@@ -42,7 +43,7 @@ jobs:
 
       - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_stage1_efficiency
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_stage1_efficiency tests.test_stage3_efficiency
 
       - name: Run WinMM smoke test
         shell: pwsh
