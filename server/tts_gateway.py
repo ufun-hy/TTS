@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import hashlib
 import hmac
 import json
 import os
@@ -95,6 +96,75 @@ class VoiceStore:
         with self._lock:
             return sorted(self._voices)
 
+    def cache_fingerprint(self, voice_id: str) -> str:
+        """Fingerprint the current prompt so changed voices miss old cache entries."""
+        with self._lock:
+            prompt = self._voices.get(voice_id)
+            config_mtime = self._mtime
+        if prompt is None:
+            raise ValueError(f"voice not found: {voice_id}")
+        stat = prompt.stat()
+        return f"{voice_id}|{prompt.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config_mtime}"
+
+
+class TTSResultCache:
+    """Persistent synthesis cache keyed by text, voice prompt, and cache revision."""
+
+    def __init__(self, root: Path, voice_store: VoiceStore, revision: str = "v1") -> None:
+        self.root = Path(root)
+        self.voice_store = voice_store
+        self.revision = revision
+        self._lock = threading.RLock()
+        self._hits = 0
+        self._misses = 0
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, text: str, voice: str) -> Path:
+        payload = json.dumps(
+            {
+                "revision": self.revision,
+                "voice": voice,
+                "voice_fingerprint": self.voice_store.cache_fingerprint(voice),
+                "text": text,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hashlib.sha256(payload).hexdigest()
+        return self.root / digest[:2] / f"{digest}.wav"
+
+    def get_or_create(self, text: str, voice: str, producer) -> tuple[bytes, bool]:
+        path = self._path(text, voice)
+        with self._lock:
+            if path.is_file():
+                try:
+                    audio = path.read_bytes()
+                except OSError:
+                    audio = b""
+                if audio.startswith(b"RIFF"):
+                    self._hits += 1
+                    return audio, True
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+
+            audio = producer()
+            if not isinstance(audio, (bytes, bytearray)) or not bytes(audio).startswith(b"RIFF"):
+                raise ValueError("TTS returned a non-WAV response")
+            audio = bytes(audio)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            temporary.write_bytes(audio)
+            os.replace(temporary, path)
+            self._misses += 1
+            return audio, False
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return {"hits": self._hits, "misses": self._misses}
+
 
 class RateLimiter:
     def __init__(self, per_minute: int) -> None:
@@ -146,11 +216,19 @@ def _engine_request(job: Job, engine_url: str) -> bytes:
     return _engine_request_text(job.text, job.voice, engine_url)
 
 
-def synthesize_and_play(job: Job, engine_url: str) -> None:
+def synthesize_and_play(job: Job, engine_url: str, result_cache: TTSResultCache | None = None) -> None:
     started = time.monotonic()
     queue_wait_ms = (started - job.enqueued_at) * 1000
+    cache_hit = False
     try:
-        audio = _engine_request(job, engine_url)
+        if result_cache:
+            audio, cache_hit = result_cache.get_or_create(
+                job.text,
+                job.voice,
+                lambda: _engine_request(job, engine_url),
+            )
+        else:
+            audio = _engine_request(job, engine_url)
         job.audio_path.write_bytes(audio)
         synthesized = time.monotonic()
         subprocess.run(["/usr/bin/afplay", str(job.audio_path)], check=True)
@@ -164,9 +242,10 @@ def synthesize_and_play(job: Job, engine_url: str) -> None:
             "queue_wait_ms": round(queue_wait_ms),
             "synthesis_ms": round((synthesized - started) * 1000),
             "playback_ms": round((finished - synthesized) * 1000),
+            "cache_hit": cache_hit,
             "result": "ok",
         }), flush=True)
-    except (OSError, subprocess.CalledProcessError, urllib.error.URLError) as exc:
+    except (OSError, ValueError, subprocess.CalledProcessError, urllib.error.URLError) as exc:
         job.error = str(exc)
         print(json.dumps({
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -192,6 +271,7 @@ def make_handler(
     api_key: str,
     engine_url: str,
     max_chars: int,
+    result_cache: TTSResultCache | None = None,
 ):
     class Handler(BaseHTTPRequestHandler):
         server_version = "local-tts/2.0"
@@ -230,6 +310,7 @@ def make_handler(
                     "tts": "ready" if engine_ready else "not_ready",
                     "queue": "ready" if worker_ready else "not_ready",
                     "queue_depth": queue.qsize(),
+                    "tts_cache": result_cache.stats() if result_cache else {"hits": 0, "misses": 0},
                 })
                 return
             if self.path == "/voices":
@@ -286,13 +367,22 @@ def make_handler(
 
             if self.path == "/synthesize":
                 try:
-                    audio = _engine_request_text(text, voice, engine_url)
-                except (OSError, urllib.error.URLError) as exc:
+                    if result_cache:
+                        audio, cache_hit = result_cache.get_or_create(
+                            text,
+                            voice,
+                            lambda: _engine_request_text(text, voice, engine_url),
+                        )
+                    else:
+                        audio = _engine_request_text(text, voice, engine_url)
+                        cache_hit = False
+                except (OSError, ValueError, urllib.error.URLError) as exc:
                     self._json(502, {"success": False, "error": "tts_failed", "detail": str(exc)})
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
                 self.send_header("Content-Length", str(len(audio)))
+                self.send_header("X-TTS-Cache", "HIT" if cache_hit else "MISS")
                 self.end_headers()
                 self.wfile.write(audio)
                 return
@@ -311,11 +401,11 @@ def make_handler(
     return Handler
 
 
-def worker_loop(queue: Queue[Job], engine_url: str) -> None:
+def worker_loop(queue: Queue[Job], engine_url: str, result_cache: TTSResultCache | None = None) -> None:
     while True:
         job = queue.get()
         try:
-            synthesize_and_play(job, engine_url)
+            synthesize_and_play(job, engine_url, result_cache)
         finally:
             queue.task_done()
 
@@ -326,6 +416,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--engine-url", default="http://127.0.0.1:8766")
     parser.add_argument("--audio-dir", type=Path, default=Path("runtime/audio"))
+    parser.add_argument("--tts-cache-dir", type=Path, default=Path("runtime/tts-cache"))
     parser.add_argument("--voices-config", type=Path, default=Path("voices.json"))
     parser.add_argument("--max-chars", type=int, default=200)
     parser.add_argument("--rate-limit-per-minute", type=int, default=30)
@@ -340,6 +431,7 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[1]
     args.audio_dir = args.audio_dir if args.audio_dir.is_absolute() else root / args.audio_dir
+    args.tts_cache_dir = args.tts_cache_dir if args.tts_cache_dir.is_absolute() else root / args.tts_cache_dir
     args.audio_dir.mkdir(parents=True, exist_ok=True)
     voice_store = VoiceStore(root, args.voices_config, args.engine_url)
     try:
@@ -348,20 +440,32 @@ def main() -> int:
         print(f"voice configuration is not ready: {exc}", file=sys.stderr)
         return 1
 
+    result_cache = TTSResultCache(
+        args.tts_cache_dir,
+        voice_store,
+        os.environ.get("TTS_CACHE_REVISION", "v1"),
+    )
     queue: Queue[Job] = Queue()
     worker_thread = threading.Thread(
-        target=lambda: worker_loop(queue, args.engine_url),
+        target=lambda: worker_loop(queue, args.engine_url, result_cache),
         name="tts-playback",
         daemon=True,
     )
     worker_thread.start()
     server = Gateway((args.host, args.port), make_handler(
-        queue, voice_store, RateLimiter(args.rate_limit_per_minute), api_key, args.engine_url, args.max_chars,
+        queue,
+        voice_store,
+        RateLimiter(args.rate_limit_per_minute),
+        api_key,
+        args.engine_url,
+        args.max_chars,
+        result_cache,
     ))
     server.audio_dir = args.audio_dir  # type: ignore[attr-defined]
     server.worker_thread = worker_thread  # type: ignore[attr-defined]
     print(f"API: http://{args.host}:{args.port}/speak", flush=True)
     print(f"Voices: {', '.join(voice_store.ids())}", flush=True)
+    print(f"TTS cache: {args.tts_cache_dir}", flush=True)
     print("Authentication: Bearer API key", flush=True)
     try:
         server.serve_forever()
