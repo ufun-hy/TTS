@@ -20,18 +20,20 @@
 
 职责分为 `voice_datasets/transcription.py`（全量候选转写、断点记录）、`voice_datasets/review.py`（审核校验、统计、有效集导出），命令入口位于 `scripts/`。真实音频、转写、审核和日志均位于运行目录。
 
-三份录音没有对应的已校对文本，先执行全量候选转写：
+候选转写统一使用项目现有的 Qwen3-ASR-1.7B MLX 环境：
 
 ```bash
-.venv-asr/bin/python -u scripts/voice-datasets-prepare.py \
-  --model runtime/models/asr/large-v3-turbo
+runtime/qwen-asr-venv/bin/python -u scripts/voice-datasets-prepare.py \
+  --model runtime/models/asr/qwen3-asr-1.7b-bf16
 ```
 
-可用 `--speaker a` 单独续跑一位；默认顺序处理全部三位。使用数据目录进程锁防止重复任务。源文件、模型权重及配置的 SHA-256 和 ASR 版本、参数共同校验断点。完成的窗口直接复用；失败记录保留，另外两位仍继续执行。改变源文件或模型时拒绝混用已有断点。
+`--model` 可以省略，默认就是上述 Qwen 模型目录。可用 `--speaker a` 单独续跑一位；默认顺序处理全部三位。使用数据目录进程锁防止重复任务。源文件、模型权重及配置的 SHA-256 和 ASR 版本、参数共同校验断点。完成的窗口直接复用；失败记录保留，另外两位仍继续执行。改变源文件、模型或后端时拒绝混用已有断点。
+
+如果某个 `speaker-*/asr/identity.json` 来自旧 ASR 后端，不要与 Qwen 断点混用。需要重新生成候选时，应先备份人工审核产生的 `alignment.jsonl`，然后只清理该 speaker 的 `asr/` 候选目录，再用 Qwen 重新生成。不要删除 `raw/`、`references/`、人工审核记录或已导出的有效集。
 
 运行 `python3 scripts/voice-datasets-status.py` 刷新 `runtime/voice-datasets/status.md` 和 `report.json`。每个 `asr/status.json` 在一个窗口完成后更新；根报告是明确注明生成时间的快照。未测试时不替用户选择 Primary，也不凭空给出 Fine-tune YES/NO。
 
-ASR 以 600 秒核心范围、两侧 5 秒上下文分批运行，不是固定时长训练切片。原始窗口输出和词时间戳完整保存到 `asr/window-*.json`；`asr/candidates.jsonl` 将时间转换为原始录音坐标，按中点归属去除重复上下文，交界、重叠和可疑时间戳标记待查。窗口交界可能存在遗漏或重复，校对须对照原始窗口上下文，不能将 ASR 覆盖时长等同于可靠转写覆盖时长。派生的 16 kHz 工作 WAV 保留，不自动清理。
+ASR 以 600 秒核心范围、两侧 5 秒上下文分批运行，不是固定时长训练切片。原始窗口分段结果保存在 `asr/window-*.json`；`asr/candidates.jsonl` 将时间转换为原始录音坐标，按中点归属去除重复上下文，交界和重叠范围标记待查。当前 Qwen 候选以分段时间范围辅助定位，不承诺逐字时间戳。派生的 16 kHz 工作 WAV 保留，不自动清理。
 
 候选记录不是完整自然句子。人工听原音，修正文字、调整或合并边界，另存 `alignment.jsonl`。每个 accepted 记录必须明确 `text_verified: true`、`speaker_verified: true`、`natural_boundary_verified: true`，并填写 `reviewer`、唯一 `utterance_id`。拒绝的范围填写 `rejection_reasons`；最终质量决定不得彼此重叠。未校对保持 pending。
 
