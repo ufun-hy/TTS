@@ -140,37 +140,19 @@ https://ufunmac-mini.tail352fe1.ts.net
 
 ## 直播话术时间轴 V1
 
-### 本地音频 ASR 输入
+### 时间轴 ASR JSON 输入
 
-`audio-ingest.py` 将本地 wav/mp3/m4a/mp4（mp4 会先抽取音轨）交给已安装的本地 ASR 后端，并输出包含 Segment 与 word timestamp 的结构化 JSON：
-
-```bash
-python3 scripts/audio-ingest.py /path/to/live.mp3 runtime/asr/live.json --model /path/to/local/model
-```
-
-支持自动选择 `mlx-whisper`、`faster-whisper`、`openai-whisper` 或 `whisper.cpp`，优先使用 `mlx-whisper`。也可以通过 `--backend` 固定后端；模型必须通过 `--model` 或 `TTS_ASR_MODEL` 指定，脚本不会隐式下载模型。未检测到本地 ASR 后端时命令会直接报错。
-
-生成的 JSON 可直接交给重切分：
+时间轴仍接受已准备好的带时间戳 ASR JSON，可直接交给重切分：
 
 ```bash
 python3 scripts/timeline-resegment.py runtime/asr/live.json runtime/resegmented.json
 ```
 
-Mac Apple Silicon 首测已验证 `mlx-whisper 0.4.3 + mlx 0.29.3 + whisper-large-v3-turbo`。模型来自 [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo)，本地目录为 `runtime/models/asr/large-v3-turbo/`，约 1.51 GiB，不提交 Git。项目专用环境在 `.venv-asr/`，真实运行示例：
-
-```bash
-.venv-asr/bin/python scripts/audio-ingest.py \
-  /path/to/live.mp3 runtime/asr/live.json \
-  --backend mlx-whisper \
-  --model "$PWD/runtime/models/asr/large-v3-turbo" \
-  --language zh
-```
-
-模型路径必须显式指定；脚本不会在运行时联网下载模型。
+项目内录音转文字统一使用 Qwen3-ASR-1.7B；时间轴模块继续兼容已有 ASR JSON 和旧 TXT 输入。
 
 ### 录音转文稿 V1
 
-独立的录音转文稿页面支持 wav/mp3/m4a/mp4，固定使用本地 `Qwen3-ASR-1.7B + Apple Silicon MLX`（不回退 Whisper），只输出轻度整理后的连续中文文稿，不显示时间戳或 ASR JSON：
+独立的录音转文稿页面支持 wav/mp3/m4a/mp4，固定使用本地 `Qwen3-ASR-1.7B + Apple Silicon MLX`，只输出轻度整理后的连续中文文稿，不显示时间戳或 ASR JSON：
 
 ```bash
 ./scripts/recording-transcript-start.sh
