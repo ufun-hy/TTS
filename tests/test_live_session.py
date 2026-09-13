@@ -2,6 +2,7 @@ import time
 import unittest
 
 from server.live_session import (
+    LiveSession,
     LiveSessionError,
     LiveSessionManager,
     choose_candidate_round,
@@ -147,6 +148,65 @@ class LiveSessionTests(unittest.TestCase):
         )
         self.assertEqual(len({item[0] for item in enqueued}), 4)
         self.assertEqual(manager.status()["round_number"], 2)
+
+    def test_backpressure_pauses_at_high_watermark_and_resumes_at_low_watermark(self):
+        state = {"buffered_seconds": 0.0}
+        synthesized = []
+        enqueued = []
+        session_id = "live-backpressure"
+
+        def cache_status(_session_id):
+            return {
+                "ready": 0,
+                "processing": 0,
+                "completed": 0,
+                "failed": 0,
+                "client_connected": True,
+                "client_state": {
+                    "session_id": session_id,
+                    "buffered_segments": 3,
+                    "buffered_seconds": state["buffered_seconds"],
+                    "playback_status": "buffered",
+                },
+            }
+
+        def synthesize(text, _voice):
+            synthesized.append(text)
+            return b"RIFF" + text.encode()
+
+        def enqueue(item_id, sequence, text, voice, audio):
+            enqueued.append((item_id, sequence, text, voice, audio))
+            if len(enqueued) == 1:
+                state["buffered_seconds"] = 30.0
+
+        session = LiveSession(
+            session_id,
+            "default",
+            [{"id": "p1", "text": "第一段"}, {"id": "p2", "text": "第二段"}],
+            synthesize,
+            enqueue,
+            cache_status,
+            buffer_high_seconds=30.0,
+            buffer_low_seconds=12.0,
+        )
+        session.start()
+        deadline = time.monotonic() + 1
+        while len(enqueued) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(enqueued), 1)
+        time.sleep(0.15)
+        self.assertEqual(len(synthesized), 1)
+        self.assertTrue(session.snapshot().backpressure_active)
+
+        state["buffered_seconds"] = 12.0
+        deadline = time.monotonic() + 1
+        while len(enqueued) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(len(enqueued), 2)
+        self.assertEqual(synthesized, ["第一段", "第二段"])
+        session._thread.join(timeout=1)
+        self.assertFalse(session._thread.is_alive())
+        self.assertEqual(session.status, "stopped")
 
     def test_failed_segment_sets_failed_state(self):
         manager = LiveSessionManager(
