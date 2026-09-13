@@ -11,3 +11,6 @@ voices/*
 config/tts.json
 dist/
 build/windows/output/
+
+# Python bytecode is runtime cache, not source.
+__pycache__/

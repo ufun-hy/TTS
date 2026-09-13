@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 
 from recording_transcript.results import save_result, load_result, list_results
 from recording_transcript.pipeline import TranscriptError, transcribe_recording
+from recording_transcript.qwen_asr import MODEL_DIRECTORY, readiness
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4"}
@@ -89,7 +90,7 @@ class TranscriptJobStore:
 
     def _run(self, job: TranscriptJob) -> None:
         try:
-            # ponytail: serialize local MLX jobs; concurrent model loads waste memory.
+            # Serialize local GPU jobs and reuse the loaded Qwen model.
             with self._asr_lock:
                 final_text = transcribe_recording(
                     job.upload_path,
@@ -204,7 +205,7 @@ def make_handler(project_root: Path, model: Path):
                 self._html()
                 return
             if path == "/api/health":
-                self._json(200, {"status": "ok", "asr_ready": model.exists(), "text_studio_url": os.environ.get("TEXT_STUDIO_URL", "")})
+                self._json(200, {"status": "ok", **readiness(model), "text_studio_url": os.environ.get("TEXT_STUDIO_URL", "")})
                 return
             if path == "/api/transcript/results":
                 self._json(200, {"results": list_results(project_root)})
@@ -253,17 +254,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Local recording transcript web server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8771)
-    parser.add_argument("--model", default=os.environ.get("TTS_ASR_MODEL", ""))
+    parser.add_argument("--model", default=os.environ.get("RECORDING_TRANSCRIPT_MODEL", ""))
     args = parser.parse_args()
-    model = Path(args.model).expanduser() if args.model else ROOT / "runtime" / "models" / "asr" / "large-v3-turbo"
+    model = Path(args.model).expanduser() if args.model else ROOT / "runtime" / "models" / "asr" / MODEL_DIRECTORY
     html_path = ROOT / "web" / "recording-transcript.html"
     if not html_path.is_file():
         print(f"Missing {html_path}")
         return 1
     server = RecordingTranscriptServer((args.host, args.port), make_handler(ROOT, model))
     print(f"Recording transcript: http://{args.host}:{args.port}", flush=True)
+    print(f"ASR backend: Qwen3-ASR-1.7B / MLX (Apple GPU)", flush=True)
     print(f"ASR model: {model}", flush=True)
-    print(f"ASR status: {'ready' if model.exists() else 'not found'}", flush=True)
+    status = readiness(model)
+    print(f"ASR status: {'ready' if status['asr_ready'] else status['asr_error']}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

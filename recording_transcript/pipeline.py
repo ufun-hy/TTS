@@ -1,4 +1,4 @@
-"""Local MLX Whisper pipeline for the standalone transcript page."""
+"""Local Qwen3-ASR-1.7B MLX pipeline for the standalone transcript page."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import tempfile
 from typing import Any, Callable
 
 from .cleaner import clean_transcript
+from .qwen_asr import transcribe as transcribe_qwen, validate_model
 
 
 class TranscriptError(RuntimeError):
@@ -52,14 +53,16 @@ def transcribe_recording(
     model: Path,
     on_stage: Callable[[str], None] | None = None,
 ) -> str:
-    """Decode input and run the existing local whisper-large-v3-turbo model."""
+    """Decode input and run only the local Qwen3-ASR-1.7B MLX model."""
     source = source.expanduser()
     if not source.is_file():
         raise TranscriptError("上传的录音文件不存在")
     if source.suffix.lower() not in {".wav", ".mp3", ".m4a", ".mp4"}:
         raise TranscriptError("仅支持 wav、mp3、m4a、mp4 录音")
-    if not model.exists():
-        raise TranscriptError("本地 whisper-large-v3-turbo 模型未找到，请先配置 TTS_ASR_MODEL")
+    try:
+        model = validate_model(model)
+    except ValueError as exc:
+        raise TranscriptError(str(exc)) from exc
 
     ingest = _audio_ingest_module(project_root)
     try:
@@ -67,9 +70,9 @@ def transcribe_recording(
             on_stage("recognizing")
         with tempfile.TemporaryDirectory(prefix="recording-transcript-") as workdir:
             audio = ingest._audio_for_asr(source, Path(workdir))
-            result = ingest.transcribe_mlx(audio, str(model), "zh")
+            result = transcribe_qwen(audio, model)
     except ImportError as exc:
-        raise TranscriptError("当前 Python 环境未安装 mlx-whisper，请使用项目 ASR 环境启动") from exc
+        raise TranscriptError("当前 Python 环境缺少 Qwen MLX 依赖，请使用 Qwen ASR 环境启动") from exc
     except ingest.IngestError as exc:
         raise TranscriptError(str(exc)) from exc
     except OSError as exc:

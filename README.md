@@ -170,7 +170,7 @@ Mac Apple Silicon 首测已验证 `mlx-whisper 0.4.3 + mlx 0.29.3 + whisper-larg
 
 ### 录音转文稿 V1
 
-独立的录音转文稿页面支持 wav/mp3/m4a/mp4，使用同一套本地 `mlx-whisper + whisper-large-v3-turbo`，只输出轻度整理后的连续中文文稿，不显示时间戳或 ASR JSON：
+独立的录音转文稿页面支持 wav/mp3/m4a/mp4，固定使用本地 `Qwen3-ASR-1.7B + Apple Silicon MLX`（不回退 Whisper），只输出轻度整理后的连续中文文稿，不显示时间戳或 ASR JSON：
 
 ```bash
 ./scripts/recording-transcript-start.sh
