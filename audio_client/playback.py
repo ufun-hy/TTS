@@ -337,6 +337,8 @@ class PlaybackController:
                     "attempted_at": _utc_now(), "error": str(exc),
                 }
                 _atomic_write_json(item.metadata_path, item.metadata)
+                with self._lock:
+                    self._error = str(exc)
                 if self.logger:
                     self.logger.warning(
                         "wav compatibility failed source=%s category=%s conversion_ms=%d detail=%s",

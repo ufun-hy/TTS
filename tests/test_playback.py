@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 import struct
 import tempfile
@@ -90,7 +91,22 @@ class PlaybackTests(unittest.TestCase):
             controller._recover_failed_float_items()
             self.assertEqual(json.loads((root / "failed_pcm.json").read_text())["playback_status"], "playback_failed")
             self.assertEqual(json.loads((root / "failed_old_float.json").read_text())["playback_status"], "playback_failed")
-            self.assertFalse((root / "pcm16").exists())
+            self.assertEqual(list((root / "pcm16").glob("*.wav")), [])
+
+    def test_failed_float_conversion_is_recorded_once_and_not_retried_forever(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_failed_float_item(root, "bad_float", 1, "session_current")
+            (root / "bad_float.wav").write_bytes(_float_wav((math.nan,)))
+            controller = PlaybackController(root, player=FakePlayer(threading.Event()))
+            controller._active_session_id = "session_current"
+            controller._recover_failed_float_items()
+            controller._recover_failed_float_items()
+            metadata = json.loads((root / "bad_float.json").read_text())
+            self.assertEqual(metadata["playback_status"], "playback_failed")
+            self.assertEqual(metadata["wav_compat_recovery"]["attempt_count"], 1)
+            self.assertFalse(metadata["wav_compat_recovery"]["success"])
+            self.assertEqual(list((root / "pcm16").glob("*.wav")), [])
 
     def test_sequence_order_and_played_state(self):
         with tempfile.TemporaryDirectory() as directory:
