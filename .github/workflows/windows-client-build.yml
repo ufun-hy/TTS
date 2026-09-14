@@ -11,6 +11,7 @@ on:
       - "server/live_session.py"
       - "server/tts_gateway.py"
       - "voice_datasets/prompt.py"
+      - "voice_datasets/benchmark.py"
       - "scripts/stack-status.sh"
       - "start.sh"
       - "windows_client.py"
