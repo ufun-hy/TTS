@@ -10,7 +10,8 @@ import tempfile
 import wave
 
 
-CONVERSION_VERSION = 1
+CONVERSION_VERSION = 2
+FADE_IN_MS = 25.0
 _PCM_GUID = bytes.fromhex("01000000 0000 1000 8000 00aa00389b71")
 _FLOAT_GUID = bytes.fromhex("03000000 0000 1000 8000 00aa00389b71")
 _CHUNK_FRAMES = 16_384
@@ -34,16 +35,16 @@ class WavInfo:
 
 
 def prepare_mci_wav(source: Path) -> Path:
-    """Return a validated PCM16 path suitable for Windows MCI.
+    """Return a PCM16 playback derivative with a short start fade-in.
 
-    PCM16 sources are returned unchanged. Float32 sources are converted into
-    ``<source>/pcm16`` with an atomic, versioned cache file.
+    The downloaded source WAV is never modified. Both PCM16 and Float32 sources
+    are written into ``<source>/pcm16`` as a versioned PCM16 derivative. The
+    first 25 ms receives a linear fade-in so independent TTS segments do not
+    expose a repeated synthesis/playback start transient.
     """
     source = Path(source)
     info = _inspect_wav(source)
-    if info.sample_kind == "pcm16":
-        return source
-    if info.sample_kind != "float32":
+    if info.sample_kind not in ("pcm16", "float32"):
         raise WavCompatibilityError(f"unsupported WAV encoding: {info.sample_kind}")
 
     signature = _source_signature(source)
@@ -67,7 +68,10 @@ def prepare_mci_wav(source: Path) -> Path:
             delete=False,
         ) as handle:
             temporary = Path(handle.name)
-        _convert_float32(source, info, signature, temporary)
+        if info.sample_kind == "float32":
+            _convert_float32(source, info, signature, temporary)
+        else:
+            _copy_pcm16_with_fade(source, info, signature, temporary)
         converted = _inspect_wav(temporary)
         if not _matches_pcm16(converted, info):
             raise WavCompatibilityError("converted WAV metadata does not match source")
@@ -107,7 +111,7 @@ def conversion_cache_path(source: Path) -> Path:
 
 
 def conversion_cache_valid(source: Path) -> bool:
-    """Return whether the current source version already has a valid PCM16 derivative."""
+    """Return whether the current source version already has a valid playback derivative."""
     source = Path(source)
     try:
         source_info = _inspect_wav(source)
@@ -223,7 +227,22 @@ def _matches_pcm16(candidate: WavInfo, source: WavInfo) -> bool:
     )
 
 
-def _convert_float32(source: Path, info: WavInfo, signature: tuple[int, int], destination: Path) -> None:
+def _fade_frames(info: WavInfo) -> int:
+    requested = max(1, round(info.sample_rate * FADE_IN_MS / 1000.0))
+    return min(info.frames, requested)
+
+
+def _fade_gain(frame_index: int, fade_frames: int) -> float:
+    if frame_index >= fade_frames:
+        return 1.0
+    if fade_frames <= 1:
+        return 0.0
+    return frame_index / (fade_frames - 1)
+
+
+def _copy_pcm16_with_fade(source: Path, info: WavInfo, signature: tuple[int, int], destination: Path) -> None:
+    fade_frames = _fade_frames(info)
+    frame_index = 0
     with source.open("rb") as input_handle, wave.open(str(destination), "wb") as output_handle:
         output_handle.setnchannels(info.channels)
         output_handle.setsampwidth(2)
@@ -237,19 +256,58 @@ def _convert_float32(source: Path, info: WavInfo, signature: tuple[int, int], de
             chunk = input_handle.read(chunk_size)
             if len(chunk) != chunk_size:
                 raise WavCompatibilityError("truncated WAV sample data")
-            converted = bytearray((chunk_size // 4) * 2)
-            output_offset = 0
-            for input_offset in range(0, len(chunk), 4):
-                value = struct.unpack_from("<f", chunk, input_offset)[0]
-                if not math.isfinite(value):
-                    raise WavCompatibilityError("WAV contains NaN or Infinity sample")
-                sample = max(-32768, min(32767, round(value * 32768)))
-                struct.pack_into("<h", converted, output_offset, sample)
-                output_offset += 2
+            converted = bytearray(chunk)
+            frames_in_chunk = chunk_size // info.block_align
+            for local_frame in range(frames_in_chunk):
+                gain = _fade_gain(frame_index + local_frame, fade_frames)
+                if gain >= 1.0:
+                    continue
+                frame_offset = local_frame * info.block_align
+                for channel in range(info.channels):
+                    sample_offset = frame_offset + channel * 2
+                    sample = struct.unpack_from("<h", chunk, sample_offset)[0]
+                    struct.pack_into("<h", converted, sample_offset, round(sample * gain))
             output_handle.writeframes(converted)
+            frame_index += frames_in_chunk
             remaining -= chunk_size
         output_handle.close()
-    # Give filesystems with coarse timestamp resolution a moment only when the
-    # source changed; the final stat check remains the source of truth.
+    if _source_signature(source) != signature:
+        raise WavCompatibilityError("source WAV changed after reading samples")
+
+
+def _convert_float32(source: Path, info: WavInfo, signature: tuple[int, int], destination: Path) -> None:
+    fade_frames = _fade_frames(info)
+    frame_index = 0
+    with source.open("rb") as input_handle, wave.open(str(destination), "wb") as output_handle:
+        output_handle.setnchannels(info.channels)
+        output_handle.setsampwidth(2)
+        output_handle.setframerate(info.sample_rate)
+        input_handle.seek(info.data_offset)
+        remaining = info.data_size
+        while remaining:
+            if _source_signature(source) != signature:
+                raise WavCompatibilityError("source WAV changed during conversion")
+            chunk_size = min(remaining, _CHUNK_FRAMES * info.block_align)
+            chunk = input_handle.read(chunk_size)
+            if len(chunk) != chunk_size:
+                raise WavCompatibilityError("truncated WAV sample data")
+            frames_in_chunk = chunk_size // info.block_align
+            converted = bytearray(frames_in_chunk * info.channels * 2)
+            output_offset = 0
+            for local_frame in range(frames_in_chunk):
+                gain = _fade_gain(frame_index + local_frame, fade_frames)
+                frame_offset = local_frame * info.block_align
+                for channel in range(info.channels):
+                    input_offset = frame_offset + channel * 4
+                    value = struct.unpack_from("<f", chunk, input_offset)[0]
+                    if not math.isfinite(value):
+                        raise WavCompatibilityError("WAV contains NaN or Infinity sample")
+                    sample = max(-32768, min(32767, round(value * 32768 * gain)))
+                    struct.pack_into("<h", converted, output_offset, sample)
+                    output_offset += 2
+            output_handle.writeframes(converted)
+            frame_index += frames_in_chunk
+            remaining -= chunk_size
+        output_handle.close()
     if _source_signature(source) != signature:
         raise WavCompatibilityError("source WAV changed after reading samples")
