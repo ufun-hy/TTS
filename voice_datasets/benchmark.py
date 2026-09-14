@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 
+from .prompt import build_zero_shot_prompt_text
 from .review import read_jsonl, validate_review
 from .transcription import sha256, write_json
 
@@ -86,10 +87,11 @@ def run(root: Path, output: Path):
         prompt = folder / "prompt_speech.gguf"
         frontend_started = time.monotonic()
         try:
+            prompt_text = build_zero_shot_prompt_text(reference["text"])
             with (folder / "frontend.log").open("w") as log:
                 subprocess.run([str(binary), "--frontend-only", "--speech-tokenizer", str(tokenizer),
                                 "--campplus", str(campplus), "--prompt-audio", reference["audio_path"],
-                                "--prompt-text", reference["text"], "--prompt-speech-output", str(prompt)],
+                                "--prompt-text", prompt_text, "--prompt-speech-output", str(prompt)],
                                env=environment, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=300)
             if not prompt.is_file() or not prompt.stat().st_size:
                 raise RuntimeError("Frontend returned no prompt")
