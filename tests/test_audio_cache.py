@@ -119,6 +119,16 @@ class AudioCacheTests(unittest.TestCase):
         self.assertTrue(result.audio.startswith(b"RIFF"))
         self.assertAlmostEqual(result.duration, 1.0, delta=0.01)
 
+    def test_live_session_float_wav_fast_path_uses_default_processing_config(self):
+        from audio_cache.processing import AudioProcessor
+
+        source = float_wav_bytes()
+        result = AudioProcessor().process(
+            source, {"source": "live_session", "playback_speed": 1, "volume": 100}
+        )
+        self.assertEqual(result.audio, source)
+        self.assertAlmostEqual(result.duration, 1.0, delta=0.01)
+
     def test_session_volume_is_applied_without_changing_source(self):
         from audio_cache.processing import AudioProcessor
 
