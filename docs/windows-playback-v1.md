@@ -30,6 +30,8 @@ playback_status: playback_failed = 单段播放失败
 
 播放层使用 Windows 自带 `winmm.dll` 的 MCI `waveaudio` 接口，通过 `ctypes` 只控制打开、播放、暂停、继续、停止和关闭，不弹出外部播放器窗口，也不要求用户另装播放器。速度和音量由 Mac 在缓存前处理。
 
+Float32 WAV 的 MCI 兼容、`pcm16/` 派生缓存、失败片段恢复和 Windows 验收步骤见 [Windows WAV 格式兼容](windows-wav-compatibility.md)。
+
 ## 构建安装包
 
 在 Windows 构建机执行：
@@ -57,4 +59,4 @@ AI Audio Client/
 
 ## 本机可验证项
 
-`tests/test_playback.py` 使用可替换的 fake player 验证 3 段顺序播放、`played` 持久化和中断恢复。真实声音、暂停/继续、Windows 安装包及 Text Studio 全链路需要在 Windows 直播端执行。
+`tests/test_playback.py` 使用可替换的 fake player 验证 3 段顺序播放、`played` 持久化、中断恢复和当前会话 Float32 失败恢复。真实声音、暂停/继续、Windows 安装包及 Text Studio 全链路仍需在 Windows 直播端执行。

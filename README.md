@@ -215,6 +215,8 @@ Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v
 
 Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终话术单元文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
+CosyVoice 默认输出的 Float32 WAV 会在 Windows MCI 播放前按需转换为 PCM16，原始文件保留，兼容缓存与失败片段恢复说明见 [Windows WAV 格式兼容](docs/windows-wav-compatibility.md)。
+
 ```bash
 export AUDIO_CACHE_URL="http://127.0.0.1:8000"
 ./scripts/text-studio-start.sh

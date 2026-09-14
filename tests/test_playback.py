@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import time
@@ -39,7 +40,58 @@ def _write_item(
     (root / f"{item_id}.json").write_text(json.dumps(metadata), encoding="utf-8")
 
 
+def _float_wav(samples=(0.0, 0.5, -0.5), rate=24000):
+    frames = b"".join(struct.pack("<f", value) for value in samples)
+    fmt = struct.pack("<HHIIHH", 3, 1, rate, rate * 4, 4, 32)
+    body = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(frames)) + frames
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def _write_failed_float_item(root: Path, item_id: str, sequence: int, session_id: str) -> None:
+    (root / f"{item_id}.wav").write_bytes(_float_wav())
+    (root / f"{item_id}.json").write_text(json.dumps({
+        "status": "completed",
+        "sequence": sequence,
+        "playback_status": "playback_failed",
+        "playback_error": "The specified file cannot be played",
+        "downloaded_at": "2026-09-14T12:00:00+00:00",
+        "server_metadata": {"session_id": session_id, "sequence": sequence},
+    }), encoding="utf-8")
+
+
 class PlaybackTests(unittest.TestCase):
+    def test_current_session_float_failure_is_converted_once_and_requeued(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_failed_float_item(root, "failed_float", 1, "session_current")
+            controller = PlaybackController(root, player=FakePlayer(threading.Event()))
+            controller._active_session_id = "session_current"
+            controller._recover_failed_float_items()
+            metadata_path = root / "failed_float.json"
+            metadata = json.loads(metadata_path.read_text())
+            self.assertEqual(metadata["playback_status"], "cached")
+            self.assertEqual(metadata["wav_compat_recovery"]["attempt_count"], 1)
+            self.assertTrue(metadata["wav_compat_recovery"]["success"])
+            derived = list((root / "pcm16").glob("*.wav"))
+            self.assertEqual(len(derived), 1)
+
+            controller._recover_failed_float_items()
+            self.assertEqual(len(list((root / "pcm16").glob("*.wav"))), 1)
+            self.assertEqual(json.loads(metadata_path.read_text())["wav_compat_recovery"]["attempt_count"], 1)
+
+    def test_failed_pcm16_and_other_sessions_are_not_compatibility_recovered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "failed_pcm", 1, playback_status="playback_failed", session_id="session_current", downloaded_at="2026-09-14T12:00:01+00:00")
+            _write_failed_float_item(root, "failed_old_float", 2, "session_old")
+            controller = PlaybackController(root, player=FakePlayer(threading.Event()))
+            controller._active_session_id = "session_current"
+            controller._sync_active_session = lambda _items: None
+            controller._recover_failed_float_items()
+            self.assertEqual(json.loads((root / "failed_pcm.json").read_text())["playback_status"], "playback_failed")
+            self.assertEqual(json.loads((root / "failed_old_float.json").read_text())["playback_status"], "playback_failed")
+            self.assertFalse((root / "pcm16").exists())
+
     def test_sequence_order_and_played_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

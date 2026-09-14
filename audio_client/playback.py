@@ -12,6 +12,14 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from .wav_compat import (
+    WavCompatibilityError,
+    conversion_cache_valid,
+    inspect_wav,
+    is_float32_wav,
+    prepare_mci_wav,
+)
+
 
 class PlaybackError(RuntimeError):
     pass
@@ -33,9 +41,10 @@ class PlaybackItem:
 class WinMMPlayer:
     """Use Windows' built-in MCI waveaudio driver; no external player window."""
 
-    def __init__(self) -> None:
+    def __init__(self, logger: Any = None) -> None:
         self._mci = None
         self._error = None
+        self.logger = logger
         if os.name == "nt":
             self._mci = ctypes.WinDLL("winmm").mciSendStringW
             self._mci.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
@@ -52,6 +61,28 @@ class WinMMPlayer:
     ) -> None:
         if self._mci is None:
             raise PlaybackError("Windows winmm playback is required")
+        started = time.monotonic()
+        source_path = Path(path)
+        try:
+            source_info = inspect_wav(source_path)
+            cache_state = "not-needed"
+            if source_info.sample_kind == "float32":
+                cache_state = "hit" if conversion_cache_valid(source_path) else "miss"
+            path = prepare_mci_wav(source_path)
+        except WavCompatibilityError as exc:
+            if self.logger:
+                self.logger.error(
+                    "wav compatibility failed source=%s category=%s detail=%s",
+                    source_path.name, type(exc).__name__, str(exc),
+                )
+            raise PlaybackError(str(exc)) from exc
+        if self.logger:
+            output_info = inspect_wav(path)
+            self.logger.info(
+                "wav compatibility source=%s input_format=%s output_format=%s cache=%s conversion_ms=%d",
+                source_path.name, source_info.sample_kind, output_info.sample_kind,
+                cache_state, round((time.monotonic() - started) * 1000),
+            )
         alias = f"ai_audio_{threading.get_ident()}"
         self._command(f'open "{str(path).replace(chr(34), "")}" type waveaudio alias {alias}')
         try:
@@ -113,7 +144,7 @@ class PlaybackController:
         self.cache_dir = Path(cache_dir)
         self.callback = callback
         self.logger = logger
-        self.player = player or WinMMPlayer()
+        self.player = player or WinMMPlayer(logger=logger)
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -210,6 +241,7 @@ class PlaybackController:
         return result
 
     def _run(self) -> None:
+        self._recover_failed_float_items()
         while not self._stop.is_set():
             item = self._next_item()
             if item is None:
@@ -249,6 +281,68 @@ class PlaybackController:
             self._state = "stopped"
             self._current = None
         self._emit()
+
+    def _recover_failed_float_items(self) -> None:
+        """Requeue eligible Float32 failures once per source file version."""
+        items = self._items()
+        self._sync_active_session(items)
+        with self._lock:
+            active_session_id = self._active_session_id
+        if not active_session_id:
+            return
+        for item in items:
+            if self._stop.is_set():
+                return
+            if _playback_status(item.metadata) != "playback_failed":
+                continue
+            if _session_id(item.metadata) != active_session_id or not item.path.is_file():
+                continue
+            if not is_float32_wav(item.path):
+                continue
+            try:
+                stat = item.path.stat()
+                signature = (stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                continue
+            previous = item.metadata.get("wav_compat_recovery")
+            if isinstance(previous, dict) and (
+                previous.get("source_size") == signature[0]
+                and previous.get("source_mtime_ns") == signature[1]
+            ):
+                continue
+            try:
+                previous_count = int(previous.get("attempt_count", 0)) if isinstance(previous, dict) else 0
+            except (TypeError, ValueError):
+                previous_count = 0
+            started = time.monotonic()
+            cache_state = "hit" if conversion_cache_valid(item.path) else "miss"
+            try:
+                prepared = prepare_mci_wav(item.path)
+                item.metadata["wav_compat_recovery"] = {
+                    "source_size": signature[0], "source_mtime_ns": signature[1],
+                    "attempt_count": previous_count + 1, "success": prepared != item.path,
+                    "output_file": prepared.name, "attempted_at": _utc_now(),
+                }
+                self._set_status(item, "cached")
+                if self.logger:
+                    self.logger.info(
+                        "wav compatibility source=%s input_format=float32 output_format=pcm16 cache=%s conversion_ms=%d",
+                        item.path.name, cache_state, round((time.monotonic() - started) * 1000),
+                    )
+                    self.logger.info("WAV compatibility recovery succeeded %s -> %s", item.item_id, prepared.name)
+            except Exception as exc:
+                item.metadata["wav_compat_recovery"] = {
+                    "source_size": signature[0], "source_mtime_ns": signature[1],
+                    "attempt_count": previous_count + 1, "success": False,
+                    "attempted_at": _utc_now(), "error": str(exc),
+                }
+                _atomic_write_json(item.metadata_path, item.metadata)
+                if self.logger:
+                    self.logger.warning(
+                        "wav compatibility failed source=%s category=%s conversion_ms=%d detail=%s",
+                        item.path.name, type(exc).__name__, round((time.monotonic() - started) * 1000), str(exc),
+                    )
+                continue
 
     def _next_item(self) -> Optional[PlaybackItem]:
         items = self._items()
