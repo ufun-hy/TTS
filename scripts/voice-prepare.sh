@@ -23,6 +23,15 @@ if [[ ! -x "$ROOT/runtime/bin/cosyvoice-cli" ]]; then
   exit 1
 fi
 
+PROMPT_TEXT="$(PYTHONPATH="$ROOT" python3 - "$REF_TEXT" <<'PY'
+from pathlib import Path
+import sys
+from voice_datasets.prompt import build_zero_shot_prompt_text
+
+print(build_zero_shot_prompt_text(Path(sys.argv[1]).read_text(encoding="utf-8")), end="")
+PY
+)"
+
 mkdir -p "$OUT_DIR"
 export DYLD_LIBRARY_PATH="/opt/homebrew/opt/icu4c/lib:$ROOT/runtime/bin${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 "$ROOT/runtime/bin/cosyvoice-cli" \
@@ -30,7 +39,7 @@ export DYLD_LIBRARY_PATH="/opt/homebrew/opt/icu4c/lib:$ROOT/runtime/bin${DYLD_LI
   --speech-tokenizer "$ROOT/runtime/models/speech_tokenizer_v3.int8.onnx" \
   --campplus "$ROOT/runtime/models/campplus.int8.onnx" \
   --prompt-audio "$REF_AUDIO" \
-  --prompt-text "$(< "$REF_TEXT")" \
+  --prompt-text "$PROMPT_TEXT" \
   --prompt-speech-output "$OUT_FILE"
 
 python3 - "$ROOT/voices.json" "$VOICE_ID" "runtime/models/voices/$VOICE_ID.gguf" <<'PY'
