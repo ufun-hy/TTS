@@ -2,6 +2,7 @@ import io
 import json
 import math
 from pathlib import Path
+import struct
 import tempfile
 import threading
 import unittest
@@ -34,6 +35,13 @@ def tone_wav_bytes(duration=1.0, rate=8000):
         audio.setframerate(rate)
         audio.writeframes(frames)
     return buffer.getvalue()
+
+
+def float_wav_bytes(duration=1.0, rate=24000):
+    frames = b"".join(struct.pack("<f", 0.25 * math.sin(2 * math.pi * 440 * index / rate)) for index in range(int(duration * rate)))
+    fmt = struct.pack("<HHIIHH", 3, 1, rate, rate * 4, 4, 32)
+    body = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(frames)) + frames
+    return b"RIFF" + struct.pack("<I", len(body) + 4) + body
 
 
 def write_client_item(root, item_id, session_id, duration, playback_status, downloaded_at):
@@ -101,6 +109,15 @@ class AudioCacheTests(unittest.TestCase):
             result = processor.process(tone_wav_bytes(), {"playback_speed": speed, "volume": 100})
             self.assertTrue(result.audio.startswith(b"RIFF"))
             self.assertAlmostEqual(result.duration, 1 / speed, delta=0.02)
+
+    def test_processor_accepts_cosyvoice_float_wav(self):
+        from audio_cache.processing import AudioProcessor
+
+        result = AudioProcessor(AudioProcessingConfig(volume_enabled=False)).process(
+            float_wav_bytes(), {"source": "live_session", "playback_speed": 1, "volume": 100}
+        )
+        self.assertTrue(result.audio.startswith(b"RIFF"))
+        self.assertAlmostEqual(result.duration, 1.0, delta=0.01)
 
     def test_session_volume_is_applied_without_changing_source(self):
         from audio_cache.processing import AudioProcessor

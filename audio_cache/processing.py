@@ -7,6 +7,7 @@ import io
 import math
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -224,8 +225,42 @@ def _wav_duration_bytes(audio: bytes) -> float:
             if rate <= 0:
                 raise AudioProcessingError("WAV sample rate must be positive")
             return handle.getnframes() / rate
-    except (EOFError, wave.Error) as exc:
-        raise AudioProcessingError("invalid WAV audio") from exc
+    except (EOFError, wave.Error):
+        # Python 3.9's wave module rejects WAVE_FORMAT_IEEE_FLOAT (format 3),
+        # which is the native format emitted by CosyVoice. Parse the RIFF
+        # chunks for duration; ffmpeg still handles any requested processing.
+        try:
+            return _float_wav_duration(audio)
+        except (AudioProcessingError, struct.error) as exc:
+            raise AudioProcessingError("invalid WAV audio") from exc
+
+
+def _float_wav_duration(audio: bytes) -> float:
+    if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        raise AudioProcessingError("invalid WAV container")
+    offset = 12
+    format_code = channels = sample_rate = block_align = data_size = 0
+    while offset + 8 <= len(audio):
+        chunk_id = audio[offset:offset + 4]
+        size = struct.unpack_from("<I", audio, offset + 4)[0]
+        start = offset + 8
+        end = start + size
+        if end > len(audio):
+            raise AudioProcessingError("truncated WAV chunk")
+        if chunk_id == b"fmt ":
+            if size < 16:
+                raise AudioProcessingError("invalid WAV format chunk")
+            format_code, channels, sample_rate, _byte_rate, block_align, _bits = struct.unpack_from(
+                "<HHIIHH", audio, start
+            )
+            if format_code == 0xFFFE and size >= 40:
+                format_code = struct.unpack_from("<H", audio, start + 24)[0]
+        elif chunk_id == b"data":
+            data_size = size
+        offset = end + (size & 1)
+    if format_code != 3 or channels <= 0 or sample_rate <= 0 or block_align <= 0 or data_size <= 0:
+        raise AudioProcessingError("unsupported WAV format")
+    return (data_size // block_align) / sample_rate
 
 
 def _optional_float(value: Any, field: str) -> Optional[float]:
