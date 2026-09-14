@@ -109,6 +109,31 @@ class LiveSynthesisBlockTests(unittest.TestCase):
         self.assertEqual(status["total_segments"], 1)
         self.assertEqual(status["ready_segments"], 1)
 
+    def test_live_session_resolves_dynamic_time_before_synthesis_and_enqueue(self):
+        synthesized = []
+        enqueued = []
+
+        manager = SynthesisBlockLiveSessionManager(
+            "http://gateway",
+            "http://cache",
+            synthesize=lambda text, voice: synthesized.append((text, voice)) or b"RIFF",
+            enqueue=lambda item_id, sequence, text, voice, audio: enqueued.append(text),
+            cache_status=lambda _session_id: {"ready": len(enqueued), "client_connected": True},
+            cache_cleanup=lambda _session_id: {},
+        )
+        manager.start("default", [{"id": "p0001", "text": "现在是{{current_time}}。"}])
+
+        deadline = time.monotonic() + 1
+        while manager.status()["status"] in ("starting", "running"):
+            if time.monotonic() >= deadline:
+                self.fail("live session did not finish")
+            time.sleep(0.01)
+
+        self.assertEqual(manager.status()["status"], "stopped")
+        self.assertEqual(len(synthesized), 1)
+        self.assertNotIn("{{current_time}}", synthesized[0][0])
+        self.assertEqual(enqueued, [synthesized[0][0]])
+
     def test_loop_mode_batches_each_round_into_one_synthesis_start(self):
         enqueued = []
         holder = {}

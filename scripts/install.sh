@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/runtime/bin"
 MODEL_DIR="$ROOT/runtime/models"
-ENGINE_VERSION="v0.1.1"
-ENGINE_ARCHIVE="cosyvoice-3c7448c-macos-arm64-miniaudio.tgz"
+ENGINE_VERSION="v0.1.3"
+ENGINE_ARCHIVE="cosyvoice-1616b12-macos-arm64-miniaudio.tgz"
 HF_ROOT="https://huggingface.co/Lourdle/Fun-CosyVoice3-0.5B-2512-GGUF/resolve/main"
 PROMPT_CONTRACT_VERSION="cosyvoice3-eop-v1"
 PROMPT_CONTRACT_FILE="$MODEL_DIR/prompt_speech.contract"
@@ -31,7 +31,7 @@ if ! brew list icu4c >/dev/null 2>&1; then
   brew install icu4c
 fi
 
-if [[ ! -x "$BIN_DIR/cosyvoice-server" || ! -x "$BIN_DIR/cosyvoice-cli" ]]; then
+if [[ ! -x "$BIN_DIR/cosyvoice-server" || ! -x "$BIN_DIR/cosyvoice-cli" || ! -s "$BIN_DIR/libcosyvoice.0.1.3.dylib" ]]; then
   archive="$ROOT/runtime/$ENGINE_ARCHIVE"
   download "https://github.com/Lourdle/cosyvoice.cpp/releases/download/$ENGINE_VERSION/$ENGINE_ARCHIVE" "$archive"
   tar -xzf "$archive" -C "$BIN_DIR"

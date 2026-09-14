@@ -2,7 +2,7 @@
 
 当前链路：`HTTP /speak` → 鉴权 → FIFO → CosyVoice3 → `afplay` 播放。
 
-实现使用 [cosyvoice.cpp](https://github.com/Lourdle/cosyvoice.cpp) v0.1.1 macOS arm64 运行时和 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF 模型。模型、音频、日志和运行时文件均不提交 Git。
+实现使用 [cosyvoice.cpp](https://github.com/Lourdle/cosyvoice.cpp) v0.1.3 macOS arm64 运行时和 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF 模型。模型、音频、日志和运行时文件均不提交 Git。
 
 ## 安装
 
@@ -15,7 +15,7 @@
 - `CosyVoice3-2512_Q8_0.gguf`
 - `speech_tokenizer_v3.int8.onnx`、`campplus.int8.onnx`
 - 官方示例提示音并生成 `runtime/models/prompt_speech.gguf`
-- macOS arm64 `cosyvoice.cpp v0.1.1`
+- macOS arm64 `cosyvoice.cpp v0.1.3`（会自动替换旧版 v0.1.1）
 
 ## 常驻服务
 
@@ -222,13 +222,13 @@ export AUDIO_CACHE_URL="http://127.0.0.1:8000"
 ./scripts/text-studio-start.sh
 ```
 
-状态接口为 `/api/live/status`；另有暂停/继续、停止和重置接口。停止只停止后续生成并保留已有缓存，重置只清理当前 Session 标记的缓存项。
+状态接口为 `/api/live/status`；另有暂停/继续、停止和重置接口。停止只停止后续生成并保留已有缓存，重置只清理当前 Session 标记的缓存项。直播连续播放问题的实测原因与处理选项见 [智播连续播放问题现状](docs/live-playback-diagnosis.md)。
 
 ## 当前限制
 
 - API Key 保护 `/speak` 和 `/voices`；`/health` 可公开访问，只返回健康状态和队列长度，不暴露本机路径。
 - FIFO 是单 worker，返回成功前必须完成合成和本机播放。
 - 日志记录 job ID、来源、音色、文本长度、排队/合成/播放耗时和结果，不记录全文文本或 API Key。
-- 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端 `auto`；当前 Mac mini M4 Pro 实测使用 Metal。
+- 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端为更稳定的 `cpu`；如需实验 Metal，可设置 `COSYVOICE_BACKEND=auto`。
 
 Text Studio 支持接续已有清洗版项目、按完整句子和话题整理话术单元、统一全部候选事实，以及临时/正式项目分离。用法与限制见 [Text Studio 验收说明](docs/text-studio-facts-restore.md#本轮验收候选导入与项目保存)。

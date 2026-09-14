@@ -15,6 +15,16 @@ for (const text of times) {
   assert.equal(matches.length, 1, text);
   assert.equal(matches[0].severity, 'medium', text);
 }
+assert.deepEqual(findings('现在是晚上8点', '时间点')[0].dynamic, {
+  token: 'current_time', phrase: '晚上8点', position: 3,
+});
+assert.deepEqual(findings('今天是9月13日', '时间点')[0].dynamic, {
+  token: 'current_date', phrase: '9月13日', position: 3,
+});
+assert.deepEqual(findings('今天是星期一', '时间点')[0].dynamic, {
+  token: 'current_weekday', phrase: '星期一', position: 3,
+});
+assert.equal(findings('还有10分钟结束', '时间点')[0].dynamic, null);
 const commitments = [
   '坏果包赔', '不满意就赔', '假一赔十', '无条件赔', '假一赔100',
   '烂果直接赔付', '破损包赔', '有问题就赔', '全额赔偿', '直接赔付',

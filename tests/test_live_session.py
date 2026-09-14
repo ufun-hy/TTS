@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import time
 import unittest
 
@@ -5,9 +6,11 @@ from server.live_session import (
     LiveSession,
     LiveSessionError,
     LiveSessionManager,
+    CACHE_ENQUEUE_TIMEOUT_SECONDS,
     choose_candidate_round,
     prepare_candidate_pools,
     prepare_live_segments,
+    resolve_dynamic_time,
 )
 
 
@@ -20,6 +23,17 @@ class _RepeatRng:
 
 
 class LiveSessionTests(unittest.TestCase):
+    def test_dynamic_time_uses_the_generation_clock(self):
+        now = datetime(2026, 9, 14, 14, 46, tzinfo=timezone(timedelta(hours=8)))
+        self.assertEqual(
+            resolve_dynamic_time(
+                "现在是{{current_time}}，日期{{current_date}}，{{current_weekday}}。",
+                now,
+            ),
+            "现在是下午2点46分，日期2026年9月14日，星期一。",
+        )
+        self.assertEqual(resolve_dynamic_time("未知{{token}}", now), "未知{{token}}")
+
     def test_prepare_segments_keeps_paragraph_order_without_resegmentation(self):
         segments = prepare_live_segments([
             {"id": "p0001", "text": "第一段确认文本"},
@@ -63,7 +77,7 @@ class LiveSessionTests(unittest.TestCase):
     def test_audio_settings_are_sent_to_audio_cache(self):
         requests = []
         manager = LiveSessionManager("http://gateway", "http://cache", synthesize=lambda *_args: b"RIFF")
-        manager._request_json = lambda method, path, body=None, cache=False: requests.append((method, path, body, cache)) or {}
+        manager._request_json = lambda method, path, body=None, cache=False, timeout=None: requests.append((method, path, body, cache, timeout)) or {}
         manager.start("default", [{"id": "p0001", "text": "测试"}], playback_speed=1.05, volume=80)
         deadline = time.monotonic() + 1
         while manager.status()["status"] in ("starting", "running"):
@@ -73,6 +87,7 @@ class LiveSessionTests(unittest.TestCase):
         enqueue = next(item for item in requests if item[1] == "/audio/enqueue")
         self.assertEqual(enqueue[2]["playback_speed"], 1.05)
         self.assertEqual(enqueue[2]["volume"], 80.0)
+        self.assertEqual(enqueue[4], CACHE_ENQUEUE_TIMEOUT_SECONDS)
 
     def test_session_generates_and_enqueues_each_segment(self):
         enqueued = []

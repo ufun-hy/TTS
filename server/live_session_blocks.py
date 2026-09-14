@@ -18,6 +18,7 @@ if __package__:
         _live_audio_settings,
         prepare_candidate_pools,
         prepare_live_segments,
+        resolve_dynamic_time,
     )
 else:
     from live_session import (
@@ -31,6 +32,7 @@ else:
         _live_audio_settings,
         prepare_candidate_pools,
         prepare_live_segments,
+        resolve_dynamic_time,
     )
 
 
@@ -179,12 +181,13 @@ class SynthesisBlockLiveSession(LiveSession):
                     self._wait_for_buffer_capacity()
                     if self._stop.is_set():
                         return
-                    audio = self._synthesize(block["text"], self.voice)
+                    speech_text = resolve_dynamic_time(block["text"])
+                    audio = self._synthesize(speech_text, self.voice)
                     if self._stop.is_set():
                         return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
-                    self._enqueue(item_id, self._sequence, block["text"], self.voice, audio)
+                    self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
                     with self._lock:
                         self.generated_segments += 1
                 if not self.looping:

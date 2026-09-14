@@ -26,11 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 if __package__:
     from .speech_units import speech_units
     from .text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
-    from .live_session import LiveSessionError, build_live_manager
+    from .live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 else:
     from speech_units import speech_units
     from text_studio_models import provider_command as _provider_command, list_models, validate_model, agy_prompt_command
-    from live_session import LiveSessionError, build_live_manager
+    from live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 
 from recording_transcript.results import list_results, load_result
 
@@ -537,7 +537,7 @@ def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
     key = _read_keychain_api_key()
     if not key:
         raise RuntimeError("TTS API key is not available")
-    payload = json.dumps({"text": text, "voice": voice}, ensure_ascii=False).encode("utf-8")
+    payload = json.dumps({"text": resolve_dynamic_time(text), "voice": voice}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         f"{gateway_url.rstrip('/')}/speak",
         data=payload,

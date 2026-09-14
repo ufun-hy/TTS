@@ -40,3 +40,8 @@ class ServiceEntrypointTests(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), count)
+
+    def test_engine_defaults_to_cpu_for_stable_cold_start(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / 'start.sh').read_text()
+        self.assertIn('BACKEND="${COSYVOICE_BACKEND:-cpu}"', source)

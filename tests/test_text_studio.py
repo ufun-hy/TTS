@@ -38,6 +38,20 @@ class TextStudioTest(unittest.TestCase):
         self.assertIn('id="livePlaybackSpeed"', html)
         self.assertIn('id="liveVolume"', html)
         self.assertIn("playback_speed", html)
+        self.assertIn("replaceRiskWithDynamic", html)
+        self.assertIn("setSelectionRange", html)
+
+    def test_tts_preview_resolves_dynamic_time_at_request(self):
+        response = mock.MagicMock()
+        response.read.return_value = b'{"success": true}'
+        response.__enter__.return_value = response
+        with mock.patch.object(text_studio, "_read_keychain_api_key", return_value="key"), \
+             mock.patch.object(text_studio.urllib.request, "urlopen", return_value=response) as urlopen:
+            text_studio._tts_preview("现在是{{current_time}}", "default", "http://gateway")
+
+        request = urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertNotIn("{{current_time}}", payload["text"])
 
     def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
         cases = [

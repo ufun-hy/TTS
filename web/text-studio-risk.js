@@ -19,14 +19,30 @@ const TextStudioRisk = (() => {
   const daypart = '(?:凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|晚间|今晚)';
   const clock = `${number}\\s*(?:点(?:半|一刻|三刻|\\s*${number}\\s*分?)?|[:：][0-5][0-9])`;
   const date = `(?:${number}\\s*年\\s*)?${number}\\s*月\\s*${number}\\s*[日号]`;
+  const weekday = '(?:星期|周)[一二三四五六日天]';
   const duration = `(?:${number}|半)\\s*(?:个半?小时|小时|分钟|秒钟|秒)`;
   const event = '(?:结束|下播|收播|截止|开播|开抢|下架|恢复原价)';
+  const dynamicTimeRe = new RegExp(`${daypart}?\\s*${clock}`);
+  const dynamicDateRe = new RegExp(date);
+  const dynamicWeekdayRe = new RegExp(weekday);
+
+  function dynamicInfo(phrase) {
+    const time = phrase.match(dynamicTimeRe);
+    if (time) return {token: 'current_time', phrase: time[0]};
+    const dateMatch = phrase.match(dynamicDateRe);
+    if (dateMatch) return {token: 'current_date', phrase: dateMatch[0]};
+    const weekdayMatch = phrase.match(dynamicWeekdayRe);
+    if (weekdayMatch) return {token: 'current_weekday', phrase: weekdayMatch[0]};
+    return null;
+  }
+
   riskRules.push({
     type: '时间点', label: '时间点 / 倒计时', severity: 'medium',
     re: new RegExp([
       `(?:现在|此刻|目前)\\s*(?:已经是|已经|是)?\\s*${daypart}?\\s*${clock}`,
       `${daypart}\\s*${clock}`,
       `(?:今天|今日)\\s*(?:的日期)?\\s*(?:是|为)?\\s*${date}`,
+      `(?:今天|今日|本周|这周|下周)?\\s*(?:是|为)?\\s*${weekday}`,
       `(?:还有|还剩|剩下|最后)\\s*${duration}\\s*(?:就|后|以后)?\\s*(?:我们|本场直播|直播|活动|优惠)?\\s*(?:就)?${event}`,
       `(?:距离|离)${event}\\s*(?:还有|还剩|只剩)?\\s*${duration}`,
       `${duration}\\s*(?:后|以后)\\s*(?:就)?${event}`,
@@ -66,9 +82,14 @@ const TextStudioRisk = (() => {
             else if (qualified && severity === 'high' && !strongCommit.test(sentence.text)) severity = 'medium';
             else if (qualified && severity === 'medium') severity = 'low';
           }
+          const dynamic = rule.type === '时间点' ? dynamicInfo(match[0]) : null;
           findings.push({
             position: sentence.start + match.index, phrase: match[0], context: sentence.text,
             type: rule.type, label: rule.label, severity,
+            dynamic: dynamic ? {
+              ...dynamic,
+              position: sentence.start + match.index + match[0].indexOf(dynamic.phrase),
+            } : null,
             reason: rule.type === '售后赔付' && severity === 'low'
               ? '提及赔付或赔偿流程，未识别到明确的强赔付承诺，可核对适用条件。' : rule.reason,
             suggestion: rule.suggestion || (qualified
@@ -81,6 +102,6 @@ const TextStudioRisk = (() => {
     }
     return findings;
   }
-  return {scan};
+  return {scan, dynamicInfo};
 })();
 if (typeof module !== 'undefined') module.exports = TextStudioRisk;

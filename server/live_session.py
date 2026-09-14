@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import math
 import os
@@ -26,6 +27,7 @@ VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 DEFAULT_BUFFER_HIGH_SECONDS = 30.0
 DEFAULT_BUFFER_LOW_SECONDS = 12.0
 BUFFER_POLL_SECONDS = 0.25
+CACHE_ENQUEUE_TIMEOUT_SECONDS = 30.0
 VOICE_LABELS = {
     "default": "默认声音",
     "speaker_a": "主播A",
@@ -33,6 +35,36 @@ VOICE_LABELS = {
     "speaker_c": "主播C",
     "shiliu_1": "石榴1",
 }
+_DYNAMIC_TIME_TOKEN = re.compile(r"\{\{(current_time|current_date|current_weekday)\}\}")
+
+
+def resolve_dynamic_time(text: str, now: datetime | None = None) -> str:
+    """Resolve supported time tokens immediately before a TTS request."""
+    if now is None:
+        current = datetime.now().astimezone()
+    elif now.tzinfo is None:
+        current = now.astimezone()
+    else:
+        current = now
+    hour = current.hour
+    if hour < 6:
+        period = "凌晨"
+    elif hour < 12:
+        period = "上午"
+    elif hour == 12:
+        period = "中午"
+    elif hour < 18:
+        period = "下午"
+    else:
+        period = "晚上"
+    hour12 = hour % 12 or 12
+    time_text = f"{period}{hour12}点" + (f"{current.minute}分" if current.minute else "")
+    values = {
+        "current_time": time_text,
+        "current_date": f"{current.year}年{current.month}月{current.day}日",
+        "current_weekday": f"星期{('一', '二', '三', '四', '五', '六', '日')[current.weekday()]}",
+    }
+    return _DYNAMIC_TIME_TOKEN.sub(lambda match: values[match.group(1)], text)
 
 
 class LiveSessionError(RuntimeError):
@@ -378,12 +410,13 @@ class LiveSession:
                     self._wait_for_buffer_capacity()
                     if self._stop.is_set():
                         return
-                    audio = self._synthesize(segment["text"], self.voice)
+                    speech_text = resolve_dynamic_time(segment["text"])
+                    audio = self._synthesize(speech_text, self.voice)
                     if self._stop.is_set():
                         return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
-                    self._enqueue(item_id, self._sequence, segment["text"], self.voice, audio)
+                    self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
                     with self._lock:
                         self.generated_segments += 1
                 if not self.looping:
@@ -543,7 +576,7 @@ class LiveSessionManager:
             "playback_speed": session.playback_speed,
             "volume": session.volume,
             "audio_base64": base64.b64encode(audio).decode("ascii"),
-        }, cache=True)
+        }, cache=True, timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
 
     def _cache_status(self, session_id: str) -> dict[str, Any]:
         if self._cache_status_impl:
@@ -563,7 +596,14 @@ class LiveSessionManager:
         except (OSError, ValueError, RuntimeError) as exc:
             raise LiveSessionError(f"audio cache reset failed: {exc}", 502) from exc
 
-    def _request_json(self, method: str, path: str, body: dict[str, Any] | None = None, cache: bool = False) -> Any:
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        cache: bool = False,
+        timeout: float | None = None,
+    ) -> Any:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
         headers = {"Content-Type": "application/json"} if data is not None else {}
         if cache and self.cache_api_key:
@@ -573,7 +613,7 @@ class LiveSessionManager:
         base_url = self.cache_url if cache else self.gateway_url
         request = urllib.request.Request(f"{base_url}{path}", data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=3 if cache else 10) as response:
+            with urllib.request.urlopen(request, timeout=timeout if timeout is not None else (3 if cache else 10)) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
