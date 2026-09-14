@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -12,11 +13,13 @@ class ServiceEntrypointTests(unittest.TestCase):
         for script in ('text_studio.py', 'text_studio_entry.py', 'recording_transcript.py', 'tts_gateway.py'):
             with self.subTest(script=script):
                 result = subprocess.run([sys.executable, str(root/'server'/script), '--help'],
-                                        cwd='/tmp', env={k: v for k, v in os.environ.items() if k != 'PYTHONPATH'},
+                                        cwd=tempfile.gettempdir(),
+                                        env={k: v for k, v in os.environ.items() if k != 'PYTHONPATH'},
                                         capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('--port', result.stdout)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS Bash entrypoint test')
     def test_text_studio_shell_entrypoint_without_pythonpath(self):
         root = Path(__file__).resolve().parents[1]
         result = subprocess.run(['/bin/bash', str(root/'scripts/text-studio-start.sh'), '--help'],
@@ -25,6 +28,7 @@ class ServiceEntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--port', result.stdout)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS Bash array compatibility test')
     def test_mac_bash_optional_verbose_array(self):
         root = Path(__file__).resolve().parents[1]
         # Exercise the exact expansion used in start.sh without loading credentials or models.
