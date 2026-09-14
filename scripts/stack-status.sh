@@ -7,8 +7,6 @@ source "$ROOT/scripts/stack-common.sh"
 
 TTS_HEALTH="http://127.0.0.1:8765/health"
 CACHE_HEALTH="http://127.0.0.1:8000/health"
-STUDIO_HEALTH="http://127.0.0.1:8770/api/health"
-TRANSCRIPT_HEALTH="http://127.0.0.1:8771/api/health"
 all_ready=1
 tts_body=""
 cache_body=""
@@ -23,26 +21,8 @@ else
   all_ready=0
 fi
 
-if cache_body="$(/usr/bin/curl -fsS --max-time 2 "$CACHE_HEALTH" 2>/dev/null)"; then
-  echo "Audio Cache   READY    http://127.0.0.1:8000"
-else
-  echo "Audio Cache   DOWN     http://127.0.0.1:8000"
-  all_ready=0
-fi
-
-if stack_http_ok "$STUDIO_HEALTH"; then
-  echo "Text Studio   READY    http://127.0.0.1:8770"
-else
-  echo "Text Studio   DOWN     http://127.0.0.1:8770"
-  all_ready=0
-fi
-
-if stack_http_ok "$TRANSCRIPT_HEALTH"; then
-  echo "Transcript    READY    http://127.0.0.1:8771"
-else
-  echo "Transcript    DOWN     http://127.0.0.1:8771"
-  all_ready=0
-fi
+python3 "$ROOT/scripts/stack-services.py" status || all_ready=0
+cache_body="$(/usr/bin/curl -fsS --max-time 2 "$CACHE_HEALTH" 2>/dev/null || true)"
 
 if [[ -n "$cache_body" ]]; then
   windows_state="$(python3 -c 'import json,sys; print("CONNECTED" if json.load(sys.stdin).get("client_connected") else "OFFLINE")' <<<"$cache_body" 2>/dev/null || echo UNKNOWN)"

@@ -10,6 +10,8 @@ if [[ ! -x "$PYTHON" ]]; then
   exit 1
 fi
 
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
 # Inference is local-only; missing assets must fail instead of downloading.
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1

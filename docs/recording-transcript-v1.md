@@ -85,6 +85,8 @@ GET /api/transcript/result?job_id=<id>
 
 ## 一键启动
 
+后台常驻、launchd 状态、认证及迁移说明见 [本地服务管理](stack-services.md)。
+
 一键管理：
 
 ```bash

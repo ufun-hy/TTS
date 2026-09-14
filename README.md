@@ -19,6 +19,8 @@
 
 ## 常驻服务
 
+整套本地应用的手动启动与后台常驻说明见 [本地服务管理](docs/stack-services.md)，包含 Text Studio、音频缓存和录音转文稿。
+
 首次安装 launchd LaunchAgent，并在 macOS 登录后自动启动：
 
 ```bash

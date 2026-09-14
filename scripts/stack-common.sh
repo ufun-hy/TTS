@@ -25,17 +25,6 @@ stack_wait_http() {
   return 1
 }
 
-stack_load_tts_api_key() {
-  if [[ -n "${TTS_API_KEY:-}" ]]; then
-    export TTS_API_KEY
-    return 0
-  fi
-  if [[ -x /usr/bin/security ]]; then
-    TTS_API_KEY="$(/usr/bin/security find-generic-password -a "$USER" -s "${TTS_KEYCHAIN_SERVICE:-com.ufun.tts.api-key}" -w 2>/dev/null || true)"
-    export TTS_API_KEY
-  fi
-}
-
 stack_port_pids() {
   local port="$1"
   /usr/sbin/lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true
@@ -62,19 +51,6 @@ stack_find_project_pid() {
   return 1
 }
 
-stack_adopt_pid() {
-  local port="$1"
-  local marker="$2"
-  local pid_file="$3"
-  local pid
-  pid="$(stack_find_project_pid "$port" "$marker" || true)"
-  if [[ -n "$pid" ]]; then
-    printf '%s\n' "$pid" >"$pid_file"
-    return 0
-  fi
-  return 1
-}
-
 stack_port_has_unknown_listener() {
   local port="$1"
   local marker="$2"
@@ -88,50 +64,6 @@ stack_port_has_unknown_listener() {
   done
   [[ "$found" -eq 0 ]] && return 1
   return 1
-}
-
-stack_stop_project_process() {
-  local label="$1"
-  local port="$2"
-  local marker="$3"
-  local pid_file="$4"
-  local pid=""
-  local i
-
-  if [[ -s "$pid_file" ]]; then
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ ! "$pid" =~ ^[0-9]+$ ]] || ! /bin/kill -0 "$pid" 2>/dev/null || ! stack_process_matches "$pid" "$marker"; then
-      pid=""
-      rm -f "$pid_file"
-    fi
-  fi
-
-  if [[ -z "$pid" ]]; then
-    pid="$(stack_find_project_pid "$port" "$marker" || true)"
-  fi
-
-  if [[ -z "$pid" ]]; then
-    if [[ -n "$(stack_port_pids "$port")" ]]; then
-      echo "$label: listener on port $port is not managed by this repository; leaving it untouched."
-    else
-      echo "$label: already stopped"
-    fi
-    rm -f "$pid_file"
-    return 0
-  fi
-
-  /bin/kill "$pid" 2>/dev/null || true
-  for ((i = 1; i <= 20; i++)); do
-    if ! /bin/kill -0 "$pid" 2>/dev/null; then
-      break
-    fi
-    sleep 0.25
-  done
-  if /bin/kill -0 "$pid" 2>/dev/null; then
-    /bin/kill -KILL "$pid" 2>/dev/null || true
-  fi
-  rm -f "$pid_file"
-  echo "$label: stopped"
 }
 
 stack_lan_ip() {
