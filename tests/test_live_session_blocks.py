@@ -3,6 +3,7 @@ import unittest
 
 from server.live_session_blocks import (
     MAX_SYNTHESIS_BLOCK_CHARS,
+    SynthesisBlockLiveSession,
     SynthesisBlockLiveSessionManager,
     prepare_synthesis_blocks,
 )
@@ -38,6 +39,27 @@ class LiveSynthesisBlockTests(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         self.assertEqual(blocks[0]["text"], long_chunk)
         self.assertEqual(blocks[1]["text"], "下一段")
+
+    def test_connected_client_without_current_session_state_releases_backpressure(self):
+        session = SynthesisBlockLiveSession(
+            "live-recover",
+            "default",
+            [],
+            lambda _text, _voice: b"RIFF",
+            lambda *_args: None,
+            lambda _session_id: {
+                "client_connected": True,
+                "client_state": {},
+            },
+            buffer_high_seconds=30.0,
+            buffer_low_seconds=12.0,
+        )
+        session._client_session_seen = True
+        session._backpressure_active = True
+
+        session._wait_for_buffer_capacity()
+
+        self.assertFalse(session._backpressure_active)
 
     def test_live_session_synthesizes_two_short_segments_once(self):
         synthesized = []
