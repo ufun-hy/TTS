@@ -63,6 +63,7 @@ echo "Acceleration: $BACKEND"
 echo "API: http://$HOST:$API_PORT/speak"
 echo "Authentication: Bearer API key"
 
+# Bash 3.2 with `set -u` errors when an empty array is expanded directly.
 exec python3 "$ROOT/server/tts_gateway.py" \
   --host "$HOST" \
   --port "$API_PORT" \
@@ -72,7 +73,7 @@ exec python3 "$ROOT/server/tts_gateway.py" \
   --engine-backend "$BACKEND" \
   --engine-log "$LOG_DIR/cosyvoice-server.log" \
   --engine-idle-seconds "$ENGINE_IDLE_SECONDS" \
-  "${ENGINE_VERBOSE_ARGS[@]}" \
+  ${ENGINE_VERBOSE_ARGS[@]-} \
   --audio-dir "$ROOT/runtime/audio" \
   --voices-config "$ROOT/voices.json" \
   --rate-limit-per-minute "${TTS_RATE_LIMIT_PER_MINUTE:-30}"
