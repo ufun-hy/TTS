@@ -10,6 +10,7 @@ on:
       - "server/engine_runtime.py"
       - "server/live_session.py"
       - "server/tts_gateway.py"
+      - "voice_datasets/prompt.py"
       - "scripts/stack-status.sh"
       - "start.sh"
       - "windows_client.py"
@@ -21,6 +22,7 @@ on:
       - "tests/test_service_entrypoints.py"
       - "tests/test_stage1_efficiency.py"
       - "tests/test_stage3_efficiency.py"
+      - "tests/test_voice_prompt.py"
       - "tests/test_wav_compat.py"
       - "tests/test_winmm_smoke.py"
       - ".github/workflows/windows-client-build.yml"
@@ -48,7 +50,7 @@ jobs:
 
       - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_wav_compat
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat
 
       - name: Run WinMM smoke test
         shell: pwsh
