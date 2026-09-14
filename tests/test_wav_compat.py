@@ -1,4 +1,3 @@
-import io
 import math
 from pathlib import Path
 import struct
@@ -9,7 +8,10 @@ from unittest.mock import patch
 
 from audio_client.wav_compat import (
     CONVERSION_VERSION,
+    FADE_IN_MS,
     WavCompatibilityError,
+    conversion_cache_valid,
+    inspect_wav,
     is_float32_wav,
     prepare_mci_wav,
 )
@@ -36,20 +38,35 @@ def _wav(code, channels, rate, bits, frames, extensible=False, extra=b""):
         fmt += struct.pack("<HI", bits, 0) + (FLOAT_GUID if code == 3 else PCM_GUID)
     else:
         fmt = struct.pack("<HHIIHH", code, channels, rate, rate * align, align, bits)
+
     def chunk(name, payload):
         padding = b"\0" if len(payload) & 1 else b""
         return name + struct.pack("<I", len(payload)) + payload + padding
+
     body = b"WAVE" + chunk(b"JUNK", extra) + chunk(b"fmt ", fmt) + chunk(b"data", frames)
     return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
+def read_pcm16(path):
+    with wave.open(str(path), "rb") as reader:
+        raw = reader.readframes(reader.getnframes())
+    return tuple(sample[0] for sample in struct.iter_unpack("<h", raw))
+
+
 class WavCompatTests(unittest.TestCase):
-    def test_pcm16_is_validated_and_returned_without_cache(self):
+    def test_pcm16_is_validated_and_gets_non_destructive_playback_derivative(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "pcm.wav"
-            source.write_bytes(pcm16_wav())
-            self.assertEqual(prepare_mci_wav(source), source)
-            self.assertFalse((source.parent / "pcm16").exists())
+            source.write_bytes(pcm16_wav((12000,) * 50, rate=1000))
+            original = source.read_bytes()
+
+            output = prepare_mci_wav(source)
+
+            self.assertNotEqual(output, source)
+            self.assertEqual(output.parent.name, "pcm16")
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(inspect_wav(output).sample_kind, "pcm16")
+            self.assertTrue(conversion_cache_valid(source))
 
     def test_float32_converts_to_pcm16_and_preserves_shape_and_clips(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,8 +77,31 @@ class WavCompatTests(unittest.TestCase):
             with wave.open(str(output), "rb") as reader:
                 self.assertEqual((reader.getnchannels(), reader.getframerate(), reader.getsampwidth()), (1, 24000, 2))
                 self.assertEqual(reader.getnframes(), 5)
-                self.assertEqual(struct.unpack("<5h", reader.readframes(5)), (0, 16384, -16384, 32767, -32768))
+                self.assertEqual(struct.unpack("<5h", reader.readframes(5)), (0, 4096, -8192, 32767, -32768))
             self.assertTrue(source.read_bytes().startswith(b"RIFF"))
+
+    def test_25ms_fade_in_reaches_full_level_without_touching_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            float_source = root / "fade-float.wav"
+            pcm_source = root / "fade-pcm.wav"
+            float_source.write_bytes(float32_wav((0.5,) * 50, rate=1000))
+            pcm_source.write_bytes(pcm16_wav((12000,) * 50, rate=1000))
+
+            float_samples = read_pcm16(prepare_mci_wav(float_source))
+            pcm_samples = read_pcm16(prepare_mci_wav(pcm_source))
+
+            self.assertEqual(FADE_IN_MS, 25.0)
+            self.assertEqual(float_samples[0], 0)
+            self.assertAlmostEqual(float_samples[12], round(16384 * 12 / 24), delta=2)
+            self.assertAlmostEqual(float_samples[24], 16384, delta=1)
+            self.assertAlmostEqual(float_samples[25], 16384, delta=1)
+            self.assertAlmostEqual(float_samples[-1], 16384, delta=1)
+            self.assertEqual(pcm_samples[0], 0)
+            self.assertAlmostEqual(pcm_samples[12], round(12000 * 12 / 24), delta=1)
+            self.assertEqual(pcm_samples[24], 12000)
+            self.assertEqual(pcm_samples[25], 12000)
+            self.assertEqual(pcm_samples[-1], 12000)
 
     def test_extensible_float32_and_pcm16_subformats_are_supported(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -70,7 +110,7 @@ class WavCompatTests(unittest.TestCase):
             pcm_source = root / "ext-pcm.wav"
             float_source.write_bytes(float32_wav(extensible=True))
             pcm_source.write_bytes(_wav(1, 2, 16000, 16, struct.pack("<4h", 1, -1, 2, -2), extensible=True))
-            self.assertEqual(prepare_mci_wav(pcm_source), pcm_source)
+            self.assertNotEqual(prepare_mci_wav(pcm_source), pcm_source)
             self.assertNotEqual(prepare_mci_wav(float_source), float_source)
 
     def test_conversion_cache_reuses_valid_output_and_rebuilds_after_source_change(self):
@@ -84,6 +124,14 @@ class WavCompatTests(unittest.TestCase):
             second = prepare_mci_wav(source)
             self.assertNotEqual(first, second)
             self.assertIn(f"v{CONVERSION_VERSION}", second.name)
+
+    def test_pcm16_conversion_cache_reuses_valid_faded_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "same-pcm.wav"
+            source.write_bytes(pcm16_wav((1000,) * 50, rate=1000))
+            first = prepare_mci_wav(source)
+            with patch("audio_client.wav_compat._copy_pcm16_with_fade", side_effect=AssertionError("processed twice")):
+                self.assertEqual(prepare_mci_wav(source), first)
 
     def test_extra_chunks_and_odd_padding_are_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,6 +182,7 @@ class WavCompatTests(unittest.TestCase):
             source.write_bytes(float32_wav())
             original = Path.stat
             calls = {"count": 0}
+
             def changing_stat(path):
                 value = original(path)
                 if path == source:
@@ -141,6 +190,7 @@ class WavCompatTests(unittest.TestCase):
                     if calls["count"] == 3:
                         source.write_bytes(float32_wav((0.1,)))
                 return value
+
             with patch("audio_client.wav_compat.Path.stat", changing_stat):
                 with self.assertRaises(WavCompatibilityError):
                     prepare_mci_wav(source)
