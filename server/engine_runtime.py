@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -193,6 +195,14 @@ class ManagedEngine:
             return self._launcher_impl()
         if not self.command:
             raise EngineRuntimeError("managed engine command is missing")
+        env = os.environ.copy()
+        if sys.platform == "darwin":
+            # macOS can strip DYLD_* when the gateway starts via system Python.
+            # Set it at the final native-process boundary, on every cold wake.
+            paths = [str(Path(self.command[0]).resolve().parent), "/opt/homebrew/opt/icu4c/lib"]
+            if env.get("DYLD_LIBRARY_PATH"):
+                paths.append(env["DYLD_LIBRARY_PATH"])
+            env["DYLD_LIBRARY_PATH"] = ":".join(paths)
         if self.log_path:
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             log_handle = self.log_path.open("ab", buffering=0)
@@ -203,6 +213,7 @@ class ManagedEngine:
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,
                     close_fds=True,
+                    env=env,
                 )
             finally:
                 log_handle.close()
@@ -212,6 +223,7 @@ class ManagedEngine:
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             close_fds=True,
+            env=env,
         )
 
     @staticmethod

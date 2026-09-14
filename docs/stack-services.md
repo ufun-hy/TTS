@@ -27,6 +27,8 @@
 
 状态命令同时显示 launchd 状态、当前 PID、最近退出码/信号、监听端口和 HTTP 健康结果。READY 要求任务属于当前项目、进程存在且对应端口由该 PID 监听，并且健康接口成功。单服务启动失败返回非零状态，但仍尝试启动其他辅助服务，不停止已经健康的服务。
 
+若网关在线但试听返回 `tts_failed`，应检查 `cosyvoice-server.log` 并实际执行一次试听。macOS 系统 Python 可能清除 shell 传入的 `DYLD_LIBRARY_PATH`；引擎启动器会在每次启动原生 CosyVoice 子进程时显式补入引擎所在目录及 ICU 库路径。仅网关处于 sleeping/ready 状态不能替代实际合成验证。
+
 业务日志继续追加到 `runtime/logs/audio-cache.log`、`text-studio.log`、`recording-transcript.log`。启动请求和实际启动时间均有记录；`stack-lifecycle.log` 追加管理操作、超时和失败信息。最近退出状态由 launchd 提供，显式停止前也会记录到生命周期日志。日志、配置、测试目录、项目数据和旧 PID 文件均不自动清理。
 
 验证命令：
