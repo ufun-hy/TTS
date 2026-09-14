@@ -7,6 +7,8 @@ MODEL_DIR="$ROOT/runtime/models"
 ENGINE_VERSION="v0.1.1"
 ENGINE_ARCHIVE="cosyvoice-3c7448c-macos-arm64-miniaudio.tgz"
 HF_ROOT="https://huggingface.co/Lourdle/Fun-CosyVoice3-0.5B-2512-GGUF/resolve/main"
+PROMPT_CONTRACT_VERSION="cosyvoice3-eop-v1"
+PROMPT_CONTRACT_FILE="$MODEL_DIR/prompt_speech.contract"
 
 if [[ "$(uname -m)" != "arm64" ]]; then
   echo "This setup targets Apple Silicon (arm64)." >&2
@@ -42,15 +44,22 @@ download "$HF_ROOT/frontend-onnx/campplus.int8.onnx?download=true" "$MODEL_DIR/c
 download "https://raw.githubusercontent.com/QwenAudio/CosyVoice/main/asset/zero_shot_prompt.wav" "$MODEL_DIR/zero_shot_prompt.wav"
 
 export DYLD_LIBRARY_PATH="/opt/homebrew/opt/icu4c/lib:$BIN_DIR${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-if [[ ! -s "$MODEL_DIR/prompt_speech.gguf" ]]; then
-  echo "extracting prompt_speech.gguf"
+current_contract="$(cat "$PROMPT_CONTRACT_FILE" 2>/dev/null || true)"
+if [[ ! -s "$MODEL_DIR/prompt_speech.gguf" || "$current_contract" != "$PROMPT_CONTRACT_VERSION" ]]; then
+  echo "extracting prompt_speech.gguf with CosyVoice3 prompt boundary"
+  PROMPT_TEXT="$(PYTHONPATH="$ROOT" python3 - <<'PY'
+from voice_datasets.prompt import build_zero_shot_prompt_text
+print(build_zero_shot_prompt_text("希望你以后能够做的比我还好呦。"), end="")
+PY
+)"
   "$BIN_DIR/cosyvoice-cli" \
     --frontend-only \
     --speech-tokenizer "$MODEL_DIR/speech_tokenizer_v3.int8.onnx" \
     --campplus "$MODEL_DIR/campplus.int8.onnx" \
     --prompt-audio "$MODEL_DIR/zero_shot_prompt.wav" \
-    --prompt-text "希望你以后能够做的比我还好呦。" \
+    --prompt-text "$PROMPT_TEXT" \
     --prompt-speech-output "$MODEL_DIR/prompt_speech.gguf"
+  printf '%s\n' "$PROMPT_CONTRACT_VERSION" > "$PROMPT_CONTRACT_FILE"
 fi
 
 echo "Installed CosyVoice runtime and Fun-CosyVoice3 model assets."
