@@ -43,6 +43,12 @@ Path.read_bytes = _read_bytes_with_extension
 
 import text_studio  # noqa: E402
 from script_restore import restore_script  # noqa: E402
+from live_session_blocks import build_live_manager as build_synthesis_block_live_manager  # noqa: E402
+
+# Keep Text Studio's logical speech-unit segmentation intact, but make Live
+# Session synthesize adjacent short units as longer utterances. This reduces
+# repeated CosyVoice onset artifacts at every logical segment boundary.
+text_studio.build_live_manager = build_synthesis_block_live_manager
 
 # "paragraphs" is now the speech-unit collection. Sentence-first splitting can
 # legitimately create more than the historical 2,000 natural-paragraph limit.
