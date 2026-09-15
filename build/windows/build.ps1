@@ -89,6 +89,16 @@ try {
         -r (Join-Path $Root "scripts\requirements-qwen-asr-windows.txt")
     if ($LASTEXITCODE -ne 0) { throw "Windows ASR dependency installation failed" }
 
+    # The wheel ships C++ headers/import libraries for extension development;
+    # they are not needed by the bundled inference process and push Inno Setup
+    # past its single-file Windows installer limit.
+    $torchInclude = Join-Path $sitePackages "torch\include"
+    if (Test-Path $torchInclude) { Remove-Item -LiteralPath $torchInclude -Recurse -Force }
+    Get-ChildItem -LiteralPath $sitePackages -Filter "*.lib" -File -Recurse |
+        Remove-Item -Force
+    Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "__pycache__" -Recurse |
+        Remove-Item -Recurse -Force
+
     $ollamaArchive = Join-Path $DownloadRoot "ollama.zip"
     Download-Verified $OllamaUrl $OllamaSha256 $ollamaArchive
     Copy-ArchiveContents $ollamaArchive $ollamaBin
