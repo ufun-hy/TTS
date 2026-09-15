@@ -182,9 +182,14 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
     for label, path in required.items():
         if not path.is_file():
             errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{path}")
-    for label, pattern in (("GGML DLL", "ggml*.dll"), ("CUDA runtime DLL", "cudart64_*.dll"), ("cuBLAS DLL", "cublas64_*.dll")):
-        if not any(components["cosyvoice"].glob(pattern)):
-            errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{components['cosyvoice']}")
+    torch_lib = bin_dir.parent / "python" / "Lib" / "site-packages" / "torch" / "lib"
+    for label, pattern, directories in (
+        ("GGML DLL", "ggml*.dll", (components["cosyvoice"],)),
+        ("CUDA runtime DLL", "cudart64_*.dll", (torch_lib, components["cosyvoice"])),
+        ("cuBLAS DLL", "cublas64_*.dll", (torch_lib, components["cosyvoice"])),
+    ):
+        if not any(any(directory.glob(pattern)) for directory in directories):
+            errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{torch_lib}")
     return errors
 
 
@@ -296,7 +301,7 @@ def start(args: argparse.Namespace) -> int:
         "TTS_OLLAMA_URL": "http://127.0.0.1:11435",
         "TTS_OLLAMA_MODEL": "qwen3:8b",
         "RECORDING_TRANSCRIPT_BACKEND": "cuda",
-        "PATH": os.pathsep.join(str(path) for path in (*_component_dirs(bin_dir).values(), bin_dir)) + os.pathsep + env.get("PATH", ""),
+        "PATH": os.pathsep.join(str(path) for path in (*_component_dirs(bin_dir).values(), bin_dir, python.parent / "Lib" / "site-packages" / "torch" / "lib")) + os.pathsep + env.get("PATH", ""),
         "AI_AUDIO_CLIENT_CONFIG": str(data / "config" / "audio-client.json"),
         "AI_AUDIO_AUTOPLAY": "1",
     })
