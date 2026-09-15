@@ -54,7 +54,7 @@ function Normalize-Component([string]$Component, [string[]]$Required) {
 }
 
 function Remove-DevelopmentFiles([string]$Packages) {
-    foreach ($relative in @("torch\include", "torch\share", "torch\testing", "torchgen")) {
+    foreach ($relative in @("torch\include", "torch\share", "torch\testing")) {
         $path = Join-Path $Packages $relative
         if (Test-Path $path) { Remove-Item -LiteralPath $path -Recurse -Force }
     }
