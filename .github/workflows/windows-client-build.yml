@@ -77,7 +77,6 @@ jobs:
         with:
           name: AI-Live-Studio-Windows-Test-Setup
           path: |
-            build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe
-            build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe.sha256
+            build/windows/output/*
           if-no-files-found: error
           retention-days: 30

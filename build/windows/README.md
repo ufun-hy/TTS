@@ -91,4 +91,4 @@ Invoke-RestMethod http://127.0.0.1:8770/api/runtime/recover `
 
 ### CI
 
-Windows workflow 同时运行 Runtime 回归、WinMM 测试、完整运行时组装、PyInstaller、Inno Setup 和 artifact upload。artifact 名称为 `AI-Live-Studio-Windows-Test-Setup`，包含 EXE 和 SHA256 文件。只有 GitHub Actions 对相应提交实际运行完成，才可报告 Windows CI 通过；本机回归和 dry-run 不替代该状态。
+Windows workflow 同时运行 Runtime 回归、WinMM 测试、完整运行时组装、PyInstaller、Inno Setup 和 artifact upload。由于完整 CUDA PyTorch + Ollama payload 超过 Windows 单个 Setup.exe 的 4.2GB 限制，artifact 名称为 `AI-Live-Studio-Windows-Test-Setup`，包含可双击的 EXE、Inno 数据分片和 SHA256 文件；分发时须保持它们在同一目录。只有 GitHub Actions 对相应提交实际运行完成，才可报告 Windows CI 通过；本机回归和 dry-run 不替代该状态。
