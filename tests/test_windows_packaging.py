@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -62,7 +63,8 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_runtime_components_keep_cuda_dlls_out_of_python_path(self):
         entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))
-        self.assertIn("runtime/bin/cosyvoice/cosyvoice-server", entries["tts-gateway"][0])
+        expected_engine = Path("runtime/bin/cosyvoice") / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
+        self.assertIn(str(expected_engine), entries["tts-gateway"][0])
         self.assertEqual(entries["ollama"][1], Path("runtime/bin/ollama"))
 
 
