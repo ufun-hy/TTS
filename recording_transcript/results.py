@@ -12,10 +12,15 @@ from typing import Any
 RESULT_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 
 
+def _runtime_root(root: Path) -> Path:
+    configured = os.environ.get("AI_LIVE_STUDIO_DATA")
+    return Path(configured).expanduser() if configured else root / 'runtime'
+
+
 def _result_path(root: Path, job_id: str) -> Path:
     if not isinstance(job_id, str) or not RESULT_ID_RE.fullmatch(job_id):
         raise ValueError('无效的文稿 ID')
-    return root / 'runtime' / 'recording-transcript' / 'results' / f'{job_id}.json'
+    return _runtime_root(root) / 'recording-transcript' / 'results' / f'{job_id}.json'
 
 
 def save_result(root: Path, job_id: str, filename: str, size: int, text: str) -> dict[str, Any]:
@@ -47,7 +52,7 @@ def load_result(root: Path, job_id: str) -> dict[str, Any]:
 
 def list_results(root: Path) -> list[dict[str, Any]]:
     results = []
-    directory = root / 'runtime' / 'recording-transcript' / 'results'
+    directory = _runtime_root(root) / 'recording-transcript' / 'results'
     for path in directory.glob('*.json'):
         try:
             result = load_result(root, path.stem)

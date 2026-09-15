@@ -1,0 +1,5 @@
+# Windows CUDA ASR worker. Install a CUDA-enabled PyTorch wheel matching the
+# target NVIDIA driver before installing qwen-asr; the exact wheel is selected
+# by the Windows build image and is not downloaded by the application.
+qwen-asr>=0.1.0
+torch>=2.6

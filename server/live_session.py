@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -15,9 +16,11 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+import wave
 from typing import Any, Callable
 
 from timeline.tts_client import TTSClient, load_api_key
+from local_runtime import RuntimeBusyError, RuntimeLease, RuntimeManager, RuntimeStage
 
 
 LIVE_STATUSES = ("idle", "starting", "running", "paused", "stopping", "stopped", "failed")
@@ -211,6 +214,7 @@ class LiveSnapshot:
     backpressure_active: bool = False
     stop_timed_out: bool = False
     stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS
+    rtf: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -229,6 +233,7 @@ class LiveSnapshot:
             "backpressure_active": self.backpressure_active,
             "stop_timed_out": self.stop_timed_out,
             "stop_timeout_seconds": self.stop_timeout_seconds,
+            "rtf": self.rtf,
             "error": self.error,
             "finished": self.finished,
             "round_number": self.round_number,
@@ -286,6 +291,8 @@ class LiveSession:
         self.error = ""
         self.finished = False
         self._stop_requested_at: float | None = None
+        self._synthesis_seconds = 0.0
+        self._audio_seconds = 0.0
 
     def start(self) -> None:
         self._thread.start()
@@ -326,6 +333,8 @@ class LiveSession:
             backpressure_active = self._backpressure_active
             stop_requested_at = self._stop_requested_at
             stop_timeout_seconds = self.stop_timeout_seconds
+            synthesis_seconds = self._synthesis_seconds
+            audio_seconds = self._audio_seconds
         stop_timed_out = bool(
             status == "stopping"
             and stop_requested_at is not None
@@ -352,6 +361,7 @@ class LiveSession:
             backpressure_active,
             stop_timed_out,
             stop_timeout_seconds,
+            synthesis_seconds / audio_seconds if audio_seconds > 0 else 0.0,
         )
 
     def _finalize_thread(self) -> None:
@@ -444,7 +454,17 @@ class LiveSession:
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(segment["text"])
+                    synthesis_started = time.monotonic()
                     audio = self._synthesize(speech_text, self.voice)
+                    synthesis_seconds = time.monotonic() - synthesis_started
+                    try:
+                        with wave.open(BytesIO(audio), "rb") as handle:
+                            audio_seconds = handle.getnframes() / max(1, handle.getframerate())
+                    except (OSError, EOFError, wave.Error):
+                        audio_seconds = 0.0
+                    with self._lock:
+                        self._synthesis_seconds += synthesis_seconds
+                        self._audio_seconds += audio_seconds
                     if self._stop.is_set():
                         return
                     self._sequence += 1
@@ -501,6 +521,8 @@ class LiveSessionManager:
             raise ValueError("stop timeout must be positive")
         self._lock = threading.RLock()
         self._session: LiveSession | None = None
+        self.runtime = runtime
+        self._runtime_lease: RuntimeLease | None = None
 
     def start(self, voice: str, segments: Any, playback_speed: Any = 1.0, volume: Any = 100.0) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
@@ -516,8 +538,16 @@ class LiveSessionManager:
             prepared_segments = [] if loop_mode else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
+        runtime_lease: RuntimeLease | None = None
+        if self.runtime:
+            try:
+                runtime_lease = self.runtime.acquire(RuntimeStage.LIVE, "live-session", "CosyVoice3")
+            except RuntimeBusyError as exc:
+                raise LiveSessionError(str(exc), 409) from exc
         with self._lock:
             if self._session:
+                if runtime_lease and self.runtime:
+                    self.runtime.release(runtime_lease)
                 if self._session.status in ("starting", "running", "paused"):
                     raise LiveSessionError("a live session is already running")
                 raise LiveSessionError("reset the previous live session before starting a new one")
@@ -536,8 +566,19 @@ class LiveSessionManager:
                 stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
+            self._runtime_lease = runtime_lease
             session.start()
+            if runtime_lease:
+                threading.Thread(target=self._release_runtime_after_session, args=(session, runtime_lease), daemon=True, name="live-runtime-release").start()
             return {"session_id": session.session_id, "status": "starting", "looping": session.looping}
+
+    def _release_runtime_after_session(self, session: LiveSession, lease: RuntimeLease) -> None:
+        session._thread.join()
+        released = self.runtime.release(lease) if self.runtime else True
+        if released:
+            with self._lock:
+                if self._runtime_lease == lease:
+                    self._runtime_lease = None
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -571,6 +612,11 @@ class LiveSessionManager:
                 raise LiveSessionError("live session is still stopping; retry reset shortly")
         if session:
             self._cache_cleanup(session.session_id)
+        with self._lock:
+            lease = self._runtime_lease
+            self._runtime_lease = None
+        if lease and self.runtime:
+            self.runtime.release(lease)
         with self._lock:
             self._session = None
         return self.status()
@@ -663,7 +709,7 @@ class LiveSessionManager:
             raise RuntimeError(detail or f"HTTP {exc.code}") from exc
 
 
-def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "") -> LiveSessionManager:
+def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "", runtime: RuntimeManager | None = None) -> LiveSessionManager:
     high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
     low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
     stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
@@ -675,4 +721,5 @@ def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", 
         buffer_high_seconds=high,
         buffer_low_seconds=low,
         stop_timeout_seconds=stop_timeout,
+        runtime=runtime,
     )

@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import platform
+import os
 from typing import Any
 
 MODEL_DIRECTORY = 'qwen3-asr-1.7b-bf16'
@@ -15,6 +16,9 @@ MAX_TOKENS = 1024
 
 
 def validate_model(model: Path) -> Path:
+    if platform.system() == "Windows" or os.environ.get("RECORDING_TRANSCRIPT_BACKEND") == "cuda":
+        from .qwen_asr_windows import validate_model as validate_windows
+        return validate_windows(model)
     model = model.expanduser().resolve()
     if not model.is_dir():
         raise ValueError('本地 Qwen3-ASR-1.7B MLX 模型未找到，请配置 RECORDING_TRANSCRIPT_MODEL')
@@ -35,6 +39,9 @@ def validate_model(model: Path) -> Path:
 
 
 def readiness(model: Path) -> dict[str, Any]:
+    if platform.system() == "Windows" or os.environ.get("RECORDING_TRANSCRIPT_BACKEND") == "cuda":
+        from .qwen_asr_windows import readiness as readiness_windows
+        return readiness_windows(model)
     try:
         validate_model(model)
         if platform.system() != 'Darwin' or platform.machine() != 'arm64':
@@ -53,6 +60,9 @@ def _load_model(model: Path):
 
 
 def transcribe(audio: Path, model: Path) -> dict[str, Any]:
+    if platform.system() == "Windows" or os.environ.get("RECORDING_TRANSCRIPT_BACKEND") == "cuda":
+        from .qwen_asr_windows import transcribe as transcribe_windows
+        return transcribe_windows(audio, model)
     """Caller serializes GPU jobs; cache only the currently configured model."""
     model = validate_model(model)
     status = readiness(model)

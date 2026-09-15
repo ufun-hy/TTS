@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any, Dict, Optional
@@ -16,6 +17,9 @@ class ClientConfig:
     poll_interval: float = 1.0
     api_key: str = ""
     timeout: int = 5
+    strict_session: bool = False
+    session_id: str = ""
+    startup_buffer_seconds: float = 0.0
 
     @classmethod
     def from_dict(cls, raw: Optional[Dict[str, Any]]) -> "ClientConfig":
@@ -30,6 +34,9 @@ class ClientConfig:
             poll_interval=poll_interval,
             api_key=str(raw.get("api_key", cls.api_key)),
             timeout=int(raw.get("timeout", cls.timeout)),
+            strict_session=bool(raw.get("strict_session", False)),
+            session_id=str(raw.get("session_id", "")).strip(),
+            startup_buffer_seconds=float(raw.get("startup_buffer_seconds", 0.0)),
         )
         if not value.server:
             raise ValueError("server is required")
@@ -37,6 +44,8 @@ class ClientConfig:
             raise ValueError("poll_interval must be positive")
         if value.timeout < 1:
             raise ValueError("timeout must be positive")
+        if value.startup_buffer_seconds < 0:
+            raise ValueError("startup_buffer_seconds must not be negative")
         return value
 
     def to_dict(self) -> Dict[str, Any]:
@@ -46,6 +55,9 @@ class ClientConfig:
             "poll_interval": self.poll_interval,
             "api_key": self.api_key,
             "timeout": self.timeout,
+            "strict_session": self.strict_session,
+            "session_id": self.session_id,
+            "startup_buffer_seconds": self.startup_buffer_seconds,
         }
 
 
@@ -57,6 +69,9 @@ def install_dir() -> Path:
 
 
 def config_path() -> Path:
+    configured = os.environ.get("AI_AUDIO_CLIENT_CONFIG")
+    if configured:
+        return Path(configured).expanduser()
     return install_dir() / "config.json"
 
 

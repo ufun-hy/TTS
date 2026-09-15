@@ -121,7 +121,6 @@ class StackServicesTests(unittest.TestCase):
                 {"pid": 123, "command": "Python", "address": "127.0.0.1:8765"},
                 {"pid": 456, "command": "Python", "address": "*:8765"},
             ])
-
     def test_tts_diagnostic_parses_a_healthy_response(self):
         class Response:
             status = 200

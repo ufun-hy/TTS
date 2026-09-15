@@ -57,7 +57,9 @@ class VoiceStore:
                 raise ValueError(f"voice {voice_id!r} needs prompt_speech")
             prompt = Path(entry["prompt_speech"])
             if not prompt.is_absolute():
-                prompt = self.root / prompt
+                project_prompt = self.root / prompt
+                external_prompt = self.config_path.parent / prompt
+                prompt = project_prompt if project_prompt.is_file() else external_prompt
             if prompt.is_file():
                 voices[voice_id] = prompt
         if "default" not in voices:
@@ -295,7 +297,11 @@ def synthesize_and_play(
             audio = synthesize_text(job.text, job.voice)
         job.audio_path.write_bytes(audio)
         synthesized = time.monotonic()
-        subprocess.run(["/usr/bin/afplay", str(job.audio_path)], check=True)
+        # `/speak` is the legacy fire-and-play endpoint on macOS.  Windows
+        # single-machine mode consumes `/synthesize` through WinMM instead;
+        # never invoke the macOS-only afplay binary there.
+        if os.name != "nt":
+            subprocess.run(["/usr/bin/afplay", str(job.audio_path)], check=True)
         finished = time.monotonic()
         print(json.dumps({
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),

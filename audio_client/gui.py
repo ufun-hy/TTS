@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import tkinter as tk
@@ -53,6 +54,8 @@ class AudioClientApp:
         self.root.after(200, self._drain_events)
         self.root.after(1000, self._refresh_local_stats)
         self.root.after(100, self.start)
+        if os.environ.get("AI_AUDIO_AUTOPLAY") == "1":
+            self.root.after(500, self.start_playback)
 
     def _build_ui(self) -> None:
         outer = ttk.Frame(self.root, padding=16)
@@ -215,7 +218,12 @@ class AudioClientApp:
         if self.playback is None or self.playback.cache_dir != cache_dir:
             if self.playback and self.playback.is_running():
                 self.playback.stop()
-            self.playback = PlaybackController(cache_dir, self._on_playback_event, self.logger)
+            self.playback = PlaybackController(
+                cache_dir, self._on_playback_event, self.logger,
+                strict_session=self.config.strict_session,
+                session_id=self.config.session_id,
+                startup_buffer_seconds=self.config.startup_buffer_seconds,
+            )
         return self.playback
 
     def start_playback(self) -> None:
@@ -273,7 +281,7 @@ class AudioClientApp:
         self.root.destroy()
 
     def _worker_loop(self, config: ClientConfig, stop: threading.Event) -> None:
-        client = AudioClient(config.server, resolve_cache_dir(config), config.poll_interval, config.api_key, config.timeout)
+        client = AudioClient(config.server, resolve_cache_dir(config), config.poll_interval, config.api_key, config.timeout, config.session_id)
         connected = False
         while not stop.is_set():
             try:
@@ -285,6 +293,14 @@ class AudioClientApp:
                 item = client.fetch_next()
                 if item:
                     self.logger.info("received %s", item.id)
+                    if config.strict_session and not config.session_id:
+                        server_metadata = item.metadata.get("server_metadata")
+                        session_id = server_metadata.get("session_id") if isinstance(server_metadata, dict) else ""
+                        if session_id:
+                            try:
+                                self._playback_controller().set_session(session_id)
+                            except RuntimeError:
+                                pass
                     self.events.put(("received", client.local_stats()))
                     # V1 has no playback consumer acknowledgement on the server.
                     # The durable local WAV is the transport completion boundary.
@@ -327,7 +343,7 @@ class AudioClientApp:
 
     def _refresh_local_stats(self) -> None:
         try:
-            client = AudioClient(self.config.server, resolve_cache_dir(self.config), self.config.poll_interval, self.config.api_key, self.config.timeout)
+            client = AudioClient(self.config.server, resolve_cache_dir(self.config), self.config.poll_interval, self.config.api_key, self.config.timeout, self.config.session_id)
             self._set_network_stats(client.local_stats())
             if self.playback:
                 self._set_playback_stats(self.playback.stats())

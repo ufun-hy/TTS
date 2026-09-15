@@ -27,13 +27,14 @@ class ClientAudio:
 
 
 class AudioClient:
-    def __init__(self, server: str, cache_dir: Path, poll_interval: float = 1.0, api_key: str = "", timeout: int = 15) -> None:
+    def __init__(self, server: str, cache_dir: Path, poll_interval: float = 1.0, api_key: str = "", timeout: int = 15, session_id: str = "") -> None:
         self.server = server.rstrip("/") + "/"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.poll_interval = max(0.05, float(poll_interval))
         self.api_key = api_key
         self.timeout = timeout
+        self.session_id = str(session_id or "").strip()
 
     def health(self) -> Dict[str, Any]:
         response = self._request("GET", "health")
@@ -138,6 +139,8 @@ class AudioClient:
         if existing:
             return existing
         state = self.local_playback_state()
+        if self.session_id:
+            state["session_id"] = self.session_id
         query = urlencode({
             "client_session_id": state["session_id"],
             "client_buffered_segments": state["buffered_segments"],

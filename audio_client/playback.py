@@ -140,11 +140,20 @@ class PlaybackController:
         callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         logger: Any = None,
         player: Optional[Any] = None,
+        strict_session: bool = False,
+        session_id: str = "",
+        startup_buffer_seconds: float = 0.0,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.callback = callback
         self.logger = logger
         self.player = player or WinMMPlayer(logger=logger)
+        self.strict_session = bool(strict_session)
+        self._strict_session_id = session_id.strip()
+        try:
+            self.startup_buffer_seconds = max(0.0, float(startup_buffer_seconds))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("startup_buffer_seconds must be numeric") from exc
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -154,7 +163,21 @@ class PlaybackController:
         self._error = ""
         self._active_session_id: Optional[str] = None
         self._superseded_session_ids: set[str] = set()
+        self._expected_sequence: Optional[float] = 1.0 if self.strict_session else None
+        self._startup_buffer_pending = self.strict_session and self.startup_buffer_seconds > 0
         self._recover_interrupted_items()
+
+    def set_session(self, session_id: str) -> None:
+        """Bind strict playback to one server session before starting."""
+        session_id = str(session_id or "").strip()
+        if self.strict_session and not session_id:
+            raise ValueError("strict playback requires a session_id")
+        with self._lock:
+            if self.is_running():
+                raise PlaybackError("cannot change session while playback is running")
+            self._strict_session_id = session_id
+            self._expected_sequence = 1.0 if self.strict_session else None
+            self._startup_buffer_pending = self.strict_session and self.startup_buffer_seconds > 0
 
     def start(self) -> None:
         with self._lock:
@@ -217,6 +240,11 @@ class PlaybackController:
             "active_session_id": active_session_id or "",
             "cache": sum(item.path.is_file() for item in items),
             "playback_error": error,
+            "strict_session": self.strict_session,
+            "session_id": self._strict_session_id or "",
+            "buffered_seconds": self._buffered_seconds(items),
+            "startup_buffer_seconds": self.startup_buffer_seconds,
+            "expected_sequence": self._expected_sequence,
         }
 
     def clear_cache(self) -> Dict[str, int]:
@@ -243,6 +271,15 @@ class PlaybackController:
     def _run(self) -> None:
         self._recover_failed_float_items()
         while not self._stop.is_set():
+            items = self._items()
+            if self.strict_session and self._startup_buffer_pending:
+                if self._buffered_seconds(items) < self.startup_buffer_seconds:
+                    with self._lock:
+                        self._state = "buffering"
+                    self._emit()
+                    self._stop.wait(0.2)
+                    continue
+                self._startup_buffer_pending = False
             item = self._next_item()
             if item is None:
                 with self._lock:
@@ -268,8 +305,13 @@ class PlaybackController:
                     self._error = str(exc)
                 if self.logger:
                     self.logger.error("playback failed %s: %s", item.item_id, exc)
+                if self.strict_session:
+                    break
             else:
                 self._set_status(item, "played")
+                if self.strict_session:
+                    with self._lock:
+                        self._expected_sequence = (self._expected_sequence or item.sequence) + 1
             finally:
                 with self._lock:
                     self._current = None
@@ -348,9 +390,31 @@ class PlaybackController:
 
     def _next_item(self) -> Optional[PlaybackItem]:
         items = self._items()
+        if self.strict_session:
+            session_id = self._strict_session_id
+            items = [item for item in items if session_id and _session_id(item.metadata) == session_id]
+            cached = [item for item in items if _playback_status(item.metadata) == "cached"]
+            expected = self._expected_sequence
+            if expected is not None:
+                cached = [item for item in cached if item.sequence == expected]
+            return min(cached, key=lambda item: (item.sequence, item.item_id)) if cached else None
         self._sync_active_session(items)
         items = [item for item in self._items() if _playback_status(item.metadata) == "cached"]
         return min(items, key=lambda item: (item.sequence, item.item_id)) if items else None
+
+    def _buffered_seconds(self, items: List[PlaybackItem]) -> float:
+        session_id = self._strict_session_id if self.strict_session else self._active_session_id
+        total = 0.0
+        for item in items:
+            if session_id and _session_id(item.metadata) != session_id:
+                continue
+            if _playback_status(item.metadata) != "cached":
+                continue
+            try:
+                total += max(0.0, float(item.metadata.get("duration", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        return round(total, 3)
 
     def _sync_active_session(self, items: List[PlaybackItem]) -> None:
         live_items = [item for item in items if _session_id(item.metadata)]

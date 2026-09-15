@@ -33,6 +33,12 @@ else:
     from live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 
 from recording_transcript.results import list_results, load_result
+try:
+    from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama
+except ImportError:
+    from text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama
+from local_runtime import RuntimeBusyError, RuntimeManager, RuntimeStage, UpdateError, UpdateManager
+from local_runtime.settings import SecretStoreError, load_settings, save_settings, secret_store
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
@@ -106,7 +112,17 @@ def _validate_model_result(raw: Any, expected_ids: list[str]) -> list[dict[str, 
     return [by_id[paragraph_id] for paragraph_id in expected_ids]
 
 
-def provider_available(provider: str) -> bool:
+def provider_available(provider: str, root: Path | None = None) -> bool:
+    root = root or Path.cwd()
+    if provider == "ollama":
+        try:
+            with urllib.request.urlopen(provider_config("ollama", root)["base_url"].rstrip("/") + "/api/tags", timeout=1) as response:
+                return response.status == 200
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
+    if provider == "openai_compatible":
+        config = provider_config(provider, root)
+        return bool(config["base_url"] and config["model"] and config["api_key"])
     command = _provider_command(provider)
     return bool(command and shutil.which(command[0]))
 
@@ -150,7 +166,16 @@ def _capture_provider_output(diagnostic: dict[str, Any], stdout: Any, stderr: An
 
 
 def _run_provider(provider: str, prompt: str, timeout_seconds: int,
-                  diagnostic: dict[str, Any] | None = None, model: str = "") -> Any:
+                  diagnostic: dict[str, Any] | None = None, model: str = "",
+                  provider_root: Path | None = None) -> Any:
+    if provider in {"ollama", "openai_compatible"}:
+        content, actual_model = run_http_provider(
+            provider, prompt, model, provider_root or Path.cwd(), timeout_seconds,
+        )
+        if diagnostic is not None:
+            diagnostic["model"] = actual_model
+            diagnostic["model_provider"] = provider
+        return _extract_json(content)
     command = _provider_command(provider, model)
     if provider == "agy" and command:
         command = agy_prompt_command(command, prompt)
@@ -240,8 +265,9 @@ def generalize_paragraphs(
     project_id: str = "",
     paragraph_indexes: list[int] | None = None,
     model: str = "",
+    provider_root: Path | None = None,
 ) -> list[dict[str, Any]]:
-    if provider not in {"codex", "chatgpt", "gemini", "agy"}:
+    if provider not in {"codex", "chatgpt", "gemini", "agy", "ollama", "openai_compatible"}:
         raise ValueError("provider must be codex, chatgpt, gemini or agy")
     if not 1 <= candidate_count <= 5:
         raise ValueError("candidate_count must be between 1 and 5")
@@ -270,6 +296,11 @@ def generalize_paragraphs(
         raise ValueError("paragraph_indexes must contain one nonnegative integer per paragraph")
 
     results: list[dict[str, Any]] = []
+    # An 8B local model has much less headroom than a remote provider. Keep
+    # each request to one speech unit so JSON output cannot be truncated by a
+    # 4096-token context window.
+    if provider in {"ollama", "openai_compatible"}:
+        batch_size = 1
     for start in range(0, len(normalized), batch_size):
         batch = normalized[start:start + batch_size]
         prompt = _build_prompt(batch, candidate_count, instruction)
@@ -310,6 +341,8 @@ def generalize_paragraphs(
                 options["diagnostic"] = diagnostic
             if model:
                 options["model"] = model
+            if provider_root is not None and provider in {"ollama", "openai_compatible"}:
+                options["provider_root"] = provider_root
             raw = _run_provider(provider, prompt, timeout_seconds, **options)
             validated = _validate_model_result(raw, [item["id"] for item in batch])
             if diagnostic is not None:
@@ -329,7 +362,8 @@ def generalize_paragraphs(
 
 
 def _projects_root(root: Path) -> Path:
-    path = root / "runtime" / "text-studio" / "projects"
+    runtime_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
+    path = runtime_root / "text-studio" / "projects"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -569,7 +603,11 @@ def make_handler(
     audio_cache_api_key: str = "",
 ):
     html_path = root / "web" / "text-studio.html"
-    live = build_live_manager(gateway_url, audio_cache_url, tts_api_key, audio_cache_api_key)
+    single_machine = os.environ.get("WINDOWS_SINGLE_MACHINE") == "1"
+    data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
+    runtime = RuntimeManager(lock_path=str(data_root / "runtime" / "gpu-owner.json")) if single_machine else None
+    updater = UpdateManager(data_root, manifest_url=os.environ.get("AI_LIVE_STUDIO_UPDATE_URL", ""), runtime=runtime)
+    live = build_live_manager(gateway_url, audio_cache_url, tts_api_key, audio_cache_api_key, runtime=runtime)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
@@ -615,11 +653,14 @@ def make_handler(
             if path == "/api/health":
                 self._json(200, {
                     "status": "ok",
+                    "default_provider": "ollama" if sys.platform == "win32" else "codex",
                     "providers": {
                         "codex": provider_available("codex"),
                         "gemini": provider_available("gemini"),
                         "agy": provider_available("agy"),
                         "chatgpt": provider_available("chatgpt"),
+                        "ollama": provider_available("ollama", root),
+                        "openai_compatible": provider_available("openai_compatible", root),
                     },
                     "tts": {
                         "ready": _tts_health(gateway_url),
@@ -632,16 +673,49 @@ def make_handler(
                 self._json(200, live.status())
                 return
 
+            if path == "/api/runtime/status":
+                self._json(200, runtime.snapshot() if runtime else {
+                    "state": "IDLE", "gpu_owner": "", "operation": "", "active_model": "",
+                    "pid": None, "started_at": "", "model_released": True,
+                    "stop_requested": False, "last_error": "",
+                })
+                return
+
+            if path == "/api/settings/models":
+                data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
+                settings = load_settings(data_root)
+                ollama = settings.get("ollama", {}) if isinstance(settings.get("ollama"), dict) else {}
+                compatible = settings.get("openai_compatible", {}) if isinstance(settings.get("openai_compatible"), dict) else {}
+                self._json(200, {
+                    "ollama": {"base_url": ollama.get("base_url", ""), "model": ollama.get("model", "")},
+                    "openai_compatible": {
+                        "base_url": compatible.get("base_url", ""),
+                        "model": compatible.get("model", ""),
+                        "api_key_configured": bool(provider_config("openai_compatible", root).get("api_key")),
+                    },
+                })
+                return
+
+            if path == "/api/update/status":
+                self._json(200, updater.status())
+                return
+
             if path == "/api/live/voices":
                 self._json(200, live.voices())
                 return
 
             if path == "/api/models":
                 provider = (query.get("provider") or ["codex"])[0]
-                if provider not in {"codex", "chatgpt", "gemini", "agy"}:
+                if provider not in {"codex", "chatgpt", "gemini", "agy", "ollama", "openai_compatible"}:
                     self._json(400, {"error": "provider must be codex, chatgpt, gemini or agy"})
                     return
-                self._json(200, list_models(provider, root))
+                if provider == "ollama":
+                    self._json(200, list_ollama_models(root))
+                elif provider == "openai_compatible":
+                    config = provider_config(provider, root)
+                    self._json(200, {"provider": provider, "models": ([{"id": config["model"], "name": config["model"], "description": "兼容接口配置模型"}] if config["model"] else []), "default_model": config["model"], "selection_supported": False, "source": "local settings", "error": "" if config["model"] else "请配置模型名"})
+                else:
+                    self._json(200, list_models(provider, root))
                 return
 
             if path == "/api/transcript/results":
@@ -691,6 +765,42 @@ def make_handler(
                     })
                     return
 
+                if path == "/api/settings/models":
+                    data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
+                    values: dict[str, dict[str, str]] = {}
+                    for name in ("ollama", "openai_compatible"):
+                        item = body.get(name, {})
+                        if not isinstance(item, dict):
+                            raise ValueError(f"{name} settings must be an object")
+                        base_url = str(item.get("base_url", "")).strip().rstrip("/")
+                        model_name = validate_model(item.get("model", ""))
+                        if name == "openai_compatible" and base_url and not base_url.startswith(("http://", "https://")):
+                            raise ValueError("openai_compatible base_url must use http or https")
+                        values[name] = {"base_url": base_url, "model": model_name}
+                        if name == "openai_compatible" and "api_key" in item:
+                            api_key = item.get("api_key")
+                            if not isinstance(api_key, str):
+                                raise ValueError("api_key must be a string")
+                            try:
+                                secret_store(data_root).set(api_key.strip())
+                            except SecretStoreError as exc:
+                                raise ValueError(str(exc)) from exc
+                    save_settings(data_root, values)
+                    configured = bool(provider_config("openai_compatible", root).get("api_key"))
+                    self._json(200, {"saved": True, "settings": {
+                        "ollama": values["ollama"],
+                        "openai_compatible": {**values["openai_compatible"], "api_key_configured": configured},
+                    }})
+                    return
+
+                if path == "/api/update/check":
+                    self._json(200, updater.check())
+                    return
+
+                if path == "/api/update/apply":
+                    self._json(200, updater.apply())
+                    return
+
                 if path == "/api/generalize":
                     paragraphs = body.get("paragraphs")
                     if not isinstance(paragraphs, list):
@@ -702,16 +812,31 @@ def make_handler(
                     if not isinstance(provider, str) or not isinstance(instruction, str):
                         raise ValueError("invalid provider or instruction")
                     started = time.monotonic()
-                    result = generalize_paragraphs(
-                        paragraphs,
-                        provider=provider,
-                        candidate_count=candidate_count,
-                        instruction=instruction,
-                        diagnostic_root=root / "runtime" / "text-studio",
-                        project_id=str(body.get("project_id", "")),
-                        paragraph_indexes=body.get("paragraph_indexes"),
-                        model=model,
-                    )
+                    lease = None
+                    try:
+                        if runtime and provider == "ollama":
+                            try:
+                                lease = runtime.acquire(RuntimeStage.REWRITE, "ollama", model or provider_config("ollama", root)["model"])
+                            except RuntimeBusyError as exc:
+                                raise LiveSessionError(str(exc), 409) from exc
+                        result = generalize_paragraphs(
+                            paragraphs,
+                            provider=provider,
+                            candidate_count=candidate_count,
+                            instruction=instruction,
+                            diagnostic_root=Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser() / "text-studio",
+                            project_id=str(body.get("project_id", "")),
+                            paragraph_indexes=body.get("paragraph_indexes"),
+                            model=model,
+                            provider_root=root,
+                        )
+                    finally:
+                        if lease and runtime:
+                            actual_model = model or provider_config("ollama", root)["model"]
+                            if unload_ollama(root, actual_model):
+                                runtime.release(lease)
+                            else:
+                                runtime.release(lease, "Ollama 模型未确认释放")
                     self._json(200, {
                         "provider": provider,
                         "model": model,
@@ -737,7 +862,17 @@ def make_handler(
                         raise ValueError("text is required")
                     if not isinstance(voice, str) or not voice.strip():
                         raise ValueError("voice is required")
-                    result = _tts_preview(text.strip(), voice.strip(), gateway_url)
+                    lease = None
+                    try:
+                        if runtime:
+                            try:
+                                lease = runtime.acquire(RuntimeStage.TTS_PREPARING, "tts-preview", "CosyVoice3")
+                            except RuntimeBusyError as exc:
+                                raise LiveSessionError(str(exc), 409) from exc
+                        result = _tts_preview(text.strip(), voice.strip(), gateway_url)
+                    finally:
+                        if lease and runtime:
+                            runtime.release(lease)
                     self._json(200, result)
                     return
 
@@ -774,6 +909,8 @@ def make_handler(
                 self._json(exc.status, {"error": str(exc)})
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
+            except UpdateError as exc:
+                self._json(409, {"error": str(exc)})
             except RuntimeError as exc:
                 self._json(502, {"error": str(exc)})
             except Exception as exc:

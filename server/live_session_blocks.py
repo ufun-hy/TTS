@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import uuid
+from io import BytesIO
+import time
+import wave
 from typing import Any
 
 if __package__:
@@ -20,6 +23,9 @@ if __package__:
         prepare_live_segments,
         resolve_dynamic_time,
         STOP_TIMEOUT_SECONDS,
+        RuntimeManager,
+        RuntimeBusyError,
+        RuntimeStage,
     )
 else:
     from live_session import (
@@ -35,6 +41,9 @@ else:
         prepare_live_segments,
         resolve_dynamic_time,
         STOP_TIMEOUT_SECONDS,
+        RuntimeManager,
+        RuntimeBusyError,
+        RuntimeStage,
     )
 
 
@@ -184,7 +193,17 @@ class SynthesisBlockLiveSession(LiveSession):
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(block["text"])
+                    synthesis_started = time.monotonic()
                     audio = self._synthesize(speech_text, self.voice)
+                    synthesis_seconds = time.monotonic() - synthesis_started
+                    try:
+                        with wave.open(BytesIO(audio), "rb") as handle:
+                            audio_seconds = handle.getnframes() / max(1, handle.getframerate())
+                    except (OSError, EOFError, wave.Error):
+                        audio_seconds = 0.0
+                    with self._lock:
+                        self._synthesis_seconds += synthesis_seconds
+                        self._audio_seconds += audio_seconds
                     if self._stop.is_set():
                         return
                     self._sequence += 1
@@ -231,8 +250,16 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
 
+        runtime_lease = None
+        if self.runtime:
+            try:
+                runtime_lease = self.runtime.acquire(RuntimeStage.LIVE, "live-session", "CosyVoice3")
+            except RuntimeBusyError as exc:
+                raise LiveSessionError(str(exc), 409) from exc
         with self._lock:
             if self._session:
+                if runtime_lease and self.runtime:
+                    self.runtime.release(runtime_lease)
                 if self._session.status in ("starting", "running", "paused"):
                     raise LiveSessionError("a live session is already running")
                 raise LiveSessionError("reset the previous live session before starting a new one")
@@ -251,7 +278,11 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
+            self._runtime_lease = runtime_lease
             session.start()
+            if runtime_lease:
+                import threading
+                threading.Thread(target=self._release_runtime_after_session, args=(session, runtime_lease), daemon=True, name="live-runtime-release").start()
             return {
                 "session_id": session.session_id,
                 "status": "starting",
@@ -264,9 +295,11 @@ def build_live_manager(
     cache_url: str,
     tts_api_key: str = "",
     cache_api_key: str = "",
+    runtime: RuntimeManager | None = None,
 ) -> SynthesisBlockLiveSessionManager:
     high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
     low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
+    stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
     return SynthesisBlockLiveSessionManager(
         gateway_url,
         cache_url,
@@ -274,4 +307,6 @@ def build_live_manager(
         cache_api_key,
         buffer_high_seconds=high,
         buffer_low_seconds=low,
+        stop_timeout_seconds=stop_timeout,
+        runtime=runtime,
     )

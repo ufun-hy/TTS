@@ -235,3 +235,12 @@ Text Studio 支持接续已有清洗版项目、按完整句子和话题整理�
 
 Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 [Mac 运行链路可靠性任务](docs/mac-runtime-reliability-v1-task.md)。
+
+## 待执行的开发任务
+
+- [Mac 当前链路核查与可靠性修复](docs/mac-runtime-reliability-v1-task.md)：包含 2026-09-15 的只读运行快照、隔离复现和修复边界。
+- [Windows 单机离线版 V1](docs/windows-offline-runtime-v1-task.md)：面向 i5-12400、RTX 3060 Ti 8GB、32GB 内存，包含 GPU POC、阶段调度、播放、打包和更新验收。
+
+以上是交给执行智能体的任务文档，不代表相关改造已经完成或目标硬件已经通过验收。
+
+当前 Windows 分支已包含：单 GPU 文件锁与运行状态、Qwen3-ASR CUDA worker、Ollama/兼容 Chat Completions provider、DPAPI 设置接口、严格 Session 播放、Windows 启动器和更新清单校验。真实 CUDA 合成速度、音质、OBS 两小时稳定性以及正式安装器仍需在目标 Windows 机器上验收。

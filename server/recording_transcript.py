@@ -14,6 +14,7 @@ import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
+import platform
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +24,8 @@ sys.path.insert(0, str(ROOT))
 from recording_transcript.results import save_result, load_result, list_results
 from recording_transcript.pipeline import TranscriptError, transcribe_recording
 from recording_transcript.qwen_asr import MODEL_DIRECTORY, readiness
+from recording_transcript.qwen_asr_windows import MODEL_DIRECTORY as WINDOWS_MODEL_DIRECTORY
+from local_runtime import FileGpuLease
 
 
 SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4"}
@@ -63,6 +66,8 @@ class TranscriptJobStore:
         self._jobs: dict[str, TranscriptJob] = {}
         self._lock = threading.Lock()
         self._asr_lock = threading.Lock()
+        lock_path = os.environ.get("AI_LIVE_STUDIO_GPU_LOCK", "") if os.environ.get("WINDOWS_SINGLE_MACHINE") == "1" else ""
+        self._gpu_lease = FileGpuLease(lock_path, "asr", "Qwen3-ASR-1.7B", "ASR") if lock_path else None
 
     def create(self, filename: str, size: int, upload_path: Path) -> TranscriptJob:
         job = TranscriptJob(uuid.uuid4().hex, filename, size, upload_path, updated_at=time.time())
@@ -92,12 +97,19 @@ class TranscriptJobStore:
         try:
             # Serialize local GPU jobs and reuse the loaded Qwen model.
             with self._asr_lock:
-                final_text = transcribe_recording(
-                    job.upload_path,
-                    self.project_root,
-                    self.model,
-                    on_stage=lambda stage: self._set_stage(job, stage),
-                )
+                if self._gpu_lease and not self._gpu_lease.acquire():
+                    current = FileGpuLease.read(self._gpu_lease.path)
+                    raise TranscriptError(f"GPU 正忙：{current.get('owner', 'unknown')} 正在运行")
+                try:
+                    final_text = transcribe_recording(
+                        job.upload_path,
+                        self.project_root,
+                        self.model,
+                        on_stage=lambda stage: self._set_stage(job, stage),
+                    )
+                finally:
+                    if self._gpu_lease:
+                        self._gpu_lease.release()
             save_result(self.project_root, job.job_id, job.filename, job.size, final_text)
             with self._lock:
                 job.text = final_text
@@ -256,14 +268,15 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8771)
     parser.add_argument("--model", default=os.environ.get("RECORDING_TRANSCRIPT_MODEL", ""))
     args = parser.parse_args()
-    model = Path(args.model).expanduser() if args.model else ROOT / "runtime" / "models" / "asr" / MODEL_DIRECTORY
+    default_model = WINDOWS_MODEL_DIRECTORY if platform.system() == "Windows" else MODEL_DIRECTORY
+    model = Path(args.model).expanduser() if args.model else ROOT / "runtime" / "models" / "asr" / default_model
     html_path = ROOT / "web" / "recording-transcript.html"
     if not html_path.is_file():
         print(f"Missing {html_path}")
         return 1
     server = RecordingTranscriptServer((args.host, args.port), make_handler(ROOT, model))
     print(f"Recording transcript: http://{args.host}:{args.port}", flush=True)
-    print(f"ASR backend: Qwen3-ASR-1.7B / MLX (Apple GPU)", flush=True)
+    print(f"ASR backend: {readiness(model).get('asr_backend', 'unknown')}", flush=True)
     print(f"ASR model: {model}", flush=True)
     status = readiness(model)
     print(f"ASR status: {'ready' if status['asr_ready'] else status['asr_error']}", flush=True)

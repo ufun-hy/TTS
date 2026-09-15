@@ -93,6 +93,8 @@ class ManagedEngine:
         if self._managed:
             if process is None or self._process_exited(process):
                 return "sleeping"
+            if last_error:
+                return "stop_failed"
             return "starting"
         return "not_ready"
 

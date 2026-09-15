@@ -3,5 +3,8 @@
   "cache_dir": "./cache",
   "poll_interval": 1,
   "api_key": "",
-  "timeout": 5
+  "timeout": 5,
+  "strict_session": false,
+  "session_id": "",
+  "startup_buffer_seconds": 0
 }

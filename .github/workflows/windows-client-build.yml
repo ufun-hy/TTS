@@ -26,6 +26,14 @@ on:
       - "tests/test_voice_prompt.py"
       - "tests/test_wav_compat.py"
       - "tests/test_winmm_smoke.py"
+      - "local_runtime/**"
+      - "recording_transcript/qwen_asr_windows.py"
+      - "recording_transcript/windows_chunks.py"
+      - "recording_transcript/windows_worker.py"
+      - "server/text_studio_http_providers.py"
+      - "scripts/windows-runtime.py"
+      - "scripts/windows-poc/**"
+      - "tests/test_windows_runtime.py"
       - ".github/workflows/windows-client-build.yml"
   workflow_dispatch:
 
@@ -51,7 +59,7 @@ jobs:
 
       - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat tests.test_windows_runtime
 
       - name: Run WinMM smoke test
         shell: pwsh
