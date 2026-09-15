@@ -63,7 +63,7 @@ function Remove-DevelopmentFiles([string]$Packages) {
         Sort-Object FullName -Descending |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
     Get-ChildItem -LiteralPath $Packages -File -Recurse |
-        Where-Object { $_.Extension -in @(".lib", ".pyi", ".pyc", ".pyo") } |
+        Where-Object { $_.Extension -in @(".lib", ".pyc", ".pyo") } |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
 }
 
