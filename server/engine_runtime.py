@@ -49,6 +49,7 @@ class ManagedEngine:
         self._active_requests = 0
         self._last_used = self._clock()
         self._closed = False
+        self._last_error = ""
         self._wake_count = 0
         self._sleep_count = 0
         self._watchdog_stop = threading.Event()
@@ -67,6 +68,7 @@ class ManagedEngine:
             last_used = self._last_used
             wake_count = self._wake_count
             sleep_count = self._sleep_count
+            last_error = self._last_error
         return {
             "state": self.state(),
             "managed": self._managed,
@@ -75,14 +77,20 @@ class ManagedEngine:
             "idle_for_seconds": max(0.0, self._clock() - last_used),
             "wake_count": wake_count,
             "sleep_count": sleep_count,
+            "last_error": last_error,
         }
 
     def state(self) -> str:
+        with self._lock:
+            last_error = self._last_error
+            process = self._process
+        # A failed stop owns the lifecycle until the process is explicitly
+        # observed as exited. A healthy HTTP probe must not hide that error.
+        if last_error:
+            return "stop_failed"
         if self._probe_ready():
             return "ready"
         if self._managed:
-            with self._lock:
-                process = self._process
             if process is None or self._process_exited(process):
                 return "sleeping"
             return "starting"
@@ -103,27 +111,42 @@ class ManagedEngine:
                 self._last_used = self._clock()
 
     def ensure_ready(self) -> bool:
-        if self._probe_ready():
-            with self._lock:
-                self._last_used = self._clock()
-            return False
         if not self._managed:
             raise EngineRuntimeError("CosyVoice engine is not ready")
 
+        # Admission and stop/kill share one lifecycle lock. In particular, a
+        # request cannot use a still-responsive engine while sleep_if_idle()
+        # is waiting for termination to finish.
         with self._start_lock:
+            with self._lock:
+                process = self._process
+                last_error = self._last_error
+            if last_error:
+                if process is None or self._process_exited(process):
+                    with self._lock:
+                        self._process = None
+                        self._last_error = ""
+                    process = None
+                else:
+                    raise EngineRuntimeError(f"CosyVoice engine cannot be reused: {last_error}")
+
             if self._probe_ready():
                 with self._lock:
                     self._last_used = self._clock()
+                    self._last_error = ""
                 return False
 
-            with self._lock:
-                process = self._process
             restarted = False
-            if process is None or self._process_exited(process):
+            if process is not None and self._process_exited(process):
+                with self._lock:
+                    self._process = None
+                process = None
+            if process is None:
                 process = self._launch()
                 with self._lock:
                     self._process = process
                     self._wake_count += 1
+                    self._last_error = ""
                 restarted = True
 
             deadline = self._clock() + self.startup_timeout
@@ -131,6 +154,7 @@ class ManagedEngine:
                 if self._probe_ready():
                     with self._lock:
                         self._last_used = self._clock()
+                        self._last_error = ""
                     return restarted
                 if self._process_exited(process):
                     raise EngineRuntimeError("CosyVoice engine exited before becoming ready")
@@ -147,11 +171,22 @@ class ManagedEngine:
                     return False
                 process = self._process
                 idle_for = self._clock() - self._last_used
-                if process is None or self._process_exited(process) or idle_for < self.idle_seconds:
+                if process is None or idle_for < self.idle_seconds:
                     return False
-                self._process = None
-            self._terminate(process)
+                if self._process_exited(process):
+                    self._process = None
+                    self._last_error = ""
+                    self._sleep_count += 1
+                    return True
+            try:
+                self._terminate(process)
+            except EngineRuntimeError as exc:
+                with self._lock:
+                    self._last_error = str(exc)
+                return False
             with self._lock:
+                self._process = None
+                self._last_error = ""
                 self._sleep_count += 1
             return True
 
@@ -162,9 +197,16 @@ class ManagedEngine:
         with self._start_lock:
             with self._lock:
                 process = self._process
-                self._process = None
             if process is not None and not self._process_exited(process):
-                self._terminate(process)
+                try:
+                    self._terminate(process)
+                except EngineRuntimeError as exc:
+                    with self._lock:
+                        self._last_error = str(exc)
+                    return
+            with self._lock:
+                if process is None or self._process_exited(process):
+                    self._process = None
 
     def _watchdog_loop(self) -> None:
         interval = min(5.0, max(0.25, self.idle_seconds / 4.0))
@@ -231,24 +273,32 @@ class ManagedEngine:
         try:
             return process.poll() is not None
         except Exception:
-            return True
+            # An unreadable process handle is not proof of termination.
+            return False
 
     @staticmethod
     def _terminate(process: Any) -> None:
+        """Terminate a child and verify it exited before returning."""
+        errors: list[str] = []
         try:
             process.terminate()
-        except Exception:
-            return
+        except Exception as exc:
+            errors.append(f"terminate failed: {exc}")
         try:
             process.wait(timeout=10)
-            return
         except Exception:
             pass
+        if ManagedEngine._process_exited(process):
+            return
         try:
             process.kill()
-        except Exception:
-            return
+        except Exception as exc:
+            errors.append(f"kill failed: {exc}")
         try:
             process.wait(timeout=5)
         except Exception:
             pass
+        if ManagedEngine._process_exited(process):
+            return
+        detail = "; ".join(errors) or "process remained alive after terminate and kill"
+        raise EngineRuntimeError(f"CosyVoice engine could not be stopped: {detail}")

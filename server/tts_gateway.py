@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+from dataclasses import dataclass
 import hashlib
 import hmac
 import json
@@ -130,6 +131,15 @@ class VoiceStore:
         return f"{voice_id}|{prompt.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config_mtime}"
 
 
+@dataclass
+class _InflightSynthesis:
+    done: threading.Event
+    error: BaseException | None = None
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+
+
 class TTSResultCache:
     """Persistent synthesis cache keyed by text, voice prompt, and cache revision."""
 
@@ -138,6 +148,7 @@ class TTSResultCache:
         self.voice_store = voice_store
         self.revision = revision
         self._lock = threading.RLock()
+        self._inflight: dict[Path, _InflightSynthesis] = {}
         self._hits = 0
         self._misses = 0
         self.root.mkdir(parents=True, exist_ok=True)
@@ -159,14 +170,36 @@ class TTSResultCache:
 
     def get_or_create(self, text: str, voice: str, producer) -> tuple[bytes, bool]:
         path = self._path(text, voice)
-        with self._lock:
+        while True:
+            with self._lock:
+                inflight = self._inflight.get(path)
+                if inflight is None:
+                    inflight = _InflightSynthesis()
+                    self._inflight[path] = inflight
+                    owner = True
+                else:
+                    owner = False
+            if not owner:
+                # Do not hold the cache lock while another caller synthesizes.
+                # Waiting callers reuse the completed file and never duplicate
+                # a slow model request for the same cache key.
+                inflight.done.wait()
+                if inflight.error is not None:
+                    raise inflight.error
+                continue
+            break
+
+        try:
+            # Disk I/O and synthesis stay outside the statistics lock so health
+            # checks are not delayed by a large WAV or a slow model.
             if path.is_file():
                 try:
                     audio = path.read_bytes()
                 except OSError:
                     audio = b""
                 if audio.startswith(b"RIFF"):
-                    self._hits += 1
+                    with self._lock:
+                        self._hits += 1
                     return audio, True
                 try:
                     path.unlink()
@@ -181,8 +214,16 @@ class TTSResultCache:
             temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
             temporary.write_bytes(audio)
             os.replace(temporary, path)
-            self._misses += 1
+            with self._lock:
+                self._misses += 1
             return audio, False
+        except BaseException as exc:
+            inflight.error = exc
+            raise
+        finally:
+            with self._lock:
+                self._inflight.pop(path, None)
+                inflight.done.set()
 
     def stats(self) -> dict[str, int]:
         with self._lock:

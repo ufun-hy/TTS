@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import threading
 import time
 import unittest
 
@@ -240,6 +241,51 @@ class LiveSessionTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(manager.status()["status"], "failed")
         self.assertIn("tts down", manager.status()["error"])
+
+    def test_stop_reports_stopping_until_worker_exits(self):
+        started = threading.Event()
+        release = threading.Event()
+        session = LiveSession(
+            "stop-state",
+            "default",
+            [{"id": "p1", "text": "测试文本"}],
+            lambda _text, _voice: (started.set(), release.wait(2), b"RIFF")[2],
+            lambda *_args: None,
+            lambda _session_id: {"client_connected": True},
+            stop_timeout_seconds=1,
+        )
+        session.start()
+        self.assertTrue(started.wait(1))
+        session.stop()
+        self.assertEqual(session.status, "stopping")
+        self.assertFalse(session.snapshot().as_dict()["stop_timed_out"])
+        release.set()
+        session._thread.join(2)
+        self.assertFalse(session._thread.is_alive())
+        self.assertEqual(session.status, "stopped")
+
+    def test_stop_timeout_is_reported_without_claiming_completion(self):
+        started = threading.Event()
+        release = threading.Event()
+        session = LiveSession(
+            "stop-timeout",
+            "default",
+            [{"id": "p1", "text": "测试文本"}],
+            lambda _text, _voice: (started.set(), release.wait(2), b"RIFF")[2],
+            lambda *_args: None,
+            lambda _session_id: {"client_connected": True},
+            stop_timeout_seconds=0.01,
+        )
+        session.start()
+        self.assertTrue(started.wait(1))
+        session.stop()
+        time.sleep(0.03)
+        status = session.snapshot().as_dict()
+        self.assertEqual(status["status"], "stopping")
+        self.assertTrue(status["stop_timed_out"])
+        release.set()
+        session._thread.join(2)
+        self.assertEqual(session.status, "stopped")
 
 
 if __name__ == "__main__":

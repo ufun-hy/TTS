@@ -19,6 +19,7 @@ if __package__:
         prepare_candidate_pools,
         prepare_live_segments,
         resolve_dynamic_time,
+        STOP_TIMEOUT_SECONDS,
     )
 else:
     from live_session import (
@@ -33,6 +34,7 @@ else:
         prepare_candidate_pools,
         prepare_live_segments,
         resolve_dynamic_time,
+        STOP_TIMEOUT_SECONDS,
     )
 
 
@@ -201,6 +203,8 @@ class SynthesisBlockLiveSession(LiveSession):
                 if not self._stop.is_set():
                     self.status = "failed"
                     self.error = str(exc)
+        finally:
+            self._finalize_thread()
 
 
 class SynthesisBlockLiveSessionManager(LiveSessionManager):
@@ -244,6 +248,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 candidate_pools=candidate_pools,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
+                stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
             session.start()

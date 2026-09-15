@@ -232,3 +232,6 @@ export AUDIO_CACHE_URL="http://127.0.0.1:8000"
 - 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端为更稳定的 `cpu`；如需实验 Metal，可设置 `COSYVOICE_BACKEND=auto`。
 
 Text Studio 支持接续已有清洗版项目、按完整句子和话题整理话术单元、统一全部候选事实，以及临时/正式项目分离。用法与限制见 [Text Studio 验收说明](docs/text-studio-facts-restore.md#本轮验收候选导入与项目保存)。
+
+Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
+[Mac 运行链路可靠性任务](docs/mac-runtime-reliability-v1-task.md)。

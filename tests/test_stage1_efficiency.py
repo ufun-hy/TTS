@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 import wave
 
@@ -71,6 +72,32 @@ class StageOneEfficiencyTests(unittest.TestCase):
         self.assertEqual(result.speed_factor, 1.0)
         self.assertEqual(result.session_volume, 100.0)
         self.assertEqual(result.session_volume_gain, 0.0)
+
+    def test_cache_stats_do_not_wait_for_slow_synthesis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = TTSResultCache(Path(directory), FakeVoiceStore(), revision="model-v1")
+            started = threading.Event()
+            release = threading.Event()
+            stats_done = threading.Event()
+            result = {}
+
+            def produce():
+                started.set()
+                release.wait(2)
+                return wav_bytes()
+
+            worker = threading.Thread(
+                target=lambda: result.setdefault("value", cache.get_or_create("慢合成", "default", produce)),
+            )
+            worker.start()
+            self.assertTrue(started.wait(1))
+            threading.Thread(target=lambda: (cache.stats(), stats_done.set())).start()
+            self.assertTrue(stats_done.wait(0.2), "cache statistics waited for the producer")
+            release.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(result["value"][1])
+            self.assertTrue(cache.get_or_create("慢合成", "default", lambda: wav_bytes())[1])
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import os
 import random
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -19,7 +20,7 @@ from typing import Any, Callable
 from timeline.tts_client import TTSClient, load_api_key
 
 
-LIVE_STATUSES = ("idle", "starting", "running", "paused", "stopped", "failed")
+LIVE_STATUSES = ("idle", "starting", "running", "paused", "stopping", "stopped", "failed")
 SEGMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 MAX_LIVE_TEXT_CHARS = 1_000_000
 MAX_LIVE_SEGMENT_CHARS = 200  # matches the default TTS Gateway request limit
@@ -28,6 +29,7 @@ DEFAULT_BUFFER_HIGH_SECONDS = 30.0
 DEFAULT_BUFFER_LOW_SECONDS = 12.0
 BUFFER_POLL_SECONDS = 0.25
 CACHE_ENQUEUE_TIMEOUT_SECONDS = 30.0
+STOP_TIMEOUT_SECONDS = 120.0
 VOICE_LABELS = {
     "default": "默认声音",
     "speaker_a": "主播A",
@@ -207,6 +209,8 @@ class LiveSnapshot:
     client_buffered_seconds: float = 0.0
     client_buffered_segments: int = 0
     backpressure_active: bool = False
+    stop_timed_out: bool = False
+    stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -223,6 +227,8 @@ class LiveSnapshot:
             "client_buffered_seconds": self.client_buffered_seconds,
             "client_buffered_segments": self.client_buffered_segments,
             "backpressure_active": self.backpressure_active,
+            "stop_timed_out": self.stop_timed_out,
+            "stop_timeout_seconds": self.stop_timeout_seconds,
             "error": self.error,
             "finished": self.finished,
             "round_number": self.round_number,
@@ -244,6 +250,7 @@ class LiveSession:
         candidate_pools: list[dict[str, Any]] | None = None,
         buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
         buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
+        stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
     ) -> None:
         self.session_id = session_id
         self.voice = voice
@@ -256,6 +263,12 @@ class LiveSession:
         self.playback_speed = playback_speed
         self.volume = volume
         self.buffer_high_seconds, self.buffer_low_seconds = _buffer_thresholds(buffer_high_seconds, buffer_low_seconds)
+        try:
+            self.stop_timeout_seconds = float(stop_timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stop timeout must be numeric") from exc
+        if not math.isfinite(self.stop_timeout_seconds) or self.stop_timeout_seconds <= 0:
+            raise ValueError("stop timeout must be positive")
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -272,6 +285,7 @@ class LiveSession:
         self.round_number = 0
         self.error = ""
         self.finished = False
+        self._stop_requested_at: float | None = None
 
     def start(self) -> None:
         self._thread.start()
@@ -294,7 +308,10 @@ class LiveSession:
         with self._lock:
             if self.status in ("stopped", "failed"):
                 return
-            self.status = "stopped"
+            if self.status == "stopping":
+                return
+            self.status = "stopping"
+            self._stop_requested_at = time.monotonic()
             self._stop.set()
             self._resume.set()
 
@@ -307,6 +324,13 @@ class LiveSession:
             finished = self.finished
             round_number = self.round_number
             backpressure_active = self._backpressure_active
+            stop_requested_at = self._stop_requested_at
+            stop_timeout_seconds = self.stop_timeout_seconds
+        stop_timed_out = bool(
+            status == "stopping"
+            and stop_requested_at is not None
+            and time.monotonic() - stop_requested_at >= stop_timeout_seconds
+        )
         cache = self._cache_status(self.session_id)
         client_state = cache.get("client_state") if isinstance(cache.get("client_state"), dict) else {}
         return LiveSnapshot(
@@ -326,7 +350,16 @@ class LiveSession:
             float(client_state.get("buffered_seconds", 0) or 0),
             int(client_state.get("buffered_segments", 0) or 0),
             backpressure_active,
+            stop_timed_out,
+            stop_timeout_seconds,
         )
+
+    def _finalize_thread(self) -> None:
+        """Publish stopped only after the worker has actually returned."""
+        with self._lock:
+            if self.status == "stopping":
+                self.status = "stopped"
+                self.finished = False
 
     def _round_segments(self) -> list[dict[str, str]]:
         if not self.looping:
@@ -430,6 +463,8 @@ class LiveSession:
                 if not self._stop.is_set():
                     self.status = "failed"
                     self.error = str(exc)
+        finally:
+            self._finalize_thread()
 
 
 class LiveSessionManager:
@@ -447,6 +482,7 @@ class LiveSessionManager:
         cache_cleanup: Callable[[str], dict[str, Any]] | None = None,
         buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
         buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
+        stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
     ) -> None:
         self.gateway_url = gateway_url.rstrip("/")
         self.cache_url = cache_url.rstrip("/")
@@ -457,6 +493,12 @@ class LiveSessionManager:
         self._cache_status_impl = cache_status
         self._cache_cleanup_impl = cache_cleanup
         self.buffer_high_seconds, self.buffer_low_seconds = _buffer_thresholds(buffer_high_seconds, buffer_low_seconds)
+        try:
+            self.stop_timeout_seconds = float(stop_timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("stop timeout must be numeric") from exc
+        if not math.isfinite(self.stop_timeout_seconds) or self.stop_timeout_seconds <= 0:
+            raise ValueError("stop timeout must be positive")
         self._lock = threading.RLock()
         self._session: LiveSession | None = None
 
@@ -491,6 +533,7 @@ class LiveSessionManager:
                 candidate_pools=candidate_pools,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
+                stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
             session.start()
@@ -623,6 +666,7 @@ class LiveSessionManager:
 def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "") -> LiveSessionManager:
     high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
     low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
+    stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
     return LiveSessionManager(
         gateway_url,
         cache_url,
@@ -630,4 +674,5 @@ def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", 
         cache_api_key,
         buffer_high_seconds=high,
         buffer_low_seconds=low,
+        stop_timeout_seconds=stop_timeout,
     )

@@ -2,11 +2,12 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 import wave
 
 from audio_cache.manager import AudioCacheManager
-from server.engine_runtime import ManagedEngine
+from server.engine_runtime import EngineRuntimeError, ManagedEngine
 
 
 def wav_bytes(duration=0.2, rate=8000):
@@ -50,6 +51,20 @@ class FakeProcess:
 
     def kill(self):
         self.terminate()
+
+
+class StuckProcess:
+    def poll(self):
+        return None
+
+    def terminate(self):
+        pass
+
+    def kill(self):
+        pass
+
+    def wait(self, timeout=None):
+        raise TimeoutError(timeout)
 
 
 class StageThreeEfficiencyTests(unittest.TestCase):
@@ -155,6 +170,96 @@ class StageThreeEfficiencyTests(unittest.TestCase):
             stats = engine.stats()
             self.assertEqual(stats["wake_count"], 2)
             self.assertEqual(stats["sleep_count"], 1)
+        finally:
+            engine.close()
+
+    def test_failed_engine_stop_keeps_process_and_never_reports_ready(self):
+        clock = FakeClock()
+        process = StuckProcess()
+        engine = ManagedEngine(
+            "http://engine",
+            command=["unused"],
+            probe=lambda: True,
+            idle_seconds=4,
+            clock=clock,
+        )
+        engine._process = process
+        clock.advance(5)
+        try:
+            self.assertFalse(engine.sleep_if_idle())
+            self.assertIs(engine._process, process)
+            self.assertEqual(engine.state(), "stop_failed")
+            self.assertIn("could not be stopped", engine.stats()["last_error"])
+            with self.assertRaises(EngineRuntimeError):
+                engine.ensure_ready()
+        finally:
+            engine.close()
+
+    def test_terminate_escalates_and_verifies_exit(self):
+        state = {"alive": True}
+
+        class EscalatingProcess:
+            def poll(self):
+                return None if state["alive"] else 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                if state["alive"]:
+                    raise TimeoutError(timeout)
+                return 0
+
+            def kill(self):
+                state["alive"] = False
+
+        ManagedEngine._terminate(EscalatingProcess())
+        self.assertFalse(state["alive"])
+
+    def test_request_admission_waits_for_engine_stop_to_finish(self):
+        state = {"alive": True, "stop_started": threading.Event(), "release": threading.Event()}
+
+        class BlockingProcess:
+            def poll(self):
+                return None if state["alive"] else 0
+
+            def terminate(self):
+                state["stop_started"].set()
+                state["release"].wait(2)
+                state["alive"] = False
+
+            def wait(self, timeout=None):
+                if state["alive"]:
+                    raise TimeoutError(timeout)
+                return 0
+
+            def kill(self):
+                state["alive"] = False
+
+        engine = ManagedEngine(
+            "http://engine",
+            launcher=lambda: BlockingProcess(),
+            probe=lambda: True,
+            idle_seconds=1,
+        )
+        engine._process = BlockingProcess()
+        engine._last_used -= 2
+        callback_called = threading.Event()
+        stop_thread = threading.Thread(target=engine.sleep_if_idle)
+        stop_thread.start()
+        self.assertTrue(state["stop_started"].wait(1))
+        request_thread = threading.Thread(
+            target=lambda: engine.run(lambda _restarted: callback_called.set()),
+        )
+        request_thread.start()
+        self.assertFalse(callback_called.wait(0.15), "request entered while engine termination was in progress")
+        state["release"].set()
+        stop_thread.join(2)
+        request_thread.join(2)
+        try:
+            self.assertFalse(stop_thread.is_alive())
+            self.assertFalse(request_thread.is_alive())
+            self.assertTrue(callback_called.is_set())
         finally:
             engine.close()
 

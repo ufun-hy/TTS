@@ -5,6 +5,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime
 import fcntl
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -33,6 +34,8 @@ SERVICES = (
     Service('text-studio', 'Text Studio', 8770, '/api/health', ('server/text_studio_entry.py', 'server/text_studio.py'), 'com.ufun.tts.text-studio'),
     Service('recording-transcript', 'Transcript', 8771, '/api/health', ('server/recording_transcript.py',), 'com.ufun.tts.recording-transcript'),
 )
+TTS_PORT = 8765
+TTS_SERVICE = Service('tts-gateway', 'TTS Gateway', TTS_PORT, '/health', ('server/tts_gateway.py',), 'com.ufun.tts')
 
 
 def run(*args: str) -> subprocess.CompletedProcess:
@@ -68,6 +71,92 @@ def owns_job(root: Path, service: Service, info: dict) -> bool:
 def listener_pids(port: int) -> list[int]:
     result = run('/usr/sbin/lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-t')
     return sorted({int(pid) for pid in result.stdout.split() if pid.isdigit()})
+
+
+def listener_details(port: int) -> list[dict[str, object]]:
+    """Return TCP listener bindings without exposing process environments."""
+    result = run('/usr/sbin/lsof', '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-Fpcn')
+    details: list[dict[str, object]] = []
+    current: dict[str, object] = {}
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        field, value = line[0], line[1:]
+        if field == 'p':
+            if current.get('pid') is not None:
+                details.append(current)
+            current = {'pid': int(value) if value.isdigit() else 0}
+        elif field == 'c':
+            current['command'] = value
+        elif field == 'n':
+            current['address'] = value
+    if current.get('pid') is not None:
+        details.append(current)
+    return details
+
+
+def process_cwd(pid: int) -> str:
+    result = run('/usr/sbin/lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn')
+    for line in result.stdout.splitlines():
+        if line.startswith('n'):
+            return line[1:]
+    return ''
+
+
+def tts_diagnostic(root: Path) -> dict[str, object]:
+    """Inspect the gateway listener and health without changing services."""
+    listeners: list[dict[str, object]] = []
+    for item in listener_details(TTS_PORT):
+        pid = int(item.get('pid', 0) or 0)
+        command = run('/bin/ps', '-p', str(pid), '-o', 'command=').stdout.strip() if pid else ''
+        start_time = run('/bin/ps', '-p', str(pid), '-o', 'lstart=').stdout.strip() if pid else ''
+        owned = bool(pid and owns_process(root, TTS_SERVICE, pid))
+        listeners.append({
+            **item,
+            'pid': pid,
+            'owned': owned,
+            'command': command,
+            'cwd': process_cwd(pid) if pid else '',
+            'started_at': start_time,
+        })
+    health: dict[str, object] = {'ok': False, 'body': {}}
+    try:
+        with urlopen(f'http://127.0.0.1:{TTS_PORT}/health', timeout=2) as response:
+            body = response.read().decode('utf-8', errors='replace')
+            try:
+                decoded = json.loads(body)
+            except ValueError:
+                decoded = {}
+            health = {'ok': response.status == 200, 'body': decoded if isinstance(decoded, dict) else {}}
+    except (OSError, URLError, HTTPError) as exc:
+        health = {'ok': False, 'error': str(exc)}
+    owned = [item for item in listeners if item.get('owned')]
+    foreign = [item for item in listeners if not item.get('owned')]
+    return {
+        'port': TTS_PORT,
+        'listeners': listeners,
+        'project_listener_count': len(owned),
+        'foreign_listener_count': len(foreign),
+        'foreign_conflict': bool(owned and foreign),
+        'health': health,
+        'ready': len(owned) == 1 and not foreign and bool(health.get('ok')),
+    }
+
+
+def status_tts(root: Path) -> bool:
+    diagnostic = tts_diagnostic(root)
+    listener_text = ','.join(
+        f"{item.get('address', '?')} pid={item.get('pid', '?')} {'project' if item.get('owned') else 'foreign'}"
+        for item in diagnostic['listeners']
+    ) or '-'
+    health = diagnostic['health']
+    print(f"TTS Gateway: {'READY' if diagnostic['ready'] else 'DOWN'} port={TTS_PORT} "
+          f"health={'OK' if health.get('ok') else 'DOWN'} listeners={listener_text} "
+          f"foreign-conflict={'yes' if diagnostic['foreign_conflict'] else 'no'}", flush=True)
+    body = health.get('body')
+    if isinstance(body, dict):
+        print(f"CosyVoice: {str(body.get('tts', 'UNKNOWN')).upper()}", flush=True)
+    return bool(diagnostic['ready'])
 
 
 def owns_process(root: Path, service: Service, pid: int) -> bool:
@@ -247,7 +336,9 @@ def main() -> int:
     parser.add_argument('action', choices=('preflight', 'start', 'stop', 'status'))
     args = parser.parse_args()
     if args.action == 'status':
-        return 0 if all([status(ROOT, service) for service in SERVICES]) else 1
+        services_ok = all([status(ROOT, service) for service in SERVICES])
+        tts_ok = status_tts(ROOT)
+        return 0 if services_ok and tts_ok else 1
     try:
         if args.action in ('preflight', 'start'):
             preflight(ROOT)

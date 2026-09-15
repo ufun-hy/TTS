@@ -109,3 +109,38 @@ class StackServicesTests(unittest.TestCase):
         log = (self.root / 'runtime/logs/stack-lifecycle.log').read_text()
         self.assertIn('first', log)
         self.assertIn('second', log)
+
+    def test_listener_details_preserve_bindings_and_pids(self):
+        output = "p123\ncPython\nn127.0.0.1:8765\np456\ncPython\nn*:8765\n"
+        with patch.object(
+            stack,
+            'run',
+            return_value=subprocess.CompletedProcess([], 0, output, ''),
+        ):
+            self.assertEqual(stack.listener_details(8765), [
+                {"pid": 123, "command": "Python", "address": "127.0.0.1:8765"},
+                {"pid": 456, "command": "Python", "address": "*:8765"},
+            ])
+
+    def test_tts_diagnostic_parses_a_healthy_response(self):
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"tts":"sleeping"}'
+
+        with patch.object(stack, 'listener_details', return_value=[
+            {"pid": 123, "command": "Python", "address": "*:8765"},
+        ]), patch.object(stack, 'owns_process', return_value=True), \
+             patch.object(stack, 'process_cwd', return_value='/tmp/tts'), \
+             patch.object(stack, 'run', return_value=subprocess.CompletedProcess([], 0, 'python server/tts_gateway.py', '')), \
+             patch.object(stack, 'urlopen', return_value=Response()):
+            diagnostic = stack.tts_diagnostic(self.root)
+        self.assertTrue(diagnostic["ready"])
+        self.assertEqual(diagnostic["health"]["body"]["tts"], "sleeping")
