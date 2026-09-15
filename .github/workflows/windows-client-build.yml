@@ -42,7 +42,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller
-          choco install innosetup -y --no-progress
+          choco install innosetup ffmpeg -y --no-progress
 
       - name: Run Windows runtime tests
         shell: pwsh
