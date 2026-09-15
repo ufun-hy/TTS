@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 from recording_transcript.results import save_result, load_result, list_results
 from recording_transcript.pipeline import TranscriptError, transcribe_recording
 from recording_transcript.qwen_asr import MODEL_DIRECTORY, readiness
-from recording_transcript.qwen_asr_windows import MODEL_DIRECTORY as WINDOWS_MODEL_DIRECTORY
+from recording_transcript.qwen_asr_windows import MODEL_DIRECTORY as WINDOWS_MODEL_DIRECTORY, WorkerLifecycleError
 from local_runtime import FileGpuLease
 
 
@@ -94,6 +94,7 @@ class TranscriptJobStore:
             job.updated_at = time.time()
 
     def _run(self, job: TranscriptJob) -> None:
+        worker_exit_confirmed = True
         try:
             # Serialize local GPU jobs and reuse the loaded Qwen model.
             with self._asr_lock:
@@ -107,8 +108,11 @@ class TranscriptJobStore:
                         self.model,
                         on_stage=lambda stage: self._set_stage(job, stage),
                     )
+                except Exception as exc:
+                    worker_exit_confirmed = _worker_exit_confirmed(exc)
+                    raise
                 finally:
-                    if self._gpu_lease:
+                    if self._gpu_lease and worker_exit_confirmed:
                         self._gpu_lease.release()
             save_result(self.project_root, job.job_id, job.filename, job.size, final_text)
             with self._lock:
@@ -126,11 +130,24 @@ class TranscriptJobStore:
                 job.stage = "failed"
                 job.updated_at = time.time()
         finally:
-            try:
-                job.upload_path.unlink(missing_ok=True)
-                job.upload_path.parent.rmdir()
-            except OSError:
-                pass
+            if worker_exit_confirmed:
+                try:
+                    job.upload_path.unlink(missing_ok=True)
+                    job.upload_path.parent.rmdir()
+                except OSError:
+                    pass
+
+
+def _worker_exit_confirmed(error: BaseException) -> bool:
+    """Do not drop ASR ownership when the CUDA child may still be alive."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, WorkerLifecycleError):
+            return bool(current.worker_exited)
+        current = current.__cause__
+    return True
 
 
 def _safe_filename(raw: str) -> str:

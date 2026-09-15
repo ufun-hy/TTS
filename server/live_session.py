@@ -465,13 +465,13 @@ class LiveSession:
                     with self._lock:
                         self._synthesis_seconds += synthesis_seconds
                         self._audio_seconds += audio_seconds
-                    if self._stop.is_set():
-                        return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
                     self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
                     with self._lock:
                         self.generated_segments += 1
+                    if self._stop.is_set():
+                        return
                 if not self.looping:
                     break
             with self._lock:
@@ -503,6 +503,8 @@ class LiveSessionManager:
         buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
         buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
+        runtime: RuntimeManager | None = None,
+        confirm_tts_release: Callable[[], bool] | None = None,
     ) -> None:
         self.gateway_url = gateway_url.rstrip("/")
         self.cache_url = cache_url.rstrip("/")
@@ -522,7 +524,9 @@ class LiveSessionManager:
         self._lock = threading.RLock()
         self._session: LiveSession | None = None
         self.runtime = runtime
+        self._confirm_tts_release = confirm_tts_release
         self._runtime_lease: RuntimeLease | None = None
+        self._runtime_release_lock = threading.Lock()
 
     def start(self, voice: str, segments: Any, playback_speed: Any = 1.0, volume: Any = 100.0) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
@@ -574,11 +578,26 @@ class LiveSessionManager:
 
     def _release_runtime_after_session(self, session: LiveSession, lease: RuntimeLease) -> None:
         session._thread.join()
-        released = self.runtime.release(lease) if self.runtime else True
+        released = self._release_runtime_lease(lease)
         if released:
             with self._lock:
                 if self._runtime_lease == lease:
                     self._runtime_lease = None
+
+    def _release_runtime_lease(self, lease: RuntimeLease) -> bool:
+        if not self.runtime:
+            return True
+        with self._runtime_release_lock:
+            with self._lock:
+                if self._runtime_lease != lease:
+                    return True
+            if self._confirm_tts_release:
+                try:
+                    if not self._confirm_tts_release():
+                        return self.runtime.release(lease, "TTS engine did not confirm process exit")
+                except Exception as exc:
+                    return self.runtime.release(lease, f"TTS engine stop confirmation failed: {exc}")
+            return self.runtime.release(lease)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -600,6 +619,15 @@ class LiveSessionManager:
     def stop(self) -> dict[str, Any]:
         session = self._require_session()
         session.stop()
+        with self._lock:
+            lease = self._runtime_lease
+        if lease and self.runtime:
+            try:
+                self.runtime.request_stop(lease)
+            except RuntimeError:
+                # The completion watcher may have released it just before the
+                # stop request reached this thread.
+                pass
         return self.status()
 
     def reset(self) -> dict[str, Any]:
@@ -614,9 +642,12 @@ class LiveSessionManager:
             self._cache_cleanup(session.session_id)
         with self._lock:
             lease = self._runtime_lease
-            self._runtime_lease = None
         if lease and self.runtime:
-            self.runtime.release(lease)
+            if not self._release_runtime_lease(lease):
+                raise LiveSessionError("TTS engine is still stopping; retry reset shortly")
+            with self._lock:
+                if self._runtime_lease == lease:
+                    self._runtime_lease = None
         with self._lock:
             self._session = None
         return self.status()
@@ -709,7 +740,14 @@ class LiveSessionManager:
             raise RuntimeError(detail or f"HTTP {exc.code}") from exc
 
 
-def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "", runtime: RuntimeManager | None = None) -> LiveSessionManager:
+def build_live_manager(
+    gateway_url: str,
+    cache_url: str,
+    tts_api_key: str = "",
+    cache_api_key: str = "",
+    runtime: RuntimeManager | None = None,
+    confirm_tts_release: Callable[[], bool] | None = None,
+) -> LiveSessionManager:
     high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
     low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
     stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
@@ -722,4 +760,5 @@ def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", 
         buffer_low_seconds=low,
         stop_timeout_seconds=stop_timeout,
         runtime=runtime,
+        confirm_tts_release=confirm_tts_release,
     )

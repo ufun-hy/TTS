@@ -8,6 +8,7 @@ import wave
 
 from audio_cache.manager import AudioCacheManager
 from server.engine_runtime import EngineRuntimeError, ManagedEngine
+from local_runtime import FileGpuLease
 
 
 def wav_bytes(duration=0.2, rate=8000):
@@ -215,6 +216,56 @@ class StageThreeEfficiencyTests(unittest.TestCase):
 
         ManagedEngine._terminate(EscalatingProcess())
         self.assertFalse(state["alive"])
+
+    def test_tts_stop_failure_retains_gpu_owner_and_blocks_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gpu-owner.json"
+            lease = FileGpuLease(path, "tts", "CosyVoice3", "TTS_PREPARING")
+            engine = ManagedEngine(
+                "http://engine",
+                launcher=lambda: StuckProcess(),
+                probe=lambda: True,
+                idle_seconds=1,
+                gpu_lease=lease,
+            )
+            engine._acquire_gpu_lease()
+            engine._process = StuckProcess()
+            engine._last_used -= 2
+            try:
+                self.assertFalse(engine.sleep_if_idle())
+                self.assertEqual(engine.state(), "stop_failed")
+                self.assertEqual(FileGpuLease.read(path)["owner"], "tts")
+                with self.assertRaises(EngineRuntimeError):
+                    engine.ensure_ready()
+            finally:
+                engine.close()
+
+    def test_tts_gpu_owner_releases_only_after_process_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gpu-owner.json"
+            state = {"ready": False}
+
+            def launch():
+                state["ready"] = True
+                return FakeProcess(state)
+
+            lease = FileGpuLease(path, "tts", "CosyVoice3", "TTS_PREPARING")
+            engine = ManagedEngine(
+                "http://engine",
+                launcher=launch,
+                probe=lambda: state["ready"],
+                idle_seconds=1,
+                startup_timeout=1,
+                gpu_lease=lease,
+            )
+            try:
+                engine.run(lambda _restarted: None)
+                self.assertEqual(FileGpuLease.read(path)["owner"], "tts")
+                engine._last_used -= 2
+                self.assertTrue(engine.sleep_if_idle())
+                self.assertEqual(FileGpuLease.read(path), {})
+            finally:
+                engine.close()
 
     def test_request_admission_waits_for_engine_stop_to_finish(self):
         state = {"alive": True, "stop_started": threading.Event(), "release": threading.Event()}

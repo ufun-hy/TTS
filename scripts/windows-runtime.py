@@ -71,7 +71,6 @@ def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str,
     ollama = bin_dir / ("ollama.exe" if os.name == "nt" else "ollama")
     return {
         "ollama": ([str(ollama), "serve"], bin_dir),
-        "cosyvoice-engine": ([str(engine), "--model", str(tts_model), "--backend", "cuda", "--host", "127.0.0.1", "--port", "8766", "--concurrency", "1"], bin_dir),
         "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", "cuda", "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),
         "audio-cache": ([str(python), str(ROOT / "scripts" / "audio-cache-server.py"), "--host", "127.0.0.1", "--port", "8000", "--root", str(data / "audio-cache")], ROOT),
         "recording-transcript": ([str(python), str(ROOT / "server" / "recording_transcript.py"), "--host", "127.0.0.1", "--port", "8771", "--model", str(asr_model)], ROOT),
@@ -144,7 +143,7 @@ def start(args: argparse.Namespace) -> int:
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     started: dict[str, int] = {}
     try:
-        for name in ("ollama", "cosyvoice-engine", "tts-gateway", "audio-cache", "recording-transcript", "text-studio", "audio-client"):
+        for name in ("ollama", "tts-gateway", "audio-cache", "recording-transcript", "text-studio", "audio-client"):
             argv, cwd = entries[name]
             log = (logs / f"{name}.log").open("ab")
             try:

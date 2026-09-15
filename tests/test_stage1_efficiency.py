@@ -1,12 +1,16 @@
 import io
 from pathlib import Path
+import json
+from queue import Queue
 import tempfile
 import threading
 import unittest
 import wave
+from urllib.request import urlopen
 
 from audio_cache.processing import AudioProcessingConfig, AudioProcessor
-from server.tts_gateway import TTSResultCache
+from server.engine_runtime import ManagedEngine
+from server.tts_gateway import Gateway, RateLimiter, TTSResultCache, make_handler
 
 
 def wav_bytes(duration=0.25, rate=8000):
@@ -98,6 +102,43 @@ class StageOneEfficiencyTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertFalse(result["value"][1])
             self.assertTrue(cache.get_or_create("慢合成", "default", lambda: wav_bytes())[1])
+
+    def test_gateway_health_does_not_wait_for_slow_synthesis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = TTSResultCache(Path(directory), FakeVoiceStore(), revision="model-v1")
+            started = threading.Event()
+            release = threading.Event()
+            producer = threading.Thread(
+                target=lambda: cache.get_or_create(
+                    "慢合成", "default", lambda: (started.set(), release.wait(2), wav_bytes())[2]
+                )
+            )
+            producer.start()
+            self.assertTrue(started.wait(1))
+
+            worker_stop = threading.Event()
+            worker = threading.Thread(target=worker_stop.wait)
+            worker.start()
+            engine = ManagedEngine("http://engine", probe=lambda: True)
+            server = Gateway(("127.0.0.1", 0), make_handler(
+                Queue(), FakeVoiceStore(), RateLimiter(30), "key", engine,
+                lambda _text, _voice: wav_bytes(), 200, cache,
+            ))
+            server.worker_thread = worker  # type: ignore[attr-defined]
+            serving = threading.Thread(target=server.serve_forever)
+            serving.start()
+            try:
+                with urlopen(f"http://127.0.0.1:{server.server_port}/health", timeout=0.5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(json.load(response)["status"], "ok")
+            finally:
+                server.shutdown()
+                server.server_close()
+                serving.join(1)
+                release.set()
+                producer.join(2)
+                worker_stop.set()
+                worker.join(1)
 
 
 if __name__ == "__main__":

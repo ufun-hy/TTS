@@ -29,6 +29,11 @@ try:
 except ModuleNotFoundError:  # direct execution: python server/tts_gateway.py
     from engine_runtime import EngineRuntimeError, ManagedEngine
 
+try:
+    from local_runtime import FileGpuLease
+except ModuleNotFoundError:  # pragma: no cover - only relevant to isolated imports
+    FileGpuLease = None  # type: ignore[assignment,misc]
+
 
 VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -378,6 +383,9 @@ def make_handler(
                     "tts_cache": result_cache.stats() if result_cache else {"hits": 0, "misses": 0},
                 })
                 return
+            if self.path == "/runtime/status":
+                self._json(200, engine_runtime.stats())
+                return
             if self.path == "/voices":
                 if not self._authorized():
                     self._json(401, {"success": False, "error": "unauthorized"})
@@ -391,6 +399,18 @@ def make_handler(
             self._json(404, {"success": False, "error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/runtime/stop":
+                if self.client_address[0] not in ("127.0.0.1", "::1") or not self._authorized():
+                    self._json(403, {"success": False, "error": "local_only"})
+                    return
+                stopped = engine_runtime.stop_now()
+                self._json(200 if stopped else 409, {
+                    "success": stopped,
+                    "stopped": stopped,
+                    "state": engine_runtime.state(),
+                    "engine": engine_runtime.stats(),
+                })
+                return
             if self.path not in ("/speak", "/synthesize"):
                 self._json(404, {"success": False, "error": "not_found"})
                 return
@@ -544,6 +564,18 @@ def main() -> int:
         log_path=args.engine_log if engine_command else None,
         idle_seconds=args.engine_idle_seconds,
         startup_timeout=args.engine_startup_timeout,
+        gpu_lease=(
+            FileGpuLease(
+                Path(os.environ["AI_LIVE_STUDIO_GPU_LOCK"]),
+                "tts",
+                "CosyVoice3",
+                "TTS_PREPARING",
+            )
+            if FileGpuLease is not None
+            and os.environ.get("WINDOWS_SINGLE_MACHINE") == "1"
+            and os.environ.get("AI_LIVE_STUDIO_GPU_LOCK")
+            else None
+        ),
     )
 
     def synthesize_text(text: str, voice: str) -> bytes:

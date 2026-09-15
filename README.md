@@ -244,3 +244,5 @@ Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 以上是交给执行智能体的任务文档，不代表相关改造已经完成或目标硬件已经通过验收。
 
 当前 Windows 分支已包含：单 GPU 文件锁与运行状态、Qwen3-ASR CUDA worker、Ollama/兼容 Chat Completions provider、DPAPI 设置接口、严格 Session 播放、Windows 启动器和更新清单校验。真实 CUDA 合成速度、音质、OBS 两小时稳定性以及正式安装器仍需在目标 Windows 机器上验收。
+
+Windows 单机模式由 TTS Gateway 内的 `ManagedEngine` 作为唯一 CosyVoice 进程生命周期来源；启动器不再另起独立 CosyVoice 进程。GPU owner 只在引擎/worker 真实退出并确认释放后归还，停止失败会保持 `ERROR`/owner 状态。

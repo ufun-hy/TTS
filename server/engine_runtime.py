@@ -32,6 +32,8 @@ class ManagedEngine:
         probe: Optional[Callable[[], bool]] = None,
         launcher: Optional[Callable[[], Any]] = None,
         clock: Callable[[], float] = time.monotonic,
+        gpu_lease: Any = None,
+        borrowed_gpu_owners: tuple[str, ...] = ("tts", "tts-preview", "live-session"),
     ) -> None:
         self.engine_url = engine_url.rstrip("/")
         self.command = list(command or [])
@@ -42,6 +44,10 @@ class ManagedEngine:
         self._probe_impl = probe
         self._launcher_impl = launcher
         self._clock = clock
+        self._gpu_lease = gpu_lease
+        self._borrowed_gpu_owners = tuple(borrowed_gpu_owners)
+        self._gpu_lease_held = False
+        self._gpu_lease_owned = False
         self._managed = bool(self.command or self._launcher_impl)
         self._lock = threading.RLock()
         self._start_lock = threading.Lock()
@@ -69,6 +75,7 @@ class ManagedEngine:
             wake_count = self._wake_count
             sleep_count = self._sleep_count
             last_error = self._last_error
+            gpu_lease_held = self._gpu_lease_held
         return {
             "state": self.state(),
             "managed": self._managed,
@@ -78,6 +85,7 @@ class ManagedEngine:
             "wake_count": wake_count,
             "sleep_count": sleep_count,
             "last_error": last_error,
+            "gpu_lease_held": gpu_lease_held,
         }
 
     def state(self) -> str:
@@ -125,6 +133,8 @@ class ManagedEngine:
                 last_error = self._last_error
             if last_error:
                 if process is None or self._process_exited(process):
+                    if not self._release_gpu_lease():
+                        raise EngineRuntimeError(f"CosyVoice engine cannot be reused: {last_error}")
                     with self._lock:
                         self._process = None
                         self._last_error = ""
@@ -171,44 +181,52 @@ class ManagedEngine:
             with self._lock:
                 if self._active_requests:
                     return False
-                process = self._process
                 idle_for = self._clock() - self._last_used
-                if process is None or idle_for < self.idle_seconds:
+                if self._process is None or idle_for < self.idle_seconds:
                     return False
-                if self._process_exited(process):
-                    self._process = None
-                    self._last_error = ""
-                    self._sleep_count += 1
-                    return True
-            try:
-                self._terminate(process)
-            except EngineRuntimeError as exc:
-                with self._lock:
-                    self._last_error = str(exc)
-                return False
-            with self._lock:
-                self._process = None
-                self._last_error = ""
-                self._sleep_count += 1
+            return self._stop_locked()
+
+    def stop_now(self) -> bool:
+        """Stop the managed engine and release its GPU lease only after exit."""
+        if not self._managed:
             return True
+        with self._start_lock:
+            return self._stop_locked()
 
     def close(self) -> None:
         self._watchdog_stop.set()
         with self._lock:
             self._closed = True
         with self._start_lock:
+            self._stop_locked(allow_active=True)
+
+    def _stop_locked(self, allow_active: bool = False) -> bool:
+        """Run with ``_start_lock`` held; retain all ownership on failure."""
+        with self._lock:
+            if self._active_requests and not allow_active:
+                return False
+            process = self._process
+        if process is not None and not self._process_exited(process):
+            try:
+                self._terminate(process)
+            except EngineRuntimeError as exc:
+                with self._lock:
+                    self._last_error = str(exc)
+                return False
+        if process is not None and not self._process_exited(process):
             with self._lock:
-                process = self._process
-            if process is not None and not self._process_exited(process):
-                try:
-                    self._terminate(process)
-                except EngineRuntimeError as exc:
-                    with self._lock:
-                        self._last_error = str(exc)
-                    return
+                self._last_error = "CosyVoice engine process is still alive"
+            return False
+        if not self._release_gpu_lease():
             with self._lock:
-                if process is None or self._process_exited(process):
-                    self._process = None
+                self._last_error = "GPU owner could not be released after engine exit"
+            return False
+        with self._lock:
+            self._process = None
+            self._last_error = ""
+            if process is not None:
+                self._sleep_count += 1
+        return True
 
     def _watchdog_loop(self) -> None:
         interval = min(5.0, max(0.25, self.idle_seconds / 4.0))
@@ -235,40 +253,96 @@ class ManagedEngine:
             return False
 
     def _launch(self) -> Any:
-        if self._launcher_impl:
-            return self._launcher_impl()
-        if not self.command:
-            raise EngineRuntimeError("managed engine command is missing")
-        env = os.environ.copy()
-        if sys.platform == "darwin":
-            # macOS can strip DYLD_* when the gateway starts via system Python.
-            # Set it at the final native-process boundary, on every cold wake.
-            paths = [str(Path(self.command[0]).resolve().parent), "/opt/homebrew/opt/icu4c/lib"]
-            if env.get("DYLD_LIBRARY_PATH"):
-                paths.append(env["DYLD_LIBRARY_PATH"])
-            env["DYLD_LIBRARY_PATH"] = ":".join(paths)
-        if self.log_path:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_handle = self.log_path.open("ab", buffering=0)
+        self._acquire_gpu_lease()
+        try:
+            if self._launcher_impl:
+                return self._launcher_impl()
+            if not self.command:
+                raise EngineRuntimeError("managed engine command is missing")
+            env = os.environ.copy()
+            if sys.platform == "darwin":
+                # macOS can strip DYLD_* when the gateway starts via system Python.
+                # Set it at the final native-process boundary, on every cold wake.
+                paths = [str(Path(self.command[0]).resolve().parent), "/opt/homebrew/opt/icu4c/lib"]
+                if env.get("DYLD_LIBRARY_PATH"):
+                    paths.append(env["DYLD_LIBRARY_PATH"])
+                env["DYLD_LIBRARY_PATH"] = ":".join(paths)
+            if self.log_path:
+                self.log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_handle = self.log_path.open("ab", buffering=0)
+                try:
+                    return subprocess.Popen(
+                        self.command,
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                        env=env,
+                    )
+                finally:
+                    log_handle.close()
+            return subprocess.Popen(
+                self.command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                close_fds=True,
+                env=env,
+            )
+        except BaseException:
+            self._release_gpu_lease()
+            raise
+
+    def _acquire_gpu_lease(self) -> None:
+        if self._gpu_lease is None:
+            return
+        with self._lock:
+            if self._gpu_lease_held:
+                return
+        try:
+            acquired = bool(self._gpu_lease.acquire())
+        except Exception as exc:
+            raise EngineRuntimeError(f"GPU owner acquire failed: {exc}") from exc
+        if acquired:
+            with self._lock:
+                self._gpu_lease_held = True
+                self._gpu_lease_owned = True
+            return
+        current = {}
+        reader = getattr(type(self._gpu_lease), "read", None)
+        path = getattr(self._gpu_lease, "path", None)
+        if reader and path is not None:
             try:
-                return subprocess.Popen(
-                    self.command,
-                    stdout=log_handle,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    close_fds=True,
-                    env=env,
-                )
-            finally:
-                log_handle.close()
-        return subprocess.Popen(
-            self.command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            close_fds=True,
-            env=env,
-        )
+                value = reader(path)
+                current = value if isinstance(value, dict) else {}
+            except Exception:
+                current = {}
+        if current.get("owner") in self._borrowed_gpu_owners:
+            with self._lock:
+                self._gpu_lease_held = True
+                self._gpu_lease_owned = False
+            return
+        owner = current.get("owner") or "unknown"
+        stage = current.get("stage") or "busy"
+        raise EngineRuntimeError(f"GPU is busy: {stage} ({owner})")
+
+    def _release_gpu_lease(self) -> bool:
+        with self._lock:
+            if not self._gpu_lease_held:
+                return True
+            if not self._gpu_lease_owned:
+                self._gpu_lease_held = False
+                return True
+            lease = self._gpu_lease
+        try:
+            released = bool(lease.release()) if lease is not None else True
+        except Exception:
+            released = False
+        if released:
+            with self._lock:
+                self._gpu_lease_held = False
+                self._gpu_lease_owned = False
+        return released
 
     @staticmethod
     def _process_exited(process: Any) -> bool:

@@ -18,6 +18,12 @@ MODEL_DIRECTORY = "Qwen3-ASR-1.7B"
 BACKEND = "qwen3-asr-1.7b-cuda"
 
 
+class WorkerLifecycleError(RuntimeError):
+    """The CUDA worker could not be confirmed dead after an abnormal exit."""
+
+    worker_exited = False
+
+
 def validate_model(model: Path) -> Path:
     model = model.expanduser().resolve()
     if not model.is_dir():
@@ -103,17 +109,38 @@ def transcribe(audio: Path, model: Path) -> dict[str, Any]:
     env = os.environ.copy()
     env["QWEN_ASR_WORKER"] = "1"
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+    process = None
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [sys.executable, "-m", "recording_transcript.windows_worker", str(audio), str(model)],
-            capture_output=True, text=True, timeout=3600, env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
         )
+        stdout, stderr = process.communicate(timeout=3600)
     except subprocess.TimeoutExpired as exc:
+        if process is not None:
+            try:
+                process.kill()
+                process.communicate(timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                raise WorkerLifecycleError("Windows ASR worker remained alive after timeout") from exc
+            if process.poll() is None:
+                raise WorkerLifecycleError("Windows ASR worker remained alive after timeout") from exc
         raise RuntimeError("Windows ASR worker 超时") from exc
-    if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout or "Windows ASR worker failed").strip()[-2000:])
+    if process.poll() is None:
+        try:
+            process.kill()
+            process.communicate(timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise WorkerLifecycleError("Windows ASR worker 尚未退出") from exc
+        if process.poll() is None:
+            raise WorkerLifecycleError("Windows ASR worker 尚未退出")
+    if process.returncode:
+        raise RuntimeError((stderr or stdout or "Windows ASR worker failed").strip()[-2000:])
     try:
-        value = json.loads(result.stdout)
+        value = json.loads(stdout)
     except ValueError as exc:
         raise RuntimeError("Windows ASR worker 返回了无效 JSON") from exc
     if not isinstance(value, dict) or not isinstance(value.get("segments"), list):

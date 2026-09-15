@@ -1,12 +1,15 @@
 import time
+import threading
 import unittest
 
+from local_runtime import RuntimeManager
 from server.live_session_blocks import (
     MAX_SYNTHESIS_BLOCK_CHARS,
     SynthesisBlockLiveSession,
     SynthesisBlockLiveSessionManager,
     prepare_synthesis_blocks,
 )
+from server.live_session import LiveSessionError
 
 
 class LiveSynthesisBlockTests(unittest.TestCase):
@@ -172,6 +175,47 @@ class LiveSynthesisBlockTests(unittest.TestCase):
         for item in enqueued:
             self.assertIn("\n", item[2])
         self.assertNotEqual(enqueued[0][2], enqueued[1][2])
+
+    def test_stop_during_synthesis_stays_stopping_until_block_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+        enqueued = []
+        runtime = RuntimeManager()
+
+        def synthesize(_text, _voice):
+            started.set()
+            release.wait(2)
+            return b"RIFF"
+
+        manager = SynthesisBlockLiveSessionManager(
+            "http://gateway",
+            "http://cache",
+            runtime=runtime,
+            synthesize=synthesize,
+            enqueue=lambda *args: enqueued.append(args),
+            cache_status=lambda _session: {"ready": len(enqueued), "client_connected": True},
+            cache_cleanup=lambda _session: {},
+        )
+        try:
+            manager.start("default", [
+                {"id": "p1", "text": "甲" * 100},
+                {"id": "p2", "text": "乙" * 100},
+            ])
+            self.assertTrue(started.wait(1))
+            self.assertEqual(manager.stop()["status"], "stopping")
+            self.assertEqual(runtime.snapshot()["state"], "STOPPING")
+            with self.assertRaises(LiveSessionError):
+                manager.start("default", [{"id": "p3", "text": "新 Session"}])
+            self.assertEqual(manager.status()["status"], "stopping")
+            release.set()
+            deadline = time.monotonic() + 2
+            while manager.status()["status"] != "stopped" and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(manager.status()["status"], "stopped")
+            self.assertEqual(len(enqueued), 1)
+            self.assertEqual(runtime.snapshot()["state"], "IDLE")
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

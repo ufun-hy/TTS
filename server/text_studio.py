@@ -591,6 +591,37 @@ def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
         raise RuntimeError(str(exc)) from exc
 
 
+def _stop_tts_engine(gateway_url: str, api_key: str = "") -> bool:
+    """Ask the gateway to stop CosyVoice before releasing the shared GPU lease."""
+    key = api_key or _read_keychain_api_key()
+    if not key:
+        return False
+    request = urllib.request.Request(
+        f"{gateway_url.rstrip('/')}/runtime/stop",
+        data=b"{}",
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = json.load(response)
+        return response.status == 200 and isinstance(body, dict) and body.get("stopped") is True
+    except urllib.error.HTTPError:
+        return False
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
+
+
+def _tts_runtime_status(gateway_url: str) -> dict[str, Any]:
+    """Read the gateway-owned engine state without making it another owner."""
+    try:
+        with urllib.request.urlopen(f"{gateway_url.rstrip('/')}/runtime/status", timeout=0.25) as response:
+            body = json.load(response)
+        return body if isinstance(body, dict) else {}
+    except (OSError, ValueError, urllib.error.URLError):
+        return {}
+
+
 class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -607,7 +638,15 @@ def make_handler(
     data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
     runtime = RuntimeManager(lock_path=str(data_root / "runtime" / "gpu-owner.json")) if single_machine else None
     updater = UpdateManager(data_root, manifest_url=os.environ.get("AI_LIVE_STUDIO_UPDATE_URL", ""), runtime=runtime)
-    live = build_live_manager(gateway_url, audio_cache_url, tts_api_key, audio_cache_api_key, runtime=runtime)
+    confirm_tts_release = (lambda: _stop_tts_engine(gateway_url, tts_api_key)) if runtime else None
+    live = build_live_manager(
+        gateway_url,
+        audio_cache_url,
+        tts_api_key,
+        audio_cache_api_key,
+        runtime=runtime,
+        confirm_tts_release=confirm_tts_release,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
@@ -674,11 +713,24 @@ def make_handler(
                 return
 
             if path == "/api/runtime/status":
-                self._json(200, runtime.snapshot() if runtime else {
+                snapshot = runtime.snapshot() if runtime else {
                     "state": "IDLE", "gpu_owner": "", "operation": "", "active_model": "",
                     "pid": None, "started_at": "", "model_released": True,
                     "stop_requested": False, "last_error": "",
-                })
+                }
+                if runtime and snapshot["state"] == "IDLE":
+                    engine = _tts_runtime_status(gateway_url)
+                    if engine.get("state") == "stop_failed" or engine.get("gpu_lease_held"):
+                        snapshot = {
+                            **snapshot,
+                            "state": "ERROR" if engine.get("state") == "stop_failed" else "TTS_PREPARING",
+                            "gpu_owner": "tts",
+                            "active_model": "CosyVoice3",
+                            "model_released": False,
+                            "last_error": engine.get("last_error", ""),
+                            "engine": engine,
+                        }
+                self._json(200, snapshot)
                 return
 
             if path == "/api/settings/models":
@@ -866,13 +918,16 @@ def make_handler(
                     try:
                         if runtime:
                             try:
-                                lease = runtime.acquire(RuntimeStage.TTS_PREPARING, "tts-preview", "CosyVoice3")
+                                lease = runtime.acquire(RuntimeStage.TTS_PREPARING, "tts", "CosyVoice3")
                             except RuntimeBusyError as exc:
                                 raise LiveSessionError(str(exc), 409) from exc
                         result = _tts_preview(text.strip(), voice.strip(), gateway_url)
                     finally:
                         if lease and runtime:
-                            runtime.release(lease)
+                            if _stop_tts_engine(gateway_url, tts_api_key):
+                                runtime.release(lease)
+                            else:
+                                runtime.release(lease, "TTS engine did not confirm process exit")
                     self._json(200, result)
                     return
 

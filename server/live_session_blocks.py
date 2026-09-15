@@ -7,7 +7,7 @@ import uuid
 from io import BytesIO
 import time
 import wave
-from typing import Any
+from typing import Any, Callable
 
 if __package__:
     from .live_session import (
@@ -204,13 +204,13 @@ class SynthesisBlockLiveSession(LiveSession):
                     with self._lock:
                         self._synthesis_seconds += synthesis_seconds
                         self._audio_seconds += audio_seconds
-                    if self._stop.is_set():
-                        return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
                     self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
                     with self._lock:
                         self.generated_segments += 1
+                    if self._stop.is_set():
+                        return
                 if not self.looping:
                     break
             with self._lock:
@@ -296,6 +296,7 @@ def build_live_manager(
     tts_api_key: str = "",
     cache_api_key: str = "",
     runtime: RuntimeManager | None = None,
+    confirm_tts_release: Callable[[], bool] | None = None,
 ) -> SynthesisBlockLiveSessionManager:
     high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
     low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
@@ -309,4 +310,5 @@ def build_live_manager(
         buffer_low_seconds=low,
         stop_timeout_seconds=stop_timeout,
         runtime=runtime,
+        confirm_tts_release=confirm_tts_release,
     )
