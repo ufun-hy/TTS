@@ -67,6 +67,7 @@ class RuntimeManager:
         self._model_released = True
         self._lease: Optional[RuntimeLease] = None
         self._stop_requested = False
+        self._confirm_release: Optional[Callable[[], bool]] = None
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -81,9 +82,11 @@ class RuntimeManager:
                 "model_released": self._model_released,
                 "stop_requested": self._stop_requested,
                 "last_error": self._last_error,
+                "recovery_available": self._stage == RuntimeStage.ERROR and self._confirm_release is not None,
             }
 
-    def acquire(self, stage: RuntimeStage | str, owner: str, model: str = "", pid: int | None = None) -> RuntimeLease:
+    def acquire(self, stage: RuntimeStage | str, owner: str, model: str = "", pid: int | None = None,
+                confirm_release: Optional[Callable[[], bool]] = None) -> RuntimeLease:
         stage = RuntimeStage(stage)
         if stage in (RuntimeStage.IDLE, RuntimeStage.STOPPING, RuntimeStage.ERROR):
             raise ValueError("an active lease must use ASR, REWRITE, TTS_PREPARING or LIVE")
@@ -110,6 +113,7 @@ class RuntimeManager:
             self._last_error = ""
             self._model_released = False
             self._stop_requested = False
+            self._confirm_release = confirm_release
             return lease
 
     def set_pid(self, lease: RuntimeLease, pid: int | None) -> None:
@@ -163,7 +167,27 @@ class RuntimeManager:
             self._stop_requested = False
             self._lease = None
             self._file_lease = None
+            self._confirm_release = None
+            self._last_error = ""
             return True
+
+    def retry_release(self, operation: str) -> bool:
+        """Recover this exact failed operation using its retained verifier."""
+        with self._lock:
+            lease = self._lease
+            if self._stage != RuntimeStage.ERROR or lease is None or lease.token != operation:
+                raise RuntimeError("recovery requires the current failed operation")
+            if self._confirm_release is None:
+                raise RuntimeError("this operation has no release verifier")
+            try:
+                confirmed = self._confirm_release()
+            except Exception as exc:
+                self._last_error = f"release verification failed: {exc}"
+                return False
+            if not confirmed:
+                self._last_error = "model/process release is still unconfirmed"
+                return False
+            return self.release(lease)
 
     def clear_error(self) -> bool:
         """Clear an error only when no worker remains and release is confirmed."""

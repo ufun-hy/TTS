@@ -34,9 +34,9 @@ else:
 
 from recording_transcript.results import list_results, load_result
 try:
-    from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama
+    from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 except ImportError:
-    from text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama
+    from text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 from local_runtime import RuntimeBusyError, RuntimeManager, RuntimeStage, UpdateError, UpdateManager
 from local_runtime.settings import SecretStoreError, load_settings, save_settings, secret_store
 
@@ -868,7 +868,11 @@ def make_handler(
                     try:
                         if runtime and provider == "ollama":
                             try:
-                                lease = runtime.acquire(RuntimeStage.REWRITE, "ollama", model or provider_config("ollama", root)["model"])
+                                ollama_config = provider_config("ollama", root)
+                                actual_model = model or ollama_config["model"]
+                                release_ollama = lambda url=ollama_config["base_url"], selected=actual_model: unload_ollama_url(url, selected)
+                                lease = runtime.acquire(RuntimeStage.REWRITE, "ollama", actual_model,
+                                                        confirm_release=release_ollama)
                             except RuntimeBusyError as exc:
                                 raise LiveSessionError(str(exc), 409) from exc
                         result = generalize_paragraphs(
@@ -884,8 +888,7 @@ def make_handler(
                         )
                     finally:
                         if lease and runtime:
-                            actual_model = model or provider_config("ollama", root)["model"]
-                            if unload_ollama(root, actual_model):
+                            if release_ollama():
                                 runtime.release(lease)
                             else:
                                 runtime.release(lease, "Ollama 模型未确认释放")
@@ -918,7 +921,8 @@ def make_handler(
                     try:
                         if runtime:
                             try:
-                                lease = runtime.acquire(RuntimeStage.TTS_PREPARING, "tts", "CosyVoice3")
+                                lease = runtime.acquire(RuntimeStage.TTS_PREPARING, "tts", "CosyVoice3",
+                                                        confirm_release=confirm_tts_release)
                             except RuntimeBusyError as exc:
                                 raise LiveSessionError(str(exc), 409) from exc
                         result = _tts_preview(text.strip(), voice.strip(), gateway_url)
@@ -929,6 +933,30 @@ def make_handler(
                             else:
                                 runtime.release(lease, "TTS engine did not confirm process exit")
                     self._json(200, result)
+                    return
+
+                if path == "/api/runtime/recover":
+                    origin_header = self.headers.get("Origin")
+                    origin = urllib.parse.urlsplit(origin_header or "")
+                    if (self.client_address[0] not in ("127.0.0.1", "::1")
+                            or self.headers.get("Content-Type", "").split(";")[0] != "application/json"
+                            or (origin_header is not None and (origin.scheme != "http"
+                                or origin.hostname not in ("127.0.0.1", "localhost", "::1")
+                                or origin.port != self.server.server_port))):
+                        self._json(403, {"error": "local recovery only"})
+                        return
+                    if runtime is None:
+                        self._json(409, {"error": "single-machine runtime is not enabled"})
+                        return
+                    operation = body.get("operation")
+                    if not isinstance(operation, str) or not operation:
+                        raise ValueError("operation is required")
+                    try:
+                        recovered = runtime.retry_release(operation)
+                    except RuntimeError as exc:
+                        self._json(409, {"error": str(exc), "runtime": runtime.snapshot()})
+                        return
+                    self._json(200 if recovered else 409, {"recovered": recovered, "runtime": runtime.snapshot()})
                     return
 
                 if path == "/api/live/start":

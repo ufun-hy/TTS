@@ -18,6 +18,9 @@ import time
 from urllib import request
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from local_runtime.file_lease import _pid_alive
+
 DEFAULT_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "AI-Live-Studio"
 DEFAULT_MODELS = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", "D:/AI-Live-Studio-Models"))
 
@@ -35,16 +38,35 @@ def _load_pids(path: Path) -> dict[str, int]:
 
 
 def _running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
-        return str(pid) in result.stdout
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    return _pid_alive(pid)
+
+
+def _stop_processes(pids: dict[str, int], timeout: float = 10.0) -> dict[str, int]:
+    remaining = dict(pids)
+    for name, pid in pids.items():
+        if _running(pid):
+            detail = ""
+            try:
+                if os.name == "nt":
+                    result = subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True, text=True, timeout=timeout,
+                    )
+                    if result.returncode:
+                        detail = (result.stderr or result.stdout).strip()
+                else:
+                    os.kill(pid, 15)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                detail = str(exc)
+            deadline = time.monotonic() + timeout
+            while _running(pid) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if _running(pid):
+                print(f"stop_failed {name} PID={pid}: {detail or 'process has not exited'}", file=sys.stderr)
+                continue
+        remaining.pop(name, None)
+        print(f"stopped {name} PID={pid} (exit confirmed)")
+    return remaining
 
 
 def _write_pids(path: Path, pids: dict[str, int]) -> None:
@@ -153,11 +175,7 @@ def start(args: argparse.Namespace) -> int:
             started[name] = proc.pid
         _write_pids(process_file, started)
     except Exception as exc:
-        for pid in started.values():
-            try:
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)
-            except OSError:
-                pass
+        _write_pids(process_file, _stop_processes(started))
         print(f"runtime start failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(started, ensure_ascii=False))
@@ -167,16 +185,9 @@ def start(args: argparse.Namespace) -> int:
 def stop(args: argparse.Namespace) -> int:
     path, _ = _paths(Path(args.data).expanduser())
     pids = _load_pids(path)
-    for name, pid in pids.items():
-        if not _running(pid):
-            continue
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True)
-        else:
-            os.kill(pid, 15)
-        print(f"stopped {name} PID={pid}")
-    _write_pids(path, {})
-    return 0
+    remaining = _stop_processes(pids)
+    _write_pids(path, remaining)
+    return 1 if remaining else 0
 
 
 def status(args: argparse.Namespace) -> int:

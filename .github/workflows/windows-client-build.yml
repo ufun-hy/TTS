@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/windows-offline-runtime-v1
     paths:
       - "audio_client/**"
       - "audio_cache/**"
@@ -31,9 +32,11 @@ on:
       - "recording_transcript/windows_chunks.py"
       - "recording_transcript/windows_worker.py"
       - "server/text_studio_http_providers.py"
+      - "server/text_studio.py"
       - "scripts/windows-runtime.py"
       - "scripts/windows-poc/**"
       - "tests/test_windows_runtime.py"
+      - "tests/test_windows_review_fixes.py"
       - ".github/workflows/windows-client-build.yml"
   workflow_dispatch:
 
@@ -59,7 +62,7 @@ jobs:
 
       - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat tests.test_windows_runtime
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat tests.test_windows_runtime tests.test_windows_review_fixes
 
       - name: Run WinMM smoke test
         shell: pwsh

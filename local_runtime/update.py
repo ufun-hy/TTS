@@ -12,12 +12,30 @@ import json
 from pathlib import Path
 import subprocess
 from urllib import error, request
+from urllib.parse import urlsplit
 
 from .manager import RuntimeManager
 
 
 class UpdateError(RuntimeError):
     pass
+
+
+def _require_https(url: str) -> None:
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise UpdateError("update URLs must use HTTPS without embedded credentials")
+
+
+class _HTTPSRedirectHandler(request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _require_https(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_https(url: str, timeout: float):
+    _require_https(url)
+    return request.build_opener(_HTTPSRedirectHandler()).open(url, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -42,8 +60,7 @@ def validate_manifest(value: object) -> UpdateManifest:
     version = str(value.get("version", "")).strip()
     _version(version)
     url = str(value.get("installer_url", "")).strip()
-    if not url.startswith("https://"):
-        raise UpdateError("installer_url must use HTTPS")
+    _require_https(url)
     digest = str(value.get("sha256", "")).strip().lower()
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise UpdateError("update manifest sha256 is invalid")
@@ -72,11 +89,13 @@ class UpdateManager:
         }
 
     def check(self) -> dict[str, object]:
+        self.manifest = None
+        self.downloaded = None
         if not self.manifest_url:
             self.error = "update source is not configured"
             return self.status()
         try:
-            with request.urlopen(self.manifest_url, timeout=10) as response:
+            with _open_https(self.manifest_url, timeout=10) as response:
                 self.manifest = validate_manifest(json.load(response))
             self.error = ""
         except (OSError, ValueError, error.URLError, UpdateError) as exc:
@@ -92,7 +111,7 @@ class UpdateManager:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"AI-Live-Studio-{self.manifest.version}.exe"
         try:
-            with request.urlopen(self.manifest.installer_url, timeout=120) as response:
+            with _open_https(self.manifest.installer_url, timeout=120) as response:
                 payload = response.read()
         except (OSError, error.URLError) as exc:
             raise UpdateError(str(exc)) from exc
