@@ -40,6 +40,16 @@ function Copy-ArchiveContents([string]$Archive, [string]$Destination) {
     Copy-Item -Path (Join-Path $extract "*") -Destination $Destination -Recurse -Force
 }
 
+function Copy-ArchiveFiles([string]$Archive, [string]$Destination, [string[]]$Patterns) {
+    $extract = Join-Path $DownloadRoot ([Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $extract | Out-Null
+    Expand-Archive -Path $Archive -DestinationPath $extract -Force
+    foreach ($pattern in $Patterns) {
+        Get-ChildItem -LiteralPath $extract -Filter $pattern -File -Recurse |
+            ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Destination -Force }
+    }
+}
+
 function Normalize-Component([string]$Component, [string[]]$Required) {
     foreach ($name in $Required) {
         $target = Join-Path $Component $name
@@ -120,11 +130,11 @@ try {
 
     $llamaArchive = Join-Path $DownloadRoot "llama-cuda.zip"
     Download-Verified $LlamaCudaUrl $LlamaCudaSha256 $llamaArchive
-    Copy-ArchiveContents $llamaArchive $cosyvoiceBin
+    Copy-ArchiveFiles $llamaArchive $cosyvoiceBin @("ggml*.dll", "libomp*.dll")
 
     $cudaRuntimeArchive = Join-Path $DownloadRoot "cuda-runtime.zip"
     Download-Verified $CudaRuntimeUrl $CudaRuntimeSha256 $cudaRuntimeArchive
-    Copy-ArchiveContents $cudaRuntimeArchive $cosyvoiceBin
+    Copy-ArchiveFiles $cudaRuntimeArchive $cosyvoiceBin @("cudart64_*.dll", "cublas*.dll")
 
     $ffmpegArchive = Join-Path $DownloadRoot "ffmpeg.zip"
     Download-Verified $FfmpegUrl $FfmpegSha256 $ffmpegArchive
@@ -133,7 +143,9 @@ try {
     Expand-Archive -Path $ffmpegArchive -DestinationPath $ffmpegExtract -Force
     $ffmpegExecutable = Get-ChildItem -LiteralPath $ffmpegExtract -Filter "ffmpeg.exe" -File -Recurse | Select-Object -First 1
     if (-not $ffmpegExecutable) { throw "FFmpeg archive does not contain ffmpeg.exe" }
-    Copy-Item -Path (Join-Path $ffmpegExecutable.DirectoryName "*") -Destination $ffmpegDir -Recurse -Force
+    Get-ChildItem -LiteralPath $ffmpegExecutable.DirectoryName -File |
+        Where-Object { $_.Name -ne "ffplay.exe" } |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $ffmpegDir -Force }
 
     $vcRoots = @(
         (Join-Path $env:ProgramFiles "Microsoft Visual Studio"),
