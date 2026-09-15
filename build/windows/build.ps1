@@ -53,6 +53,20 @@ function Normalize-Component([string]$Component, [string[]]$Required) {
         ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Component -Force }
 }
 
+function Remove-DevelopmentFiles([string]$Packages) {
+    foreach ($relative in @("torch\include", "torch\share", "torch\testing", "torchgen")) {
+        $path = Join-Path $Packages $relative
+        if (Test-Path $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+    Get-ChildItem -LiteralPath $Packages -Directory -Recurse |
+        Where-Object { $_.Name -eq "__pycache__" } |
+        Sort-Object FullName -Descending |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+    Get-ChildItem -LiteralPath $Packages -File -Recurse |
+        Where-Object { $_.Extension -in @(".lib", ".pyi", ".pyc", ".pyo") } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+}
+
 Push-Location $Root
 try {
     New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
@@ -92,12 +106,7 @@ try {
     # The wheel ships C++ headers/import libraries for extension development;
     # they are not needed by the bundled inference process and push Inno Setup
     # past its single-file Windows installer limit.
-    $torchInclude = Join-Path $sitePackages "torch\include"
-    if (Test-Path $torchInclude) { Remove-Item -LiteralPath $torchInclude -Recurse -Force }
-    Get-ChildItem -LiteralPath $sitePackages -Filter "*.lib" -File -Recurse |
-        Remove-Item -Force
-    Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "__pycache__" -Recurse |
-        Remove-Item -Recurse -Force
+    Remove-DevelopmentFiles $sitePackages
 
     $ollamaArchive = Join-Path $DownloadRoot "ollama.zip"
     Download-Verified $OllamaUrl $OllamaSha256 $ollamaArchive
@@ -174,6 +183,7 @@ try {
     $bundledPython = Join-Path $pythonDir "python.exe"
     & $bundledPython -c "import torch, qwen_asr; print(torch.__version__); print(qwen_asr.__name__)"
     if ($LASTEXITCODE -ne 0) { throw "Bundled Python import smoke test failed" }
+    Remove-DevelopmentFiles $sitePackages
 
     $iscc = $null
     $isccCommand = Get-Command iscc.exe -ErrorAction SilentlyContinue
