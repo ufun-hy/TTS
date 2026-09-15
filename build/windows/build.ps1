@@ -78,6 +78,8 @@ try {
     $cosyvoiceBin = Join-Path $bin "cosyvoice"
     $ffmpegDir = Join-Path $bin "ffmpeg"
     New-Item -ItemType Directory -Force -Path $ollamaBin, $cosyvoiceBin, $ffmpegDir | Out-Null
+    $packagesDir = Join-Path $Stage "runtime\packages"
+    New-Item -ItemType Directory -Force -Path $packagesDir | Out-Null
 
     $pythonArchive = Join-Path $DownloadRoot "python-embed.zip"
     Download-Verified $PythonUrl $PythonSha256 $pythonArchive
@@ -110,7 +112,7 @@ try {
 
     $ollamaArchive = Join-Path $DownloadRoot "ollama.zip"
     Download-Verified $OllamaUrl $OllamaSha256 $ollamaArchive
-    Copy-ArchiveContents $ollamaArchive $ollamaBin
+    Copy-Item -LiteralPath $ollamaArchive -Destination (Join-Path $packagesDir "ollama.zip") -Force
 
     $cosyvoiceArchive = Join-Path $DownloadRoot "cosyvoice.zip"
     Download-Verified $CosyVoiceUrl $CosyVoiceSha256 $cosyvoiceArchive
@@ -184,6 +186,21 @@ try {
     & $bundledPython -c "import torch, qwen_asr; print(torch.__version__); print(qwen_asr.__name__)"
     if ($LASTEXITCODE -ne 0) { throw "Bundled Python import smoke test failed" }
     Remove-DevelopmentFiles $sitePackages
+
+    $torchWheelDownload = Join-Path $DownloadRoot "torch-wheel"
+    New-Item -ItemType Directory -Force -Path $torchWheelDownload | Out-Null
+    & $HostPython -m pip download --disable-pip-version-check --no-cache-dir --no-deps `
+        --index-url $TorchIndex "torch==$TorchVersion" --dest $torchWheelDownload
+    if ($LASTEXITCODE -ne 0) { throw "CUDA PyTorch wheel download failed" }
+    $torchWheel = Get-ChildItem -LiteralPath $torchWheelDownload -Filter "torch-*.whl" -File | Select-Object -First 1
+    if (-not $torchWheel) { throw "CUDA PyTorch wheel was not downloaded" }
+    foreach ($relative in @("torch", "torchgen")) {
+        $path = Join-Path $sitePackages $relative
+        if (Test-Path $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+    }
+    Get-ChildItem -LiteralPath $sitePackages -Directory -Filter "torch-*.dist-info" |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+    Copy-Item -LiteralPath $torchWheel.FullName -Destination (Join-Path $packagesDir "torch.whl") -Force
 
     $iscc = $null
     $isccCommand = Get-Command iscc.exe -ErrorAction SilentlyContinue

@@ -32,6 +32,7 @@ Name: "{group}\AI Live Studio"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Change Model Directory"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--choose-models"
 
 [Run]
+Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\scripts\install-runtime.py"" ""{app}"""; Description: "Installing bundled AI runtimes"; StatusMsg: "Installing bundled AI runtimes..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch AI Live Studio"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
