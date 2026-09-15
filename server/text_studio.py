@@ -363,7 +363,7 @@ def generalize_paragraphs(
 
 def _projects_root(root: Path) -> Path:
     runtime_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
-    path = runtime_root / "text-studio" / "projects"
+    path = runtime_root / "projects" if os.name == "nt" and os.environ.get("WINDOWS_SINGLE_MACHINE") == "1" else runtime_root / "text-studio" / "projects"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -637,7 +637,12 @@ def make_handler(
     single_machine = os.environ.get("WINDOWS_SINGLE_MACHINE") == "1"
     data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
     runtime = RuntimeManager(lock_path=str(data_root / "runtime" / "gpu-owner.json")) if single_machine else None
-    updater = UpdateManager(data_root, manifest_url=os.environ.get("AI_LIVE_STUDIO_UPDATE_URL", ""), runtime=runtime)
+    updater = UpdateManager(
+        data_root,
+        current_version=os.environ.get("AI_LIVE_STUDIO_VERSION", "0.1.0"),
+        manifest_url=os.environ.get("AI_LIVE_STUDIO_UPDATE_URL", ""),
+        runtime=runtime,
+    )
     confirm_tts_release = (lambda: _stop_tts_engine(gateway_url, tts_api_key)) if runtime else None
     live = build_live_manager(
         gateway_url,

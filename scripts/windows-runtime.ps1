@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("start", "stop", "status", "import-llm")]
+    [ValidateSet("check", "start", "stop", "status", "import-llm")]
     [string]$Command = "start",
     [string]$Data = "",
     [string]$Models = "",
@@ -14,5 +14,7 @@ if ($Data) { $Arguments += @("--data", $Data) }
 if ($Models) { $Arguments += @("--models", $Models) }
 if ($Python) { $Arguments += @("--python", $Python) }
 if ($BinDir) { $Arguments += @("--bin-dir", $BinDir) }
-& python @Arguments
+$BundledPython = Join-Path $Root "runtime\python\python.exe"
+$PythonCommand = if (Test-Path $BundledPython) { $BundledPython } else { (Get-Command python.exe -ErrorAction Stop).Source }
+& $PythonCommand @Arguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

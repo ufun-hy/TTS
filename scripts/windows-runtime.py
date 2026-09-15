@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
+import shutil
 import subprocess
 import sys
 import time
@@ -23,10 +25,31 @@ from local_runtime.file_lease import _pid_alive
 
 DEFAULT_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "AI-Live-Studio"
 DEFAULT_MODELS = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", "D:/AI-Live-Studio-Models"))
+RUNTIME_PORTS = (8765, 8766, 8000, 8770, 8771)
+
+
+def _configured_models(data: Path, explicit: str = "") -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    path = data / "config" / "models-path.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError):
+        return DEFAULT_MODELS.expanduser()
+    selected = value.get("models_dir") if isinstance(value, dict) else ""
+    return Path(selected).expanduser() if isinstance(selected, str) and selected.strip() else DEFAULT_MODELS.expanduser()
 
 
 def _paths(data: Path) -> tuple[Path, Path]:
     return data / "runtime" / "windows-processes.json", data / "logs"
+
+
+def _component_dirs(bin_dir: Path) -> dict[str, Path]:
+    return {
+        "ollama": bin_dir / "ollama",
+        "cosyvoice": bin_dir / "cosyvoice",
+        "ffmpeg": bin_dir / "ffmpeg",
+    }
 
 
 def _load_pids(path: Path) -> dict[str, int]:
@@ -84,16 +107,137 @@ def _url_ok(url: str, timeout: float = 1.5) -> bool:
         return False
 
 
+def _port_available(port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive is not None:
+            sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _model_errors(models: Path, bin_dir: Path) -> list[str]:
+    errors: list[str] = []
+    asr = models / "asr" / "Qwen3-ASR-1.7B"
+    asr_config = asr / "config.json"
+    if not asr.is_dir():
+        errors.append(f"Qwen3-ASR-1.7B 未找到\n请将模型放到：{asr}")
+    else:
+        try:
+            config = json.loads(asr_config.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            config = {}
+        required_asr_files = ("config.json", "preprocessor_config.json", "tokenizer_config.json")
+        if (config.get("model_type") != "qwen3_asr"
+                or any(not (asr / name).is_file() for name in required_asr_files)
+                or not any(asr.glob("*.safetensors"))):
+            errors.append(f"Qwen3-ASR-1.7B 文件不完整\n请确认 {asr} 包含有效 config.json 和 safetensors 权重")
+
+    tts = models / "tts"
+    tts_model = tts / "CosyVoice3-2512_Q8_0.gguf"
+    voices = tts / "voices.json"
+    if not tts_model.is_file():
+        errors.append(f"CosyVoice3 Q8 模型未找到\n请将模型放到：{tts_model}")
+    if not voices.is_file():
+        errors.append(f"voices.json 未找到\n请将音色配置放到：{voices}")
+    else:
+        try:
+            voice_config = json.loads(voices.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            voice_config = {}
+            errors.append(f"voices.json 无法读取\n请检查文件：{voices}")
+        if not isinstance(voice_config, dict) or "default" not in voice_config:
+            errors.append(f"voices.json 缺少 default 音色\n请检查文件：{voices}")
+        elif isinstance(voice_config, dict):
+            for voice_id, entry in voice_config.items():
+                prompt = entry.get("prompt_speech") if isinstance(entry, dict) else ""
+                prompt_path = Path(prompt).expanduser() if isinstance(prompt, str) else Path()
+                prompt_candidates = [prompt_path] if prompt_path.is_absolute() else [ROOT / prompt_path, tts / prompt_path]
+                if not any(path.is_file() for path in prompt_candidates):
+                    errors.append(f"音色 {voice_id} 的 prompt_speech 未找到\n请检查：{prompt_candidates[-1]}")
+
+    modelfile = models / "llm" / "Modelfile"
+    ollama_store = models / "llm" / "ollama-store"
+    if not modelfile.is_file() or not ollama_store.is_dir() or not any(ollama_store.iterdir()):
+        errors.append(
+            "Qwen3 8B / Ollama 模型未找到或不完整\n"
+            f"请确认存在：{modelfile}\n以及非空目录：{ollama_store}"
+        )
+
+    components = _component_dirs(bin_dir)
+    required = {
+        "固定 Python Runtime": bin_dir.parent / "python" / ("python.exe" if os.name == "nt" else "python"),
+        "Ollama": components["ollama"] / ("ollama.exe" if os.name == "nt" else "ollama"),
+        "CosyVoice server": components["cosyvoice"] / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server"),
+        "CosyVoice DLL": components["cosyvoice"] / "cosyvoice.dll",
+        "ONNX Runtime DLL": components["cosyvoice"] / "onnxruntime.dll",
+        "FFmpeg": components["ffmpeg"] / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg"),
+        "ffprobe": components["ffmpeg"] / ("ffprobe.exe" if os.name == "nt" else "ffprobe"),
+    }
+    for label, path in required.items():
+        if not path.is_file():
+            errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{path}")
+    for label, pattern in (("GGML DLL", "ggml*.dll"), ("CUDA runtime DLL", "cudart64_*.dll"), ("cuBLAS DLL", "cublas64_*.dll")):
+        if not any(components["cosyvoice"].glob(pattern)):
+            errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{components['cosyvoice']}")
+    return errors
+
+
+def startup_errors(models: Path, data: Path, python: Path, bin_dir: Path, check_hardware: bool = True) -> list[str]:
+    errors = _model_errors(models, bin_dir)
+    if check_hardware and os.name == "nt":
+        nvidia_smi = shutil.which("nvidia-smi")
+        if not nvidia_smi:
+            candidates = (
+                Path(os.environ.get("ProgramFiles", "")) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe",
+                Path(os.environ.get("ProgramW6432", "")) / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe",
+            )
+            nvidia_smi = next((str(path) for path in candidates if path.is_file()), "")
+        try:
+            result = subprocess.run(
+                [nvidia_smi or "nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is None or result.returncode or not result.stdout.strip():
+            errors.append("未检测到 NVIDIA GPU\n请安装 NVIDIA Driver 后重试；本安装包不需要 CUDA Toolkit")
+        if python.is_file():
+            try:
+                cuda = subprocess.run(
+                    [str(python), "-c", "import torch; print(torch.cuda.is_available())"],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                cuda = None
+            if cuda is None or cuda.returncode or cuda.stdout.strip().lower() != "true":
+                errors.append("内置 PyTorch 无法使用 CUDA\n请更新 NVIDIA Driver；本安装包不需要 CUDA Toolkit")
+    if not python.is_file():
+        errors.append(f"固定 Python Runtime 未找到：{python}")
+    if check_hardware and os.name == "nt":
+        for port in RUNTIME_PORTS:
+            if not _port_available(port):
+                errors.append(f"端口 {port} 已被其他进程占用\n请关闭占用该端口的程序后重试")
+    return errors
+
+
 def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str, tuple[list[str], Path]]:
     logs = data / "logs"
+    components = _component_dirs(bin_dir)
     voices = models / "tts" / "voices.json"
     tts_model = models / "tts" / "CosyVoice3-2512_Q8_0.gguf"
     asr_model = models / "asr" / "Qwen3-ASR-1.7B"
-    engine = bin_dir / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
-    ollama = bin_dir / ("ollama.exe" if os.name == "nt" else "ollama")
+    engine = components["cosyvoice"] / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
+    ollama = components["ollama"] / ("ollama.exe" if os.name == "nt" else "ollama")
+    engine_backend = "cuda0" if os.name == "nt" else "cuda"
     return {
-        "ollama": ([str(ollama), "serve"], bin_dir),
-        "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", "cuda", "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),
+        "ollama": ([str(ollama), "serve"], components["ollama"]),
+        "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", engine_backend, "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),
         "audio-cache": ([str(python), str(ROOT / "scripts" / "audio-cache-server.py"), "--host", "127.0.0.1", "--port", "8000", "--root", str(data / "audio-cache")], ROOT),
         "recording-transcript": ([str(python), str(ROOT / "server" / "recording_transcript.py"), "--host", "127.0.0.1", "--port", "8771", "--model", str(asr_model)], ROOT),
         "text-studio": ([str(python), str(ROOT / "server" / "text_studio_entry.py"), "--host", "127.0.0.1", "--port", "8770", "--tts-gateway-url", "http://127.0.0.1:8765", "--audio-cache-url", "http://127.0.0.1:8000"], ROOT),
@@ -105,29 +249,30 @@ def start(args: argparse.Namespace) -> int:
     if os.name != "nt" and not args.dry_run:
         print("windows-runtime.py must run on Windows; use --dry-run here", file=sys.stderr)
         return 2
-    data, models = Path(args.data).expanduser(), Path(args.models).expanduser()
+    data = Path(args.data).expanduser()
+    models = _configured_models(data, args.models)
     python = Path(args.python or sys.executable).expanduser()
     bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
     entries = commands(models, data, python, bin_dir)
-    required = [models / "tts" / "CosyVoice3-2512_Q8_0.gguf", models / "tts" / "voices.json", models / "asr" / "Qwen3-ASR-1.7B"]
-    missing = [str(path) for path in required if not path.exists()]
-    if missing and not args.dry_run:
-        print("Missing external model assets:\n" + "\n".join(missing), file=sys.stderr)
-        return 1
+    if not args.dry_run:
+        errors = startup_errors(models, data, python, bin_dir)
+        if errors:
+            print("无法启动 AI Live Studio：\n\n" + "\n\n".join(errors), file=sys.stderr)
+            return 1
     if args.dry_run:
         for name, (argv, cwd) in entries.items():
             print(name, json.dumps(argv, ensure_ascii=False), "cwd=", cwd)
         return 0
-
+    if not data.is_dir():
+        data.mkdir(parents=True, exist_ok=True)
     process_file, logs = _paths(data)
     pids = _load_pids(process_file)
     if any(_running(pid) for pid in pids.values()):
         print("AI Live Studio runtime is already running", file=sys.stderr)
         return 1
-    data.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
-    from local_runtime.settings import secret_store
-    key_store = secret_store(data)
+    from local_runtime.settings import tts_secret_store
+    key_store = tts_secret_store(data)
     try:
         api_key = key_store.get()
     except Exception:
@@ -139,6 +284,7 @@ def start(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.update({
         "AI_LIVE_STUDIO_DATA": str(data),
+        "AI_LIVE_STUDIO_VERSION": "1.0.0",
         "AI_LIVE_STUDIO_GPU_LOCK": str(data / "runtime" / "gpu-owner.json"),
         "TTS_API_KEY": api_key,
         "WINDOWS_SINGLE_MACHINE": "1",
@@ -150,7 +296,7 @@ def start(args: argparse.Namespace) -> int:
         "TTS_OLLAMA_URL": "http://127.0.0.1:11435",
         "TTS_OLLAMA_MODEL": "qwen3:8b",
         "RECORDING_TRANSCRIPT_BACKEND": "cuda",
-        "PATH": str(bin_dir) + os.pathsep + env.get("PATH", ""),
+        "PATH": os.pathsep.join(str(path) for path in (*_component_dirs(bin_dir).values(), bin_dir)) + os.pathsep + env.get("PATH", ""),
         "AI_AUDIO_CLIENT_CONFIG": str(data / "config" / "audio-client.json"),
         "AI_AUDIO_AUTOPLAY": "1",
     })
@@ -186,7 +332,8 @@ def stop(args: argparse.Namespace) -> int:
     path, _ = _paths(Path(args.data).expanduser())
     pids = _load_pids(path)
     remaining = _stop_processes(pids)
-    _write_pids(path, remaining)
+    if pids or path.exists():
+        _write_pids(path, remaining)
     return 1 if remaining else 0
 
 
@@ -197,6 +344,22 @@ def status(args: argparse.Namespace) -> int:
     endpoints = {"ollama": "http://127.0.0.1:11435/api/tags", "tts": "http://127.0.0.1:8765/health", "cache": "http://127.0.0.1:8000/health", "studio": "http://127.0.0.1:8770/api/health", "asr": "http://127.0.0.1:8771/api/health"}
     print(json.dumps({"processes": {name: {"pid": pid, "running": _running(pid)} for name, pid in pids.items()}, "health": {name: _url_ok(url) for name, url in endpoints.items()}}, ensure_ascii=False, indent=2))
     return 0
+
+
+def check(args: argparse.Namespace) -> int:
+    data = Path(args.data).expanduser()
+    models = _configured_models(data, args.models)
+    python = Path(args.python or sys.executable).expanduser()
+    bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
+    errors = startup_errors(models, data, python, bin_dir, check_hardware=not args.dry_run)
+    print(json.dumps({
+        "ok": not errors,
+        "models": str(models),
+        "data": str(data),
+        "errors": errors,
+        "ports": list(RUNTIME_PORTS),
+    }, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
 
 
 def import_llm(args: argparse.Namespace) -> int:
@@ -222,14 +385,14 @@ def import_llm(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("start", "stop", "status", "import-llm"))
+    parser.add_argument("command", choices=("check", "start", "stop", "status", "import-llm"))
     parser.add_argument("--data", default=str(DEFAULT_DATA))
     parser.add_argument("--models", default=str(DEFAULT_MODELS))
     parser.add_argument("--python", default="")
     parser.add_argument("--bin-dir", default="")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    return {"start": start, "stop": stop, "status": status, "import-llm": import_llm}[args.command](args)
+    return {"check": check, "start": start, "stop": stop, "status": status, "import-llm": import_llm}[args.command](args)
 
 
 if __name__ == "__main__":

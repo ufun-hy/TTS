@@ -104,3 +104,7 @@ def save_settings(root: Path, value: dict[str, Any]) -> Path:
 
 def secret_store(root: Path) -> DpapiSecretStore:
     return DpapiSecretStore(Path(root) / "config" / "openai-compatible-api-key.dpapi")
+
+
+def tts_secret_store(root: Path) -> DpapiSecretStore:
+    return DpapiSecretStore(Path(root) / "config" / "tts-api-key.dpapi")

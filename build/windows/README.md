@@ -1,38 +1,59 @@
-# Windows 构建
+# Windows V1 测试安装包
 
-构建机需要 Windows、Python、PyInstaller 和 Inno Setup。运行：
+GitHub Actions 在 `windows-latest` 上构建完整测试安装包：
 
 ```powershell
 python -m pip install pyinstaller
+choco install innosetup -y
 .\build\windows\build.ps1
 ```
 
-仅运行 PyInstaller 时，产物位于：
+产物：
 
 ```text
-dist/AI-Audio-Client.exe
+build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe
 ```
 
-安装 Inno Setup 后，脚本会继续生成：
+构建阶段下载并锁定可分发的 Windows 运行时：
+
+- CPython 3.11.9 embeddable runtime
+- CUDA 12.4 PyTorch 2.6.0 与固定 `qwen-asr` 依赖
+- Ollama 0.34.0 standalone
+- CosyVoice v0.1.3（commit `1616b12`）及 ONNX/GGML/CUDA DLL
+- FFmpeg/ffprobe n8.1
+
+安装器只把程序写入 `C:\Program Files\AI Live Studio`。用户数据写入
+`%LOCALAPPDATA%\AI-Live-Studio`，卸载和升级不包含该目录，也不包含外部模型目录。
+
+双击 `AI Live Studio` 后，入口会执行启动检查、启动 Runtime、等待本地服务健康，最后打开
+`http://127.0.0.1:8770/`。模型默认目录为 `D:\AI-Live-Studio-Models`；没有 D 盘或模型路径变化时可在启动检查中选择目录，也可从开始菜单运行 `Change Model Directory`。
+
+外部模型包至少需要：
 
 ```text
-build/windows/output/AI-Audio-Client-Setup.exe
+D:\AI-Live-Studio-Models\
+├─ asr\Qwen3-ASR-1.7B\
+├─ llm\Modelfile
+├─ llm\ollama-store\
+└─ tts\
+   ├─ CosyVoice3-2512_Q8_0.gguf
+   └─ voices.json
 ```
 
-安装包包含 GUI、`config.json`、`cache/` 和 `logs/`。用户修改的 `config.json` 使用 `onlyifdoesntexist` 保留，不会被升级覆盖。
+`voices.json` 中引用的 `prompt_speech` 文件也必须存在。安装包不会联网下载模型，不安装系统 Python、不修改 PATH、不要求 CUDA Toolkit 或独立 Ollama。
 
-## 单机运行预览
+## 单机运行诊断
 
 Windows 单机版本的后台服务由 `scripts/windows-runtime.py` 管理，模型和用户数据放在安装目录之外：
 
 ```powershell
-python .\scripts\windows-runtime.py start --models D:\AI-Live-Studio-Models
-python .\scripts\windows-runtime.py status
-python .\scripts\windows-runtime.py stop
-python .\scripts\windows-runtime.py import-llm --models D:\AI-Live-Studio-Models
+.\scripts\windows-runtime.ps1 check -Models D:\AI-Live-Studio-Models
+.\scripts\windows-runtime.ps1 status
+.\scripts\windows-runtime.ps1 stop
+.\scripts\windows-runtime.ps1 import-llm -Models D:\AI-Live-Studio-Models
 ```
 
-目标机器不需要 CUDA Toolkit；需要匹配的 NVIDIA Driver。启动器使用 `cosyvoice-server.exe`、Ollama standalone 和外部模型目录，缺少模型时停止并报告路径。`import-llm` 只从离线包的 Modelfile 注册 GGUF，不联网下载；可用 `--dry-run` 查看解析后的命令，不会启动进程。
+目标机器不需要 CUDA Toolkit；只需要匹配的 NVIDIA Driver。启动器使用 `cosyvoice-server.exe`、Ollama standalone 和外部模型目录，缺少模型、运行库或端口冲突时停止并报告可操作路径。`import-llm` 只从离线包的 Modelfile 注册 GGUF，不联网下载；可用 `--dry-run` 查看解析后的命令，不会启动进程。
 
 目标硬件 POC：
 
@@ -70,4 +91,4 @@ Invoke-RestMethod http://127.0.0.1:8770/api/runtime/recover `
 
 ### CI
 
-Windows workflow 同时监听 `main` 和 `codex/windows-offline-runtime-v1` 的相关路径变更，并保留 `workflow_dispatch`。新增回归覆盖真实子进程持锁、停止失败保留 PID、HTTPS 降级拒绝及请求结束后的资源恢复。只有 GitHub Actions 对相应提交实际运行完成，才可报告 Windows CI 通过；本机回归和 dry-run 不替代该状态。
+Windows workflow 同时运行 Runtime 回归、WinMM 测试、完整运行时组装、PyInstaller、Inno Setup 和 artifact upload。artifact 名称为 `AI-Live-Studio-Windows-Test-Setup`，包含 EXE 和 SHA256 文件。只有 GitHub Actions 对相应提交实际运行完成，才可报告 Windows CI 通过；本机回归和 dry-run 不替代该状态。

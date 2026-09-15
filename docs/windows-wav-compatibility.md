@@ -49,9 +49,10 @@ machine or MCI device is available. It must be run with the updated executable:
 
 1. Preserve one real failed cache file and its metadata. Inspect it with
    `ffprobe` or a WAV tool and reproduce the original MCI open error.
-2. Install the build from `build/windows/output/AI-Audio-Client-Setup.exe`,
-   start the client and point it at that cache. Click `开始播放`; verify the
-   derived `cache/pcm16/` file opens and plays through the same MCI player.
+2. Install `build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe`,
+start AI Live Studio and point the bundled playback client at that cache.
+Click `开始播放`; verify the derived `cache/pcm16/` file opens and plays
+through the same MCI player.
 3. Exercise pause, resume, stop and close. Confirm at least ten segments play
    once and in `sequence` order, and that a second start reuses the derived
    file without a second conversion.
@@ -69,7 +70,7 @@ python -m pip install pyinstaller
 .\build\windows\build.ps1
 ```
 
-The expected deliverable is `build/windows/output/AI-Audio-Client-Setup.exe`.
+The expected deliverable is `build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe`.
 This checkout was tested on macOS, so no Windows executable was generated here;
 the Windows MCI real-device acceptance and build artifact remain pending on a
 Windows host.

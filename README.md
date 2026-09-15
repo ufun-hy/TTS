@@ -205,9 +205,9 @@ python3 scripts/audio-client.py --config config/audio-client.example.json
 
 该阶段不接入播放、虚拟声卡、OBS 或直播平台。
 
-## Windows AI Audio Client
+## Windows Legacy Audio Client
 
-Windows 图形客户端入口为 `windows_client.py`，使用 Tkinter，不需要额外运行时依赖。Windows 构建机上运行 `build/windows/build.ps1`，先生成 PyInstaller 程序，再由 Inno Setup 生成 `AI-Audio-Client-Setup.exe`。安装后用户只需打开客户端、填写 AI Server 地址并点击“启动”。
+Windows 图形客户端入口仍为 `windows_client.py`，作为可复用的播放组件保留。Windows V1 测试机应使用下方完整的 `AI Live Studio` 安装包；旧 `AI-Audio-Client-Setup.exe` 不再是 V1 主要交付物。
 
 Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v1.md)：传输完成状态和本地 `cached/playing/played` 状态分离，下载与播放线程独立，支持顺序播放、暂停、继续和停止；语速、音量在 Mac 入缓存前完成。
 
@@ -243,6 +243,8 @@ Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 
 以上是交给执行智能体的任务文档，不代表相关改造已经完成或目标硬件已经通过验收。
 
-当前 Windows 分支已包含：单 GPU 文件锁与运行状态、Qwen3-ASR CUDA worker、Ollama/兼容 Chat Completions provider、DPAPI 设置接口、严格 Session 播放、Windows 启动器和更新清单校验。真实 CUDA 合成速度、音质、OBS 两小时稳定性以及正式安装器仍需在目标 Windows 机器上验收。
+当前 Windows 分支已包含：单 GPU 文件锁与运行状态、Qwen3-ASR CUDA worker、Ollama/兼容 Chat Completions provider、DPAPI 设置接口、严格 Session 播放、Windows 启动器、启动检查和更新清单校验。Windows 测试安装器由 GitHub Actions 组装固定 Python/PyTorch/qwen-asr、Ollama standalone、CosyVoice、FFmpeg 和必要 DLL；模型仍由外部模型包提供。
 
 Windows 单机模式由 TTS Gateway 内的 `ManagedEngine` 作为唯一 CosyVoice 进程生命周期来源；启动器不再另起独立 CosyVoice 进程。GPU owner 只在引擎/worker 真实退出并确认释放后归还，停止失败会保持 `ERROR`/owner 状态。
+
+Windows 测试安装包入口为 `AI Live Studio`，artifact 为 `AI-Live-Studio-Windows-Test-Setup.exe`。安装到 `C:\Program Files\AI Live Studio`，用户数据在 `%LOCALAPPDATA%\AI-Live-Studio`，默认模型目录为 `D:\AI-Live-Studio-Models`；没有 D 盘时可从启动检查或开始菜单 `Change Model Directory` 选择其他盘符。安装包不下载模型、不安装系统 Python、不需要 CUDA Toolkit 或独立 Ollama。真实 Windows 电脑启动、模型识别、CUDA DLL、ASR→Ollama→CosyVoice 显存切换仍需下一轮验收。

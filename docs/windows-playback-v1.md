@@ -44,18 +44,22 @@ python -m pip install pyinstaller
 脚本需要 Inno Setup 6，并生成：
 
 ```text
-build/windows/output/AI-Audio-Client-Setup.exe
+build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe
 ```
 
-安装后目录包含：
+完整测试安装包的程序目录包含：
 
 ```text
-AI Audio Client/
-├── AI-Audio-Client.exe
-├── config.json
-├── cache/
-└── logs/
+AI Live Studio/
+├── AI-Live-Studio.exe
+├── runtime/python/
+├── runtime/bin/
+├── server/ and web/
+└── scripts/windows-runtime.py
 ```
+
+用户数据位于 `%LOCALAPPDATA%\AI-Live-Studio`，外部模型默认位于
+`D:\AI-Live-Studio-Models`。卸载不会删除这两个目录。
 
 ## 本机可验证项
 

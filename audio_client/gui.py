@@ -18,7 +18,7 @@ from .playback import PlaybackController
 class AudioClientApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("AI Audio Client")
+        self.root.title("AI Live Studio" if os.environ.get("WINDOWS_SINGLE_MACHINE") == "1" else "AI Audio Client")
         self.root.geometry("560x600")
         self.root.minsize(520, 540)
         self.events: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
