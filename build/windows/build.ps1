@@ -10,7 +10,7 @@ $HostPython = (Get-Command python.exe -ErrorAction Stop).Source
 
 $PythonUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
 $PythonSha256 = "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b"
-$TorchVersion = if ($env:AI_LIVE_STUDIO_TORCH_VERSION) { $env:AI_LIVE_STUDIO_TORCH_VERSION } else { "2.6.0+cu124" }
+$TorchVersion = "2.6.0+cu124"
 $TorchIndex = "https://download.pytorch.org/whl/cu124"
 
 $OllamaUrl = "https://github.com/ollama/ollama/releases/download/v0.34.0/ollama-windows-amd64.zip"
@@ -82,12 +82,10 @@ try {
     ) | Set-Content -LiteralPath $pth.FullName -Encoding ASCII
 
     $sitePackages = Join-Path $pythonDir "Lib\site-packages"
-    & $HostPython -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages `
-        --index-url $TorchIndex --extra-index-url https://pypi.org/simple "torch==$TorchVersion"
-    if ($LASTEXITCODE -ne 0) { throw "CUDA PyTorch installation failed" }
     & $HostPython -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages --no-deps qwen-asr==0.0.6
     if ($LASTEXITCODE -ne 0) { throw "qwen-asr installation failed" }
     & $HostPython -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages `
+        --index-url https://pypi.org/simple --extra-index-url $TorchIndex `
         -r (Join-Path $Root "scripts\requirements-qwen-asr-windows.txt")
     if ($LASTEXITCODE -ne 0) { throw "Windows ASR dependency installation failed" }
 
@@ -117,18 +115,21 @@ try {
     Copy-Item -Path (Join-Path $ffmpegExecutable.DirectoryName "*") -Destination $ffmpegDir -Recurse -Force
 
     $vcRoots = @(
-        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\2022"),
-        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022")
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio")
     )
     $vcRuntime = $null
     foreach ($vcRoot in $vcRoots) {
         if (-not $vcRoot) { continue }
-        $vcRuntime = Get-ChildItem -Path (Join-Path $vcRoot "*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT") -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+        $vcRuntime = Get-ChildItem -LiteralPath $vcRoot -Filter "Microsoft.VC143.CRT" -Directory -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($vcRuntime) { break }
     }
-    if (-not $vcRuntime) { throw "MSVC x64 runtime was not found on the Windows build image" }
-    foreach ($component in @($ollamaBin, $cosyvoiceBin, $ffmpegDir)) {
-        Copy-Item -Path (Join-Path $vcRuntime.FullName "*.dll") -Destination $component -Force
+    if ($vcRuntime) {
+        foreach ($component in @($ollamaBin, $cosyvoiceBin, $ffmpegDir)) {
+            Copy-Item -Path (Join-Path $vcRuntime.FullName "*.dll") -Destination $component -Force
+        }
+    } else {
+        Write-Warning "MSVC x64 redist directory was not found; relying on Windows/Python runtime DLLs"
     }
 
     Normalize-Component $ollamaBin @("ollama.exe")

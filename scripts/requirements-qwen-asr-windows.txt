@@ -1,5 +1,6 @@
-# Windows CUDA ASR worker. torch is installed separately from the pinned
+# Windows CUDA ASR worker. The exact torch wheel is resolved from the pinned
 # CUDA 12.4 PyTorch index by build/windows/build.ps1.
+torch==2.6.0+cu124
 transformers==4.57.6
 nagisa==0.2.11
 soynlp==0.0.493
