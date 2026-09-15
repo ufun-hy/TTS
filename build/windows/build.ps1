@@ -29,7 +29,7 @@ function Download-Verified([string]$Url, [string]$Sha256, [string]$Destination) 
     Invoke-WebRequest -Uri $Url -OutFile $Destination
     $actual = (Get-FileHash -Algorithm SHA256 -Path $Destination).Hash.ToLowerInvariant()
     if ($actual -ne $Sha256.ToLowerInvariant()) {
-        throw "SHA256 mismatch for $Url: expected $Sha256, got $actual"
+        throw "SHA256 mismatch for ${Url}: expected $Sha256, got $actual"
     }
 }
 
