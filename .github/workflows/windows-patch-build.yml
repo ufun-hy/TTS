@@ -1,0 +1,68 @@
+name: Build AI Live Studio Windows Patch
+
+on:
+  push:
+    branches:
+      - codex/windows-offline-runtime-v1
+    paths:
+      - "server/**"
+      - "audio_client/**"
+      - "scripts/**"
+      - "windows_playback_service.py"
+      - "windows_client.py"
+      - "web/**"
+      - ".github/workflows/windows-patch-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build-patch:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Build patch archive
+        shell: pwsh
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE
+          $stage = Join-Path $env:RUNNER_TEMP "AI-Live-Studio-Windows-Patch"
+          $output = Join-Path $workspace "build\windows\patch-output"
+          New-Item -ItemType Directory -Force -Path $stage, $output | Out-Null
+
+          foreach ($directory in @("server", "audio_client", "scripts")) {
+            Copy-Item -LiteralPath (Join-Path $workspace $directory) -Destination $stage -Recurse -Force
+          }
+          foreach ($file in @("windows_playback_service.py", "windows_client.py")) {
+            Copy-Item -LiteralPath (Join-Path $workspace $file) -Destination $stage -Force
+          }
+
+          $changed = git diff --name-only HEAD^ HEAD
+          if ($changed | Where-Object { $_ -like "web/*" }) {
+            Copy-Item -LiteralPath (Join-Path $workspace "web") -Destination $stage -Recurse -Force
+          }
+
+          Get-ChildItem -LiteralPath $stage -Directory -Recurse -Filter "__pycache__" |
+            Sort-Object FullName -Descending |
+            Remove-Item -Recurse -Force
+          Get-ChildItem -LiteralPath $stage -File -Recurse -Include "*.pyc", "*.pyo" |
+            Remove-Item -Force
+
+          $zip = Join-Path $output "AI-Live-Studio-Windows-Patch.zip"
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -CompressionLevel Optimal -Force
+          $size = (Get-Item -LiteralPath $zip).Length
+          if ($size -gt 100MB) { throw "Patch archive is unexpectedly large: $size bytes" }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          "$hash  AI-Live-Studio-Windows-Patch.zip" |
+            Set-Content -LiteralPath (Join-Path $output "AI-Live-Studio-Windows-Patch.zip.sha256") -Encoding ASCII
+          Get-ChildItem -LiteralPath $output | Select-Object Name, Length
+
+      - name: Upload patch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Live-Studio-Windows-Patch
+          path: build/windows/patch-output/*
+          if-no-files-found: error
+          retention-days: 30
