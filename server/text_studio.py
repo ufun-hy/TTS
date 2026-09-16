@@ -320,6 +320,19 @@ def generalize_paragraphs(
                 directory = diagnostic_root / "debug" / kind / run_id
                 directory.mkdir(parents=True, exist_ok=True)
                 paths[kind] = directory
+            if provider in {"ollama", "openai_compatible"}:
+                provider_configured = provider_config(provider, provider_root or Path.cwd())
+                diagnostic_command: Any = {
+                    "transport": "http",
+                    "provider": provider,
+                    "base_url": provider_configured.get("base_url", ""),
+                    "model": model or provider_configured.get("model", ""),
+                }
+            else:
+                diagnostic_command = (
+                    agy_prompt_command(_provider_command(provider, model), prompt)
+                    if provider == "agy" else _provider_command(provider, model)
+                )
             diagnostic = {
                 "project_id": project_id, "run_id": run_id, "batch_id": batch_id,
                 "paragraph_start": indexes[0], "paragraph_end": indexes[-1],
@@ -333,8 +346,7 @@ def generalize_paragraphs(
                 "stderr_path": str(paths["response"] / f"{batch_id}-stderr.txt"),
             }
             (paths["request"] / f"{batch_id}-request.json").write_text(json.dumps({
-                **diagnostic, "command": (agy_prompt_command(_provider_command(provider, model), prompt)
-                            if provider == "agy" else _provider_command(provider, model)), "prompt": prompt,
+                **diagnostic, "command": diagnostic_command, "prompt": prompt,
                 "candidate_count": candidate_count, "timeout_seconds": timeout_seconds,
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             log_dir = diagnostic_root / "logs"

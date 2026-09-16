@@ -113,6 +113,21 @@ class TextStudioTest(unittest.TestCase):
         result = text_studio._validate_model_result({"candidates": ["A"]}, ["p0001"])
         self.assertEqual(result, [{"id": "p0001", "candidates": ["A"]}])
 
+    def test_ollama_explicit_model_uses_http_diagnostics_and_saves_response(self):
+        root = Path(tempfile.mkdtemp(prefix="text-studio-ollama-diagnostic-test-"))
+        with mock.patch.object(text_studio, "run_http_provider", return_value=(
+                '{"candidates":["改写"]}', "qwen3:8b")):
+            result = text_studio.generalize_paragraphs(
+                [{"id": "p0001", "original_text": "原稿"}], "ollama", 1, "",
+                diagnostic_root=root, model="qwen3:8b", provider_root=root,
+            )
+        self.assertEqual(result, [{"id": "p0001", "candidates": ["改写"]}])
+        request_file = next((root / "debug" / "request").glob("*/*-request.json"))
+        request = json.loads(request_file.read_text(encoding="utf-8"))
+        self.assertEqual(request["command"]["transport"], "http")
+        record = json.loads(next((root / "logs").glob("*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(Path(record["response_path"]).read_text(encoding="utf-8"), '{"candidates":["改写"]}')
+
     def test_prompt_contains_no_placeholder_candidate_examples(self):
         prompt = text_studio._build_prompt(
             [{"id": "p0001", "original_text": "拍一单试吃一个。"}],
