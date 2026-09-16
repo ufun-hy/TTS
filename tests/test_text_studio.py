@@ -4,7 +4,7 @@ import tempfile
 import threading
 import unittest
 from unittest import mock
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from server import text_studio
 
@@ -52,6 +52,18 @@ class TextStudioTest(unittest.TestCase):
         request = urlopen.call_args.args[0]
         payload = json.loads(request.data.decode("utf-8"))
         self.assertNotIn("{{current_time}}", payload["text"])
+        self.assertTrue(request.full_url.endswith("/speak"))
+
+    def test_windows_tts_preview_returns_wav(self):
+        response = mock.MagicMock()
+        response.read.return_value = b"RIFFpreview"
+        response.__enter__.return_value = response
+        with mock.patch.object(text_studio.os, "name", "nt"), \
+             mock.patch.object(text_studio, "_read_keychain_api_key", return_value="key"), \
+             mock.patch.object(text_studio.urllib.request, "urlopen", return_value=response) as urlopen:
+            result = text_studio._tts_preview("试听", "default", "http://gateway")
+        self.assertEqual(result, b"RIFFpreview")
+        self.assertTrue(urlopen.call_args.args[0].full_url.endswith("/synthesize"))
 
     def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
         cases = [
@@ -108,6 +120,30 @@ class TextStudioTest(unittest.TestCase):
         }
         result = text_studio._validate_model_result(raw, ["p0001", "p0002"])
         self.assertEqual([item["id"] for item in result], ["p0001", "p0002"])
+
+    def test_validate_single_result_without_envelope(self):
+        result = text_studio._validate_model_result({"candidates": ["A"]}, ["p0001"])
+        self.assertEqual(result, [{"id": "p0001", "candidates": ["A"]}])
+
+    def test_windows_tts_preview_endpoint_returns_wav(self):
+        root = Path(__file__).resolve().parents[1]
+        with mock.patch.object(text_studio, "_tts_preview", return_value=b"RIFFpreview"):
+            server = text_studio.StudioServer(("127.0.0.1", 0), text_studio.make_handler(root, "http://gateway"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/api/tts/preview",
+                    data=json.dumps({"text": "试听", "voice": "default"}).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.headers.get_content_type(), "audio/wav")
+                    self.assertEqual(response.read(), b"RIFFpreview")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join()
 
     def test_prompt_contains_no_placeholder_candidate_examples(self):
         prompt = text_studio._build_prompt(

@@ -88,6 +88,9 @@ def _extract_json(text: str) -> Any:
 
 
 def _validate_model_result(raw: Any, expected_ids: list[str]) -> list[dict[str, Any]]:
+    # Some local/single-unit providers return the item without the envelope.
+    if len(expected_ids) == 1 and isinstance(raw, dict) and isinstance(raw.get("candidates"), list):
+        raw = {"paragraphs": [{"id": raw.get("id", expected_ids[0]), "candidates": raw["candidates"]}]}
     if not isinstance(raw, dict) or not isinstance(raw.get("paragraphs"), list):
         raise ValueError("model output must contain paragraphs[]")
     by_id: dict[str, dict[str, Any]] = {}
@@ -534,7 +537,7 @@ def _tts_health(gateway_url: str) -> bool:
         return False
 
 
-def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
+def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any] | bytes:
     text = broadcast_text(text)
     if not text:
         raise ValueError("本段全部为禁止播报话术，没有可试听内容。")
@@ -542,8 +545,9 @@ def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
     if not key:
         raise RuntimeError("TTS API key is not available")
     payload = json.dumps({"text": resolve_dynamic_time(text), "voice": voice}, ensure_ascii=False).encode("utf-8")
+    endpoint = "/synthesize" if os.name == "nt" else "/speak"
     request = urllib.request.Request(
-        f"{gateway_url.rstrip('/')}/speak",
+        f"{gateway_url.rstrip('/')}{endpoint}",
         data=payload,
         headers={
             "Authorization": f"Bearer {key}",
@@ -553,6 +557,11 @@ def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
     )
     try:
         with urllib.request.urlopen(request, timeout=900) as response:
+            if os.name == "nt":
+                audio = response.read()
+                if not audio.startswith(b"RIFF"):
+                    raise RuntimeError("TTS preview returned a non-WAV response")
+                return audio
             return json.load(response)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -745,7 +754,15 @@ def make_handler(
                     if not isinstance(voice, str) or not voice.strip():
                         raise ValueError("voice is required")
                     result = _tts_preview(text.strip(), voice.strip(), gateway_url)
-                    self._json(200, result)
+                    if isinstance(result, bytes):
+                        self.send_response(200)
+                        self.send_header("Content-Type", "audio/wav")
+                        self.send_header("Content-Length", str(len(result)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        self.wfile.write(result)
+                    else:
+                        self._json(200, result)
                     return
 
                 if path == "/api/live/start":
