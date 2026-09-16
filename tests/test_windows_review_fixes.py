@@ -224,7 +224,7 @@ class RecoveryTests(unittest.TestCase):
                         mock.patch.object(text_studio, "_stop_tts_engine", confirm if operation == "preview" else mock.Mock(return_value=True)), \
                         mock.patch.object(text_studio, "unload_ollama_url", confirm if operation == "ollama" else mock.Mock(return_value=True)), \
                         mock.patch.object(text_studio, "provider_config", return_value={"model": "qwen3:8b", "base_url": "http://original-ollama"}), \
-                        mock.patch.object(text_studio, "_tts_preview", return_value={"success": True}), \
+                        mock.patch.object(text_studio, "_tts_preview", return_value=b"RIFFpreview"), \
                         mock.patch.object(text_studio, "generalize_paragraphs", return_value=[]):
                     server = text_studio.StudioServer(("127.0.0.1", 0), text_studio.make_handler(root, "http://gateway", tts_api_key="synthetic"))
                     thread = threading.Thread(target=server.serve_forever)
@@ -241,6 +241,8 @@ class RecoveryTests(unittest.TestCase):
                         except HTTPError as exc:
                             response = exc
                         with response:
+                            if path == "/api/tts/preview":
+                                return response.status, response.read()
                             return response.status, json.load(response)
                     try:
                         path = "/api/tts/preview" if operation == "preview" else "/api/generalize"

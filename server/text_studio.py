@@ -585,13 +585,13 @@ def _tts_health(gateway_url: str) -> bool:
         return False
 
 
-def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
+def _tts_preview(text: str, voice: str, gateway_url: str) -> bytes:
     key = _read_keychain_api_key()
     if not key:
         raise RuntimeError("TTS API key is not available")
     payload = json.dumps({"text": resolve_dynamic_time(text), "voice": voice}, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
-        f"{gateway_url.rstrip('/')}/speak",
+        f"{gateway_url.rstrip('/')}/synthesize",
         data=payload,
         headers={
             "Authorization": f"Bearer {key}",
@@ -601,7 +601,10 @@ def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
     )
     try:
         with urllib.request.urlopen(request, timeout=900) as response:
-            return json.load(response)
+            audio = response.read()
+        if not audio.startswith(b"RIFF"):
+            raise RuntimeError("TTS preview returned a non-WAV response")
+        return audio
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(detail or f"TTS HTTP {exc.code}") from exc
@@ -962,7 +965,12 @@ def make_handler(
                                 runtime.release(lease)
                             else:
                                 runtime.release(lease, "TTS engine did not confirm process exit")
-                    self._json(200, result)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/wav")
+                    self.send_header("Content-Length", str(len(result)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(result)
                     return
 
                 if path == "/api/runtime/recover":

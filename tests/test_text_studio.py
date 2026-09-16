@@ -43,15 +43,38 @@ class TextStudioTest(unittest.TestCase):
 
     def test_tts_preview_resolves_dynamic_time_at_request(self):
         response = mock.MagicMock()
-        response.read.return_value = b'{"success": true}'
+        response.read.return_value = b'RIFFpreview'
         response.__enter__.return_value = response
         with mock.patch.object(text_studio, "_read_keychain_api_key", return_value="key"), \
              mock.patch.object(text_studio.urllib.request, "urlopen", return_value=response) as urlopen:
             text_studio._tts_preview("现在是{{current_time}}", "default", "http://gateway")
 
         request = urlopen.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/synthesize"))
         payload = json.loads(request.data.decode("utf-8"))
         self.assertNotIn("{{current_time}}", payload["text"])
+
+    def test_tts_preview_endpoint_returns_wav_for_browser_playback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            server = text_studio.StudioServer(("127.0.0.1", 0), text_studio.make_handler(root, "http://gateway"))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                request = text_studio.urllib.request.Request(
+                    f"http://127.0.0.1:{server.server_port}/api/tts/preview",
+                    data=json.dumps({"text": "试听", "voice": "default"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                with mock.patch.object(text_studio, "_tts_preview", return_value=b"RIFFpreview"):
+                    with urlopen(request) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.headers.get_content_type(), "audio/wav")
+                        self.assertEqual(response.read(), b"RIFFpreview")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(1)
 
     def test_diagnostics_preserve_success_schema_failure_and_timeout(self):
         cases = [
