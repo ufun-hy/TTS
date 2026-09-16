@@ -8,6 +8,13 @@ import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+SERVER_ROOT = ROOT / "server"
+# Embedded Python may start with only the application root on sys.path.
+# Add both roots before importing the sibling entry modules.
+for import_root in (ROOT, SERVER_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
+
 HTML_PATH = (ROOT / "web" / "text-studio.html").resolve()
 EXTENSION_PATHS = [
     ROOT / "web" / "text-studio-extension.js",

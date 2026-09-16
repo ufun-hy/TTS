@@ -168,6 +168,7 @@ try {
         Copy-Item -Path (Join-Path $Root $directory) -Destination $Stage -Recurse -Force
     }
     Copy-Item -Path (Join-Path $Root "windows_client.py") -Destination $Stage -Force
+    Copy-Item -Path (Join-Path $Root "windows_playback_service.py") -Destination $Stage -Force
     Copy-Item -Path (Join-Path $Root "voices.json") -Destination $Stage -Force
 
     $manifest = [ordered]@{

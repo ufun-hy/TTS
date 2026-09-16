@@ -28,6 +28,8 @@ build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe
 双击 `AI Live Studio` 后，入口会执行启动检查、启动 Runtime、等待本地服务健康，最后打开
 `http://127.0.0.1:8770/`。模型默认目录为 `D:\AI-Live-Studio-Models`；没有 D 盘或模型路径变化时可在启动检查中选择目录，也可从开始菜单运行 `Change Model Directory`。
 
+单机 Runtime 的音频下载与 WinMM 播放由 `windows_playback_service.py` 后台运行，不依赖 Tkinter；旧 `windows_client.py` 仅保留给独立的旧 Audio Client 构建。
+
 外部模型包至少需要：
 
 ```text

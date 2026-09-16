@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -66,6 +68,32 @@ class WindowsPackagingTests(unittest.TestCase):
         expected_engine = Path("runtime/bin/cosyvoice") / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
         self.assertIn(str(expected_engine), entries["tts-gateway"][0])
         self.assertEqual(entries["ollama"][1], Path("runtime/bin/ollama"))
+
+    def test_single_machine_audio_client_uses_headless_playback_service(self):
+        entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))
+        self.assertEqual(entries["audio-client"][0][1], str(ROOT / "windows_playback_service.py"))
+        self.assertNotIn("windows_client.py", entries["audio-client"][0])
+
+    def test_headless_playback_service_imports_without_tkinter(self):
+        code = '''
+import importlib.abc
+import sys
+
+class BlockTk(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "tkinter" or fullname.startswith("tkinter."):
+            raise ModuleNotFoundError("tkinter blocked")
+
+sys.meta_path.insert(0, BlockTk())
+sys.path.insert(0, sys.argv[1])
+import windows_playback_service
+'''
+        env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+        result = subprocess.run(
+            [sys.executable, '-S', '-c', code, str(ROOT)],
+            cwd=tempfile.gettempdir(), env=env, capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

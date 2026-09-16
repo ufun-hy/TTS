@@ -18,6 +18,7 @@ on:
       - "config/**"
       - "scripts/**"
       - "windows_client.py"
+      - "windows_playback_service.py"
       - "windows_launcher.py"
       - "build/windows/**"
       - "tests/**"

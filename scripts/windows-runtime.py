@@ -246,7 +246,7 @@ def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str,
         "audio-cache": ([str(python), str(ROOT / "scripts" / "audio-cache-server.py"), "--host", "127.0.0.1", "--port", "8000", "--root", str(data / "audio-cache")], ROOT),
         "recording-transcript": ([str(python), str(ROOT / "server" / "recording_transcript.py"), "--host", "127.0.0.1", "--port", "8771", "--model", str(asr_model)], ROOT),
         "text-studio": ([str(python), str(ROOT / "server" / "text_studio_entry.py"), "--host", "127.0.0.1", "--port", "8770", "--tts-gateway-url", "http://127.0.0.1:8765", "--audio-cache-url", "http://127.0.0.1:8000"], ROOT),
-        "audio-client": ([str(python), str(ROOT / "windows_client.py")], ROOT),
+        "audio-client": ([str(python), str(ROOT / "windows_playback_service.py")], ROOT),
     }
 
 
