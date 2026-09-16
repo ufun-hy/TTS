@@ -17,8 +17,9 @@ $OllamaUrl = "https://github.com/ollama/ollama/releases/download/v0.34.0/ollama-
 $OllamaSha256 = "a7dd1b174f39d3d1b8a25d4cbc86045d0e190b17187bfdcbe2f2ee3b5a11470e"
 $CosyVoiceUrl = "https://github.com/Lourdle/cosyvoice.cpp/releases/download/v0.1.3/cosyvoice-1616b12-windows-x64-ffmpeg-no_icu.zip"
 $CosyVoiceSha256 = "24c8589adcc0587932b5a7cc8d7489de8bd4f4b651bd0f3a67d4b42a611ba5c6"
-$LlamaCudaUrl = "https://github.com/ggml-org/llama.cpp/releases/download/b10938/llama-b10938-bin-win-cuda-12.4-x64.zip"
-$LlamaCudaSha256 = "e44c0135a03ab33cb477ed2f3211fac9efe6ff0106c740c2303ebfae60f9e7b2"
+# CosyVoice upstream documents noise with prebuilt GGML CUDA on Windows.
+$LlamaVulkanUrl = "https://github.com/ggml-org/llama.cpp/releases/download/b10938/llama-b10938-bin-win-vulkan-x64.zip"
+$LlamaVulkanSha256 = "caf934c42fcdb504fe49b0ac24e4bac5568520295bbc37ddd6a28b7132109c86"
 $FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-15-13-18/ffmpeg-n8.1.2-53-g1005b294ff-win64-lgpl-shared-8.1.zip"
 $FfmpegSha256 = "3b8e88c903043650350bf39adcd96c686e348e35857fd3476603e4d4ce126063"
 
@@ -126,8 +127,8 @@ try {
     Download-Verified $CosyVoiceUrl $CosyVoiceSha256 $cosyvoiceArchive
     Copy-ArchiveContents $cosyvoiceArchive $cosyvoiceBin
 
-    $llamaArchive = Join-Path $DownloadRoot "llama-cuda.zip"
-    Download-Verified $LlamaCudaUrl $LlamaCudaSha256 $llamaArchive
+    $llamaArchive = Join-Path $DownloadRoot "llama-vulkan.zip"
+    Download-Verified $LlamaVulkanUrl $LlamaVulkanSha256 $llamaArchive
     Copy-ArchiveFiles $llamaArchive $cosyvoiceBin @("ggml*.dll", "libomp*.dll")
 
     $ffmpegArchive = Join-Path $DownloadRoot "ffmpeg.zip"
@@ -179,7 +180,7 @@ try {
         qwen_asr = "0.0.6"
         ollama = "0.34.0"
         cosyvoice = "v0.1.3 (1616b12, no ICU)"
-        ggml_cuda = "llama.cpp b10938 GGML CUDA backend; CUDA DLLs shared from PyTorch 2.6.0+cu124"
+        ggml_backend = "llama.cpp b10938 prebuilt Vulkan backend"
         ffmpeg = "n8.1.2-53-g1005b294ff"
         model_path_default = "D:\\AI-Live-Studio-Models"
     }

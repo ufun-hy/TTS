@@ -508,7 +508,7 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
             errors.append(f"{label} 未随安装包提供\n请重新安装或检查程序目录：{path}")
     torch_lib = bin_dir.parent / "python" / "Lib" / "site-packages" / "torch" / "lib"
     for label, pattern, directories in (
-        ("GGML DLL", "ggml*.dll", (components["cosyvoice"],)),
+        ("GGML Vulkan DLL", "ggml-vulkan.dll", (components["cosyvoice"],)),
         ("CUDA runtime DLL", "cudart64_*.dll", (torch_lib, components["cosyvoice"])),
         ("cuBLAS DLL", "cublas64_*.dll", (torch_lib, components["cosyvoice"])),
     ):
@@ -565,7 +565,7 @@ def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str,
     asr_model = models / "asr" / "Qwen3-ASR-1.7B"
     engine = components["cosyvoice"] / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
     ollama = components["ollama"] / ("ollama.exe" if os.name == "nt" else "ollama")
-    engine_backend = "cuda0" if os.name == "nt" else "cuda"
+    engine_backend = "vulkan" if os.name == "nt" else "cuda"
     return {
         "ollama": ([str(ollama), "serve"], components["ollama"]),
         "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", engine_backend, "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),

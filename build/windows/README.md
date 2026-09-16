@@ -19,7 +19,7 @@ build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe
 - CPython 3.11.9 embeddable runtime
 - CUDA 12.4 PyTorch 2.6.0 与固定 `qwen-asr` 依赖
 - Ollama 0.34.0 standalone
-- CosyVoice v0.1.3（commit `1616b12`）及 ONNX/GGML/CUDA DLL
+- CosyVoice v0.1.3（commit `1616b12`）及 ONNX/GGML/Vulkan DLL
 - FFmpeg/ffprobe n8.1
 
 安装器只把程序写入 `C:\Program Files\AI Live Studio`。用户数据写入
@@ -60,7 +60,7 @@ Windows 单机版本的后台服务由 `scripts/windows-runtime.py` 管理，模
 HTTP 超时会明确列在 `issues` 中。`stop` 只对身份匹配的进程执行 `taskkill`，不会按端口终止外部进程。
 CosyVoice 的按需引擎端口 `8766` 会通过父 PID 归属到 TTS Gateway；若不是其子进程，也会作为未跟踪监听器报告。
 
-目标机器不需要 CUDA Toolkit；只需要匹配的 NVIDIA Driver。启动器使用 `cosyvoice-server.exe`、Ollama standalone 和外部模型目录，缺少模型、运行库或端口冲突时停止并报告可操作路径。`import-llm` 只从离线包的 Modelfile 注册 GGUF，不联网下载；可用 `--dry-run` 查看解析后的命令，不会启动进程。
+目标机器不需要 CUDA Toolkit；只需要匹配的 NVIDIA Driver。TTS 默认使用 Vulkan，避免预编译 GGML CUDA 后端在 CosyVoice 上产生噪声；ASR 仍使用 PyTorch CUDA。启动器使用 `cosyvoice-server.exe`、Ollama standalone 和外部模型目录，缺少模型、运行库或端口冲突时停止并报告可操作路径。`import-llm` 只从离线包的 Modelfile 注册 GGUF，不联网下载；可用 `--dry-run` 查看解析后的命令，不会启动进程。
 
 目标硬件 POC：
 

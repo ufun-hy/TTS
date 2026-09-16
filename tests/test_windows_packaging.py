@@ -74,11 +74,17 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertNotEqual(secret_store(root).path, tts_secret_store(root).path)
             self.assertTrue(str(tts_secret_store(root).path).endswith("tts-api-key.dpapi"))
 
-    def test_runtime_components_keep_cuda_dlls_out_of_python_path(self):
+    def test_runtime_components_keep_backend_dlls_out_of_python_path(self):
         entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))
         expected_engine = Path("runtime/bin/cosyvoice") / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
         self.assertIn(str(expected_engine), entries["tts-gateway"][0])
         self.assertEqual(entries["ollama"][1], Path("runtime/bin/ollama"))
+
+    def test_windows_tts_uses_vulkan_backend(self):
+        paths = Path("models"), Path("data"), Path("python"), Path("runtime/bin")
+        with mock.patch.object(launcher.os, "name", "nt"):
+            command = launcher.commands(*paths)["tts-gateway"][0]
+        self.assertEqual(command[command.index("--engine-backend") + 1], "vulkan")
 
     def test_single_machine_audio_client_uses_headless_playback_service(self):
         entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))
