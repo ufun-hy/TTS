@@ -10,6 +10,7 @@ on:
       - "scripts/**"
       - "windows_playback_service.py"
       - "windows_client.py"
+      - "windows_launcher.py"
       - "web/**"
       - ".github/workflows/windows-patch-build.yml"
   workflow_dispatch:
@@ -35,7 +36,7 @@ jobs:
           foreach ($directory in @("server", "audio_client", "scripts")) {
             Copy-Item -LiteralPath (Join-Path $workspace $directory) -Destination $stage -Recurse -Force
           }
-          foreach ($file in @("windows_playback_service.py", "windows_client.py")) {
+          foreach ($file in @("windows_playback_service.py", "windows_client.py", "windows_launcher.py")) {
             Copy-Item -LiteralPath (Join-Path $workspace $file) -Destination $stage -Force
           }
 

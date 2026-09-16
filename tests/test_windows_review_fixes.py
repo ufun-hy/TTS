@@ -89,34 +89,57 @@ finally:
 
 
 class StopTests(unittest.TestCase):
+    @staticmethod
+    def _record():
+        return launcher._record(
+            "text-studio", 123,
+            ["C:/AI-Live-Studio/runtime/python/python.exe", "C:/AI-Live-Studio/server/text_studio_entry.py"],
+        )
+
+    @staticmethod
+    def _info():
+        return {
+            "pid": "123",
+            "executable": "C:/AI-Live-Studio/runtime/python/python.exe",
+            "command_line": "C:/AI-Live-Studio/runtime/python/python.exe C:/AI-Live-Studio/server/text_studio_entry.py",
+        }
+
     def test_stop_preserves_processes_even_when_taskkill_reports_success(self):
         for returncode in (0, 1):
+            record = self._record()
             with self.subTest(returncode=returncode), \
                     mock.patch.object(launcher, "os", SimpleNamespace(name="nt")), \
                     mock.patch.object(launcher, "_running", return_value=True), \
+                    mock.patch.object(launcher, "_process_info", return_value=self._info()), \
                     mock.patch.object(launcher.subprocess, "run", return_value=SimpleNamespace(
                         returncode=returncode, stdout="", stderr="denied")):
-                self.assertEqual(launcher._stop_processes({"studio": 123}, timeout=0), {"studio": 123})
+                self.assertEqual(launcher._stop_processes({"text-studio": record}, timeout=0), {"text-studio": record})
 
     def test_stop_forgets_only_confirmed_exit(self):
         with mock.patch.object(launcher, "os", SimpleNamespace(name="nt")), \
                 mock.patch.object(launcher, "_running", side_effect=[True, False, False]), \
+                mock.patch.object(launcher, "_process_info", return_value=self._info()), \
                 mock.patch.object(launcher.subprocess, "run", return_value=SimpleNamespace(
-                    returncode=1, stdout="", stderr="process exited concurrently")):
-            self.assertEqual(launcher._stop_processes({"studio": 123}, timeout=0), {})
+                        returncode=1, stdout="", stderr="process exited concurrently")):
+            self.assertEqual(launcher._stop_processes({"text-studio": self._record()}, timeout=0), {})
 
     def test_stop_command_persists_survivors_and_returns_nonzero(self):
-        with mock.patch.object(launcher, "_load_pids", return_value={"studio": 123, "cache": 456}), \
-                mock.patch.object(launcher, "_stop_processes", return_value={"studio": 123}), \
-                mock.patch.object(launcher, "_write_pids") as write:
+        records = {"text-studio": self._record(), "audio-cache": {"pid": 456}}
+        survivor = {"text-studio": self._record()}
+        with mock.patch.object(launcher, "_load_processes", return_value=records), \
+                mock.patch.object(launcher, "_stop_processes", return_value=survivor), \
+                mock.patch.object(launcher, "_untracked_listeners", return_value=[]), \
+                mock.patch.object(launcher, "_write_processes") as write:
             self.assertEqual(launcher.stop(SimpleNamespace(data="synthetic-data")), 1)
-            self.assertEqual(write.call_args.args[1], {"studio": 123})
+            self.assertEqual(write.call_args.args[1], survivor)
 
     def test_taskkill_timeout_keeps_pid(self):
+        record = self._record()
         with mock.patch.object(launcher, "os", SimpleNamespace(name="nt")), \
                 mock.patch.object(launcher, "_running", return_value=True), \
+                mock.patch.object(launcher, "_process_info", return_value=self._info()), \
                 mock.patch.object(launcher.subprocess, "run", side_effect=subprocess.TimeoutExpired("taskkill", 0)):
-            self.assertEqual(launcher._stop_processes({"studio": 123}, timeout=0), {"studio": 123})
+            self.assertEqual(launcher._stop_processes({"text-studio": record}, timeout=0), {"text-studio": record})
 
 
 class UpdateSourceTests(unittest.TestCase):

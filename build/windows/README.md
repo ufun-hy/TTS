@@ -55,6 +55,10 @@ Windows 单机版本的后台服务由 `scripts/windows-runtime.py` 管理，模
 .\scripts\windows-runtime.ps1 import-llm -Models D:\AI-Live-Studio-Models
 ```
 
+`status` 会同时显示进程的 `pid`、`running`、`owned`、预期入口、监听 PID 和
+`health_details`。进程身份按可执行文件与入口命令校验；陈旧 PID、PID 被复用、未跟踪监听器和
+HTTP 超时会明确列在 `issues` 中。`stop` 只对身份匹配的进程执行 `taskkill`，不会按端口终止外部进程。
+
 目标机器不需要 CUDA Toolkit；只需要匹配的 NVIDIA Driver。启动器使用 `cosyvoice-server.exe`、Ollama standalone 和外部模型目录，缺少模型、运行库或端口冲突时停止并报告可操作路径。`import-llm` 只从离线包的 Modelfile 注册 GGUF，不联网下载；可用 `--dry-run` 查看解析后的命令，不会启动进程。
 
 目标硬件 POC：

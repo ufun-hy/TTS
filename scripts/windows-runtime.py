@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
-from urllib import request
+from urllib import error, request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -26,6 +26,28 @@ from local_runtime.file_lease import _pid_alive
 DEFAULT_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "AI-Live-Studio"
 DEFAULT_MODELS = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", "D:/AI-Live-Studio-Models"))
 RUNTIME_PORTS = (8765, 8766, 8000, 8770, 8771)
+SERVICE_PORTS = {
+    "ollama": 11435,
+    "tts-gateway": 8765,
+    "audio-cache": 8000,
+    "recording-transcript": 8771,
+    "text-studio": 8770,
+}
+SERVICE_MATCHERS = {
+    "ollama": ("ollama.exe", "serve"),
+    "tts-gateway": ("python.exe", "server/tts_gateway.py"),
+    "audio-cache": ("python.exe", "scripts/audio-cache-server.py"),
+    "recording-transcript": ("python.exe", "server/recording_transcript.py"),
+    "text-studio": ("python.exe", "server/text_studio_entry.py"),
+    "audio-client": ("python.exe", "windows_playback_service.py"),
+}
+HEALTH_ENDPOINTS = {
+    "ollama": ("ollama", "http://127.0.0.1:11435/api/tags"),
+    "tts": ("tts-gateway", "http://127.0.0.1:8765/health"),
+    "cache": ("audio-cache", "http://127.0.0.1:8000/health"),
+    "studio": ("text-studio", "http://127.0.0.1:8770/api/health"),
+    "asr": ("recording-transcript", "http://127.0.0.1:8771/api/health"),
+}
 
 
 def _configured_models(data: Path, explicit: str = "") -> Path:
@@ -52,59 +74,314 @@ def _component_dirs(bin_dir: Path) -> dict[str, Path]:
     }
 
 
-def _load_pids(path: Path) -> dict[str, int]:
+def _record(name: str, pid: int, command: list[str], launcher_pid: int | None = None) -> dict[str, object]:
+    executable = command[0] if command else SERVICE_MATCHERS[name][0]
+    entrypoint = next((argument for argument in command[1:] if argument.endswith(".py")), "")
+    if not entrypoint and name == "ollama":
+        entrypoint = "serve"
+    value: dict[str, object] = {
+        "pid": pid,
+        "expected_executable": executable,
+        "expected_entrypoint": entrypoint,
+        "command": command,
+        "port": SERVICE_PORTS.get(name),
+        "started_at": time.time(),
+    }
+    if launcher_pid and launcher_pid != pid:
+        value["launcher_pid"] = launcher_pid
+    return value
+
+
+def _coerce_record(name: str, value: object) -> dict[str, object]:
+    record = dict(value) if isinstance(value, dict) else {"pid": value}
+    try:
+        record["pid"] = int(record.get("pid", 0))
+    except (TypeError, ValueError):
+        record["pid"] = 0
+    expected_executable, expected_entrypoint = SERVICE_MATCHERS.get(name, ("", ""))
+    record.setdefault("expected_executable", expected_executable)
+    record.setdefault("expected_entrypoint", expected_entrypoint)
+    record.setdefault("port", SERVICE_PORTS.get(name))
+    return record
+
+
+def _load_processes(path: Path) -> dict[str, dict[str, object]]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError):
         return {}
-    return {name: int(pid) for name, pid in value.items() if isinstance(name, str) and str(pid).isdigit()}
+    if not isinstance(value, dict):
+        return {}
+    services = value.get("services") if isinstance(value.get("services"), dict) else value
+    return {
+        name: _coerce_record(name, record)
+        for name, record in services.items()
+        if isinstance(name, str) and name != "version"
+    }
+
+
+def _load_pids(path: Path) -> dict[str, int]:
+    """Backward-compatible PID view for older diagnostics and callers."""
+    return {name: int(record["pid"]) for name, record in _load_processes(path).items() if int(record["pid"]) > 0}
 
 
 def _running(pid: int) -> bool:
     return _pid_alive(pid)
 
 
-def _stop_processes(pids: dict[str, int], timeout: float = 10.0) -> dict[str, int]:
-    remaining = dict(pids)
-    for name, pid in pids.items():
-        if _running(pid):
-            detail = ""
+def _write_processes(path: Path, records: dict[str, dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps({"version": 2, "services": records}, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _write_pids(path: Path, pids: dict[str, object]) -> None:
+    """Write either legacy integer PIDs or full service records."""
+    _write_processes(path, {name: _coerce_record(name, record) for name, record in pids.items()})
+
+
+def _powershell() -> str:
+    environment = getattr(os, "environ", {})
+    candidates = [
+        Path(environment.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe",
+        Path("powershell.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return "powershell.exe"
+
+
+def _powershell_json(script: str) -> object:
+    try:
+        result = subprocess.run(
+            [_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return None
+
+
+def _process_info(pid: int) -> dict[str, str]:
+    if not pid:
+        return {}
+    if os.name == "nt":
+        value = _powershell_json(
+            f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}'; "
+            "if ($null -ne $p) { $p | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
+        )
+        if isinstance(value, list):
+            value = value[0] if value else {}
+        if not isinstance(value, dict):
+            return {}
+        command_line = str(value.get("CommandLine") or "")
+        executable = str(value.get("ExecutablePath") or "")
+        if not executable and command_line:
+            command_start = command_line.lstrip()
+            executable = command_start.split('"', 2)[1] if command_start.startswith('"') else command_start.split(None, 1)[0]
+        return {
+            "pid": str(value.get("ProcessId", pid)),
+            "executable": executable,
+            "command_line": command_line,
+        }
+    try:
+        result = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    command_line = result.stdout.strip()
+    return {"pid": str(pid), "executable": command_line.split(" ", 1)[0] if command_line else "", "command_line": command_line}
+
+
+def _listener_pids(port: int) -> list[int]:
+    if os.name == "nt":
+        value = _powershell_json(
+            f"Get-NetTCPConnection -State Listen -LocalPort {int(port)} -ErrorAction SilentlyContinue "
+            "| Select-Object -ExpandProperty OwningProcess | ConvertTo-Json -Compress"
+        )
+        values = value if isinstance(value, list) else [value]
+        result = []
+        for item in values:
             try:
-                if os.name == "nt":
-                    result = subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        capture_output=True, text=True, timeout=timeout,
-                    )
-                    if result.returncode:
-                        detail = (result.stderr or result.stdout).strip()
-                else:
-                    os.kill(pid, 15)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                detail = str(exc)
-            deadline = time.monotonic() + timeout
-            while _running(pid) and time.monotonic() < deadline:
-                time.sleep(0.1)
-            if _running(pid):
-                print(f"stop_failed {name} PID={pid}: {detail or 'process has not exited'}", file=sys.stderr)
+                pid = int(item)
+            except (TypeError, ValueError):
                 continue
+            if pid > 0 and pid not in result:
+                result.append(pid)
+        return result
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{int(port)}", "-sTCP:LISTEN", "-Fp"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids = []
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                pid = int(line[1:])
+            except ValueError:
+                continue
+            if pid not in pids:
+                pids.append(pid)
+    return pids
+
+
+def _normalise(value: str) -> str:
+    return str(value or "").replace("/", "\\").strip().strip('"').casefold()
+
+
+def _basename(value: str) -> str:
+    return value.replace("/", "\\").rstrip("\\").rsplit("\\", 1)[-1]
+
+
+def _identity_matches(name: str, record: dict[str, object], info: dict[str, str]) -> bool:
+    if not info:
+        return False
+    expected_executable, expected_entrypoint = SERVICE_MATCHERS.get(name, ("", ""))
+    expected_executable = str(record.get("expected_executable") or expected_executable)
+    expected_entrypoint = str(record.get("expected_entrypoint") or expected_entrypoint)
+    actual_executable = _basename(info.get("executable", "")).casefold()
+    if not actual_executable or actual_executable != _basename(expected_executable).casefold():
+        return False
+    command_line = _normalise(info.get("command_line", ""))
+    expected = _normalise(expected_entrypoint)
+    if not expected:
+        return True
+    if expected == "serve":
+        return any(part == "serve" for part in command_line.split())
+    return expected in command_line or _basename(expected) in command_line
+
+
+def _inspect_process(name: str, record: dict[str, object]) -> dict[str, object]:
+    pid = int(record.get("pid", 0) or 0)
+    running = bool(pid and _running(pid))
+    info = _process_info(pid) if running else {}
+    listeners = _listener_pids(int(record["port"])) if record.get("port") else []
+    matching_listener = next(
+        (listener for listener in listeners if _identity_matches(name, record, _process_info(listener))),
+        None,
+    )
+    identity_matches = running and _identity_matches(name, record, info)
+    issues: list[str] = []
+    if not pid:
+        issues.append("not_tracked")
+    elif not running:
+        issues.append("stale_pid")
+    elif not identity_matches:
+        issues.append("ownership_mismatch")
+    if listeners and (not identity_matches or pid not in listeners):
+        issues.append("untracked_listener")
+    if listeners and matching_listener is None:
+        issues.append("unexpected_listener")
+    return {
+        "pid": pid or None,
+        "tracked_pid": pid or None,
+        "running": running,
+        "owned": bool(identity_matches),
+        "identity_matches": bool(identity_matches),
+        "expected_executable": str(record.get("expected_executable", "")),
+        "expected_entrypoint": str(record.get("expected_entrypoint", "")),
+        "executable": info.get("executable", ""),
+        "command_line": info.get("command_line", ""),
+        "port": record.get("port"),
+        "listener_pids": listeners,
+        "listener_pid": matching_listener,
+        "issues": issues,
+    }
+
+
+def _wait_for_owned_listener(name: str, record: dict[str, object], timeout: float = 15.0) -> int | None:
+    port = record.get("port")
+    if not port:
+        return None
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for pid in _listener_pids(int(port)):
+            if _identity_matches(name, record, _process_info(pid)):
+                return pid
+        time.sleep(0.2)
+    return None
+
+
+def _stop_processes(records: dict[str, object], timeout: float = 10.0) -> dict[str, dict[str, object]]:
+    normalized = {name: _coerce_record(name, record) for name, record in records.items()}
+    remaining = dict(normalized)
+    for name, record in normalized.items():
+        pid = int(record.get("pid", 0) or 0)
+        if not _running(pid):
+            remaining.pop(name, None)
+            print(f"stopped {name} PID={pid} (already exited)")
+            continue
+        if not _identity_matches(name, record, _process_info(pid)):
+            print(f"stop_skipped {name} PID={pid}: ownership_mismatch (process was not stopped)", file=sys.stderr)
+            continue
+        detail = ""
+        try:
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True, text=True, timeout=timeout,
+                )
+                if result.returncode:
+                    detail = (result.stderr or result.stdout).strip()
+            else:
+                os.kill(pid, 15)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            detail = str(exc)
+        deadline = time.monotonic() + timeout
+        while _running(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if _running(pid):
+            print(f"stop_failed {name} PID={pid}: {detail or 'process has not exited'}", file=sys.stderr)
+            continue
         remaining.pop(name, None)
         print(f"stopped {name} PID={pid} (exit confirmed)")
     return remaining
 
 
-def _write_pids(path: Path, pids: dict[str, int]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(pids, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+def _untracked_listeners(records: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for name, port in SERVICE_PORTS.items():
+        record = records.get(name, _coerce_record(name, {"pid": 0}))
+        tracked_pid = int(record.get("pid", 0) or 0)
+        for pid in _listener_pids(port):
+            info = _process_info(pid)
+            if pid == tracked_pid and _identity_matches(name, record, info):
+                continue
+            result.append({
+                "service": name,
+                "port": port,
+                "pid": pid,
+                "executable": info.get("executable", ""),
+                "command_line": info.get("command_line", ""),
+            })
+    return result
+
+
+def _health_probe(service: str, url: str, timeout: float = 1.5) -> dict[str, object]:
+    detail: dict[str, object] = {"ok": False, "service": service, "url": url, "timeout_seconds": timeout}
+    try:
+        opener = request.build_opener(request.ProxyHandler({}))
+        with opener.open(request.Request(url, headers={"Cache-Control": "no-cache"}), timeout=timeout) as response:
+            detail.update({"ok": response.status == 200, "status": response.status})
+            return detail
+    except error.HTTPError as exc:
+        detail.update({"status": exc.code, "exception_class": type(exc).__name__, "error": str(exc)})
+    except (OSError, error.URLError, TimeoutError) as exc:
+        detail.update({"exception_class": type(exc).__name__, "error": str(exc) or repr(exc)})
+    return detail
 
 
 def _url_ok(url: str, timeout: float = 1.5) -> bool:
-    try:
-        with request.urlopen(url, timeout=timeout) as response:
-            return 200 <= response.status < 500
-    except OSError:
-        return False
+    return bool(_health_probe("unknown", url, timeout)["ok"])
 
 
 def _port_available(port: int) -> bool:
@@ -227,7 +504,9 @@ def startup_errors(models: Path, data: Path, python: Path, bin_dir: Path, check_
     if check_hardware and os.name == "nt":
         for port in RUNTIME_PORTS:
             if not _port_available(port):
-                errors.append(f"端口 {port} 已被其他进程占用\n请关闭占用该端口的程序后重试")
+                listeners = _listener_pids(port)
+                detail = f"监听 PID：{', '.join(map(str, listeners))}" if listeners else "无法读取监听 PID"
+                errors.append(f"端口 {port} 已被其他进程占用\n{detail}\n请关闭占用该端口的程序后重试")
     return errors
 
 
@@ -271,10 +550,19 @@ def start(args: argparse.Namespace) -> int:
     if not data.is_dir():
         data.mkdir(parents=True, exist_ok=True)
     process_file, logs = _paths(data)
-    pids = _load_pids(process_file)
-    if any(_running(pid) for pid in pids.values()):
-        print("AI Live Studio runtime is already running", file=sys.stderr)
-        return 1
+    existing = _load_processes(process_file)
+    for name, record in existing.items():
+        state = _inspect_process(name, record)
+        if state["owned"]:
+            print("AI Live Studio runtime is already running", file=sys.stderr)
+            return 1
+        if state["running"] or state["listener_pids"]:
+            print(
+                f"无法启动：{name} 存在未归属的运行进程或监听器；"
+                f"请先处理 windows-processes.json / status 中的 ownership mismatch",
+                file=sys.stderr,
+            )
+            return 1
     logs.mkdir(parents=True, exist_ok=True)
     from local_runtime.settings import tts_secret_store
     key_store = tts_secret_store(data)
@@ -314,7 +602,7 @@ def start(args: argparse.Namespace) -> int:
             "strict_session": True, "session_id": "", "startup_buffer_seconds": 30,
         }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    started: dict[str, int] = {}
+    started: dict[str, dict[str, object]] = {}
     try:
         for name in ("ollama", "tts-gateway", "audio-cache", "recording-transcript", "text-studio", "audio-client"):
             argv, cwd = entries[name]
@@ -323,10 +611,18 @@ def start(args: argparse.Namespace) -> int:
                 proc = subprocess.Popen(argv, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
             finally:
                 log.close()
-            started[name] = proc.pid
-        _write_pids(process_file, started)
+            started[name] = _record(name, proc.pid, argv)
+        # A wrapper can exit after handing the socket to a child process. For
+        # port-backed services, store the identity that actually owns the
+        # listening socket and retain the original launcher PID for diagnosis.
+        for name, record in started.items():
+            listener_pid = _wait_for_owned_listener(name, record)
+            if listener_pid and listener_pid != record["pid"]:
+                record["launcher_pid"] = record["pid"]
+                record["pid"] = listener_pid
+        _write_processes(process_file, started)
     except Exception as exc:
-        _write_pids(process_file, _stop_processes(started))
+        _write_processes(process_file, _stop_processes(started))
         print(f"runtime start failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(started, ensure_ascii=False))
@@ -335,19 +631,56 @@ def start(args: argparse.Namespace) -> int:
 
 def stop(args: argparse.Namespace) -> int:
     path, _ = _paths(Path(args.data).expanduser())
-    pids = _load_pids(path)
-    remaining = _stop_processes(pids)
-    if pids or path.exists():
-        _write_pids(path, remaining)
-    return 1 if remaining else 0
+    records = _load_processes(path)
+    remaining = _stop_processes(records)
+    untracked = _untracked_listeners(records) if os.name == "nt" else []
+    for listener in untracked:
+        print(
+            f"untracked listener detected service={listener['service']} port={listener['port']} "
+            f"PID={listener['pid']} executable={listener['executable']} "
+            f"command={listener['command_line']}",
+            file=sys.stderr,
+        )
+    if records or path.exists():
+        _write_processes(path, remaining)
+    return 1 if remaining or untracked else 0
 
 
 def status(args: argparse.Namespace) -> int:
     data = Path(args.data).expanduser()
     path, _ = _paths(data)
-    pids = _load_pids(path)
-    endpoints = {"ollama": "http://127.0.0.1:11435/api/tags", "tts": "http://127.0.0.1:8765/health", "cache": "http://127.0.0.1:8000/health", "studio": "http://127.0.0.1:8770/api/health", "asr": "http://127.0.0.1:8771/api/health"}
-    print(json.dumps({"processes": {name: {"pid": pid, "running": _running(pid)} for name, pid in pids.items()}, "health": {name: _url_ok(url) for name, url in endpoints.items()}}, ensure_ascii=False, indent=2))
+    records = _load_processes(path)
+    process_names = list(SERVICE_MATCHERS)
+    processes = {
+        name: _inspect_process(name, records.get(name, _coerce_record(name, {"pid": 0})))
+        for name in process_names
+    }
+    health_details = {
+        name: _health_probe(service, url)
+        for name, (service, url) in HEALTH_ENDPOINTS.items()
+    }
+    listeners = {
+        str(port): [
+            {"pid": pid, **_process_info(pid)}
+            for pid in _listener_pids(port)
+        ]
+        for port in RUNTIME_PORTS + (11435,)
+    }
+    issues = [
+        {"service": name, "issues": state["issues"], "pid": state["pid"], "listener_pids": state["listener_pids"]}
+        for name, state in processes.items() if state["issues"]
+    ]
+    issues.extend(
+        {"service": name, "issues": ["health_failed"], "detail": detail}
+        for name, detail in health_details.items() if not detail["ok"]
+    )
+    print(json.dumps({
+        "processes": processes,
+        "health": {name: bool(detail["ok"]) for name, detail in health_details.items()},
+        "health_details": health_details,
+        "listeners": listeners,
+        "issues": issues,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 

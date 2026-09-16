@@ -132,7 +132,9 @@ def _wait_for_runtime(data: Path, parent: tk.Misc) -> bool:
 def _start(data: Path, parent: tk.Misc) -> int:
     current = _json_output(_run_runtime("status", data, timeout=10))
     current_health = current.get("health") if isinstance(current.get("health"), dict) else {}
-    if current_health.get("studio") is True:
+    current_processes = current.get("processes") if isinstance(current.get("processes"), dict) else {}
+    studio_process = current_processes.get("text-studio") if isinstance(current_processes.get("text-studio"), dict) else {}
+    if current_health.get("studio") is True and studio_process.get("owned") is True:
         webbrowser.open(STUDIO_URL)
         return 0
     if not _check_and_maybe_choose(data, parent):

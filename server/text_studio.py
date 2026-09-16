@@ -622,6 +622,24 @@ def _tts_runtime_status(gateway_url: str) -> dict[str, Any]:
         return {}
 
 
+def _dependency_status(root: Path, gateway_url: str) -> dict[str, Any]:
+    return {
+        "default_provider": "ollama" if sys.platform == "win32" else "codex",
+        "providers": {
+            "codex": provider_available("codex"),
+            "gemini": provider_available("gemini"),
+            "agy": provider_available("agy"),
+            "chatgpt": provider_available("chatgpt"),
+            "ollama": provider_available("ollama", root),
+            "openai_compatible": provider_available("openai_compatible", root),
+        },
+        "tts": {
+            "ready": _tts_health(gateway_url),
+            "gateway_url": gateway_url,
+        },
+    }
+
+
 class StudioServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -695,22 +713,11 @@ def make_handler(
                 return
 
             if path == "/api/health":
-                self._json(200, {
-                    "status": "ok",
-                    "default_provider": "ollama" if sys.platform == "win32" else "codex",
-                    "providers": {
-                        "codex": provider_available("codex"),
-                        "gemini": provider_available("gemini"),
-                        "agy": provider_available("agy"),
-                        "chatgpt": provider_available("chatgpt"),
-                        "ollama": provider_available("ollama", root),
-                        "openai_compatible": provider_available("openai_compatible", root),
-                    },
-                    "tts": {
-                        "ready": _tts_health(gateway_url),
-                        "gateway_url": gateway_url,
-                    },
-                })
+                self._json(200, {"status": "ok", "service": "text-studio"})
+                return
+
+            if path == "/api/dependencies/status":
+                self._json(200, {"status": "ok", **_dependency_status(root, gateway_url)})
                 return
 
             if path == "/api/live/status":
