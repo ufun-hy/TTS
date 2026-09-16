@@ -23,6 +23,7 @@ class TextStudioTest(unittest.TestCase):
             with urlopen(url) as response:
                 html = response.read().decode('utf-8')
             self.assertLess(html.index('<script src="/text-studio-risk.js">'), html.index('TextStudioRisk.scan'))
+            self.assertLess(html.index('<script src="/text-studio-search.js">'), html.index('TextStudioSearch.findMatches'))
         finally:
             server.shutdown()
             server.server_close()

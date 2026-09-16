@@ -610,7 +610,7 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js"}:
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js"}:
                 is_risk_script = path.endswith('.js')
                 try:
                     if path == '/text-studio-prohibited-rules.js':
