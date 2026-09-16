@@ -175,7 +175,7 @@ def _process_info(pid: int) -> dict[str, str]:
     if os.name == "nt":
         value = _powershell_json(
             f"$p = Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}'; "
-            "if ($null -ne $p) { $p | Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
+            "if ($null -ne $p) { $p | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress }"
         )
         if isinstance(value, list):
             value = value[0] if value else {}
@@ -188,6 +188,7 @@ def _process_info(pid: int) -> dict[str, str]:
             executable = command_start.split('"', 2)[1] if command_start.startswith('"') else command_start.split(None, 1)[0]
         return {
             "pid": str(value.get("ProcessId", pid)),
+            "parent_pid": str(value.get("ParentProcessId") or ""),
             "executable": executable,
             "command_line": command_line,
         }
@@ -196,7 +197,7 @@ def _process_info(pid: int) -> dict[str, str]:
     except (OSError, subprocess.TimeoutExpired):
         return {}
     command_line = result.stdout.strip()
-    return {"pid": str(pid), "executable": command_line.split(" ", 1)[0] if command_line else "", "command_line": command_line}
+    return {"pid": str(pid), "parent_pid": "", "executable": command_line.split(" ", 1)[0] if command_line else "", "command_line": command_line}
 
 
 def _listener_pids(port: int) -> list[int]:
@@ -363,6 +364,23 @@ def _untracked_listeners(records: dict[str, dict[str, object]]) -> list[dict[str
                 "executable": info.get("executable", ""),
                 "command_line": info.get("command_line", ""),
             })
+    gateway = records.get("tts-gateway", {})
+    owned_parents = {
+        int(value)
+        for value in (gateway.get("pid", 0), gateway.get("launcher_pid", 0))
+        if str(value).isdigit() and int(value) > 0
+    }
+    for pid in _listener_pids(8766):
+        info = _process_info(pid)
+        if str(info.get("parent_pid", "")).isdigit() and int(info["parent_pid"]) in owned_parents:
+            continue
+        result.append({
+            "service": "cosyvoice-engine",
+            "port": 8766,
+            "pid": pid,
+            "executable": info.get("executable", ""),
+            "command_line": info.get("command_line", ""),
+        })
     return result
 
 

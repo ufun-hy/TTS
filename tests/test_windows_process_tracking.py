@@ -108,11 +108,25 @@ class ProcessTrackingTests(unittest.TestCase):
     def test_untracked_listener_is_reported_without_kill(self):
         record = _record(pid=10)
         ports = {port: [] for port in launcher.SERVICE_PORTS.values()}
+        ports[8766] = []
         ports[8770] = [20]
         with mock.patch.object(launcher, "_listener_pids", side_effect=lambda port: ports[port]), \
                 mock.patch.object(launcher, "_process_info", return_value=_info(20, r"C:\other\server.py")):
             listeners = launcher._untracked_listeners({"text-studio": record})
         self.assertEqual([(item["port"], item["pid"]) for item in listeners], [(8770, 20)])
+
+    def test_cosyvoice_engine_child_of_gateway_is_not_external(self):
+        gateway = _record("tts-gateway", pid=30)
+        ports = {port: [] for port in launcher.SERVICE_PORTS.values()}
+        ports[8766] = [31]
+        engine_info = {
+            "pid": "31", "parent_pid": "30",
+            "executable": r"C:\AI-Live-Studio\runtime\bin\cosyvoice-server.exe",
+            "command_line": r"C:\AI-Live-Studio\runtime\bin\cosyvoice-server.exe --port 8766",
+        }
+        with mock.patch.object(launcher, "_listener_pids", side_effect=lambda port: ports[port]), \
+                mock.patch.object(launcher, "_process_info", return_value=engine_info):
+            self.assertEqual(launcher._untracked_listeners({"tts-gateway": gateway}), [])
 
 
 class HealthProbeTests(unittest.TestCase):
