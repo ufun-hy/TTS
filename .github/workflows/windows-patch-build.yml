@@ -40,10 +40,9 @@ jobs:
             Copy-Item -LiteralPath (Join-Path $workspace $file) -Destination $stage -Force
           }
 
-          $changed = git diff --name-only HEAD^ HEAD
-          if ($changed | Where-Object { $_ -like "web/*" }) {
-            Copy-Item -LiteralPath (Join-Path $workspace "web") -Destination $stage -Recurse -Force
-          }
+          # Keep this small static directory in every patch so a single ZIP
+          # can repair the Text Studio liveness/dependency UI change.
+          Copy-Item -LiteralPath (Join-Path $workspace "web") -Destination $stage -Recurse -Force
 
           Get-ChildItem -LiteralPath $stage -Directory -Recurse -Filter "__pycache__" |
             Sort-Object FullName -Descending |
