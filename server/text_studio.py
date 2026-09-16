@@ -93,6 +93,10 @@ def _extract_json(text: str) -> Any:
 
 
 def _validate_model_result(raw: Any, expected_ids: list[str]) -> list[dict[str, Any]]:
+    # Ollama JSON mode guarantees valid JSON but not the requested envelope.
+    # For the one-unit local request, accept the equivalent bare item shape.
+    if len(expected_ids) == 1 and isinstance(raw, dict) and isinstance(raw.get("candidates"), list):
+        raw = {"paragraphs": [{"id": raw.get("id", expected_ids[0]), "candidates": raw["candidates"]}]}
     if not isinstance(raw, dict) or not isinstance(raw.get("paragraphs"), list):
         raise ValueError("model output must contain paragraphs[]")
     by_id: dict[str, dict[str, Any]] = {}
@@ -175,6 +179,8 @@ def _run_provider(provider: str, prompt: str, timeout_seconds: int,
         if diagnostic is not None:
             diagnostic["model"] = actual_model
             diagnostic["model_provider"] = provider
+            Path(diagnostic["response_path"]).write_text(content, encoding="utf-8")
+            Path(diagnostic["stderr_path"]).write_text("", encoding="utf-8")
         return _extract_json(content)
     command = _provider_command(provider, model)
     if provider == "agy" and command:

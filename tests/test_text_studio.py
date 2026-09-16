@@ -109,6 +109,10 @@ class TextStudioTest(unittest.TestCase):
         result = text_studio._validate_model_result(raw, ["p0001", "p0002"])
         self.assertEqual([item["id"] for item in result], ["p0001", "p0002"])
 
+    def test_validate_single_local_result_without_envelope(self):
+        result = text_studio._validate_model_result({"candidates": ["A"]}, ["p0001"])
+        self.assertEqual(result, [{"id": "p0001", "candidates": ["A"]}])
+
     def test_prompt_contains_no_placeholder_candidate_examples(self):
         prompt = text_studio._build_prompt(
             [{"id": "p0001", "original_text": "拍一单试吃一个。"}],

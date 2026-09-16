@@ -186,6 +186,16 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(payload["options"]["num_ctx"], 4096)
         self.assertFalse(payload["think"])
 
+    def test_ollama_request_uses_json_object_mode(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with mock.patch.object(providers.request, "urlopen", return_value=response) as urlopen, \
+                mock.patch.object(providers.json, "load", return_value={"message": {"content": "{}"}}):
+            providers.run_http_provider("ollama", "prompt", "qwen3:8b", Path("."))
+        payload = json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["format"], "json")
+
     def test_ollama_release_requires_model_to_disappear_from_ps(self):
         for running, expected in (([{"name": "qwen3:8b"}], False), ([], True)):
             generate_response = mock.MagicMock()
