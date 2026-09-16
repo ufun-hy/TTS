@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,16 @@ class WindowsPackagingTests(unittest.TestCase):
             self.assertIn("Qwen3 8B / Ollama 模型未找到或不完整", detail)
             self.assertIn("固定 Python Runtime 未随安装包提供", detail)
             self.assertIn("ffprobe 未随安装包提供", detail)
+
+    def test_empty_ollama_store_subdirectories_are_not_registered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            models = root / "models"
+            (models / "llm" / "ollama-store" / "blobs").mkdir(parents=True)
+            (models / "llm" / "ollama-store" / "manifests").mkdir(parents=True)
+            (models / "llm" / "Modelfile").write_text("FROM ./Qwen3-8B-Q4_K_M.gguf\n", encoding="utf-8")
+            errors = launcher._model_errors(models, root / "bin")
+            self.assertIn("Qwen3 8B / Ollama 模型未找到或不完整", "\n".join(errors))
 
     def test_product_files_use_new_installer_name(self):
         workflow = (ROOT / ".github/workflows/windows-client-build.yml").read_text(encoding="utf-8")
@@ -94,6 +105,15 @@ import windows_playback_service
             cwd=tempfile.gettempdir(), env=env, capture_output=True, text=True, timeout=15,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_import_llm_uses_bundled_ollama_component_path(self):
+        args = type("Args", (), {
+            "models": "D:/AI-Live-Studio-Models", "bin_dir": "runtime/bin", "dry_run": True,
+        })()
+        with mock.patch("builtins.print") as output:
+            self.assertEqual(launcher.import_llm(args), 0)
+        command = json.loads(output.call_args.args[0])
+        self.assertEqual(command[0], str(Path("runtime/bin/ollama") / ("ollama.exe" if os.name == "nt" else "ollama")))
 
 
 if __name__ == "__main__":

@@ -486,10 +486,11 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
 
     modelfile = models / "llm" / "Modelfile"
     ollama_store = models / "llm" / "ollama-store"
-    if not modelfile.is_file() or not ollama_store.is_dir() or not any(ollama_store.iterdir()):
+    manifests = ollama_store / "manifests"
+    if not modelfile.is_file() or not any(path.is_file() for path in manifests.rglob("*")):
         errors.append(
             "Qwen3 8B / Ollama 模型未找到或不完整\n"
-            f"请确认存在：{modelfile}\n以及非空目录：{ollama_store}"
+            f"请确认存在：{modelfile}\n并先执行 Ollama import 生成：{ollama_store}"
         )
 
     components = _component_dirs(bin_dir)
@@ -753,7 +754,8 @@ def import_llm(args: argparse.Namespace) -> int:
         return 2
     models = Path(args.models).expanduser()
     bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
-    ollama = bin_dir / ("ollama.exe" if os.name == "nt" else "ollama")
+    ollama_dir = _component_dirs(bin_dir)["ollama"]
+    ollama = ollama_dir / ("ollama.exe" if os.name == "nt" else "ollama")
     modelfile = models / "llm" / "Modelfile"
     if not modelfile.is_file() and not args.dry_run:
         print(f"Missing {modelfile}; the offline model package must provide a Modelfile", file=sys.stderr)
