@@ -33,6 +33,7 @@ else:
     from live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 
 from recording_transcript.results import list_results, load_result
+from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
@@ -534,6 +535,9 @@ def _tts_health(gateway_url: str) -> bool:
 
 
 def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any]:
+    text = broadcast_text(text)
+    if not text:
+        raise ValueError("本段全部为禁止播报话术，没有可试听内容。")
     key = _read_keychain_api_key()
     if not key:
         raise RuntimeError("TTS API key is not available")
@@ -597,10 +601,13 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js"}:
-                is_risk_script = path == "/text-studio-risk.js"
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js"}:
+                is_risk_script = path.endswith('.js')
                 try:
-                    body = (root / "web" / "text-studio-risk.js" if is_risk_script else html_path).read_bytes()
+                    if path == '/text-studio-prohibited-rules.js':
+                        body = ('const TextStudioProhibitedRules=' + json.dumps(PROHIBITED_RULES, ensure_ascii=False) + ';').encode('utf-8')
+                    else:
+                        body = (root / "web" / path.lstrip('/') if is_risk_script else html_path).read_bytes()
                 except OSError as exc:
                     self._json(500, {"error": str(exc)})
                     return
@@ -744,7 +751,7 @@ def make_handler(
                 if path == "/api/live/start":
                     result = live.start(
                         body.get("voice", "default"),
-                        body.get("segments"),
+                        filter_segments(body.get("segments")),
                         body.get("playback_speed", 1.0),
                         body.get("volume", 100.0),
                     )

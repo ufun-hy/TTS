@@ -26,15 +26,15 @@
   await state.saveChain;
   check(state.riskFindings.length === 7, 'must scan only selected final text');
   check(!state.riskFindings.some(f => f.paragraph_index === 0), 'safe text flagged');
-  check(riskCounts().medium === 3 && riskCounts().high === 4, 'wrong severity counts');
+  check(riskCounts().medium === 3 && riskCounts().blocked === 4, 'wrong severity counts');
   const dynamicHit = state.riskFindings.find(f => f.paragraph_index === 1 && f.type === '时间点');
   check(dynamicHit.dynamic?.token === 'current_time', 'time risk is not dynamically convertible');
   const id = state.projectId;
   await loadProject(id);
   check(state.riskFindings.length === 7, 'risk results not persisted');
   openRisk();
-  document.querySelector('#riskSummary [onclick="setRiskFilter(\'high\')"]').click();
-  check(document.querySelectorAll('#riskResults .risk-item').length === 4, 'high filter broken');
+  document.querySelector('#riskSummary [onclick="setRiskFilter(\'blocked\')"]').click();
+  check(document.querySelectorAll('#riskResults .risk-item').length === 4, 'prohibited filter broken');
   setRiskFilter('all');
   check([...document.querySelectorAll('#riskResults button')].some(b => b.textContent === '改为动态时间'), 'dynamic time action missing');
   const replacements = [
@@ -56,11 +56,11 @@
     check(editor.value.slice(editor.selectionStart, editor.selectionEnd) === hit.phrase, 'wrong phrase selected');
     editor.value = replacement;
     editor.dispatchEvent(new Event('input', {bubbles: true}));
-    check(!state.riskChecked && state.riskFindings.length === 0, 'stale results after edit');
+    check(!state.riskChecked && state.riskFindings.every(f=>f.blocked), 'stale results after edit');
     // Read real persisted state without invoking save manually.
     await waitUntil(async () => {
       const saved = (await apiGet('/api/project?project_id=' + id)).project;
-      return saved.paragraphs[pi].editedText === replacement && saved.risk_findings.length === 0;
+      return saved.paragraphs[pi].editedText === replacement && saved.risk_findings.every(f=>f.blocked);
     });
     await loadProject(id);
     check(selectedText(state.paragraphs[pi]) === replacement, 'edited text lost on reload');
