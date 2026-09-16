@@ -8,6 +8,7 @@ hosts to inspect the resolved command lines.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,7 @@ HEALTH_ENDPOINTS = {
     "studio": ("text-studio", "http://127.0.0.1:8770/api/health"),
     "asr": ("recording-transcript", "http://127.0.0.1:8771/api/health"),
 }
+HEALTH_TIMEOUTS = {"tts": 4.0}
 
 
 def _configured_models(data: Path, explicit: str = "") -> Path:
@@ -310,6 +312,32 @@ def _wait_for_owned_listener(name: str, record: dict[str, object], timeout: floa
                 return pid
         time.sleep(0.2)
     return None
+
+
+def _resolve_owned_listeners(records: dict[str, dict[str, object]], timeout: float = 15.0) -> dict[str, int | None]:
+    """Resolve all socket owners against one shared deadline."""
+    port_records = {name: record for name, record in records.items() if record.get("port")}
+    if not port_records:
+        return {}
+    deadline = time.monotonic() + timeout
+    workers = min(8, len(port_records))
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="runtime-listener")
+    futures = {
+        executor.submit(
+            _wait_for_owned_listener,
+            name,
+            record,
+            max(0.0, deadline - time.monotonic()),
+        ): name
+        for name, record in port_records.items()
+    }
+    resolved: dict[str, int | None] = {}
+    try:
+        for future in as_completed(futures):
+            resolved[futures[future]] = future.result()
+    finally:
+        executor.shutdown(wait=True)
+    return resolved
 
 
 def _stop_processes(records: dict[str, object], timeout: float = 10.0) -> dict[str, dict[str, object]]:
@@ -630,15 +658,16 @@ def start(args: argparse.Namespace) -> int:
             finally:
                 log.close()
             started[name] = _record(name, proc.pid, argv)
+            _write_processes(process_file, started)
         # A wrapper can exit after handing the socket to a child process. For
         # port-backed services, store the identity that actually owns the
         # listening socket and retain the original launcher PID for diagnosis.
-        for name, record in started.items():
-            listener_pid = _wait_for_owned_listener(name, record)
+        for name, listener_pid in _resolve_owned_listeners(started).items():
+            record = started[name]
             if listener_pid and listener_pid != record["pid"]:
                 record["launcher_pid"] = record["pid"]
                 record["pid"] = listener_pid
-        _write_processes(process_file, started)
+                _write_processes(process_file, started)
     except Exception as exc:
         _write_processes(process_file, _stop_processes(started))
         print(f"runtime start failed: {exc}", file=sys.stderr)
@@ -674,7 +703,7 @@ def status(args: argparse.Namespace) -> int:
         for name in process_names
     }
     health_details = {
-        name: _health_probe(service, url)
+        name: _health_probe(service, url, HEALTH_TIMEOUTS.get(name, 1.5))
         for name, (service, url) in HEALTH_ENDPOINTS.items()
     }
     listeners = {

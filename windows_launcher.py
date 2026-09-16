@@ -108,7 +108,7 @@ def _check_and_maybe_choose(data: Path, parent: tk.Misc) -> bool:
 
 
 def _wait_for_runtime(data: Path, parent: tk.Misc) -> bool:
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + 180
     last = ""
     while time.monotonic() < deadline:
         result = _run_runtime("status", data, timeout=10)
@@ -139,7 +139,7 @@ def _start(data: Path, parent: tk.Misc) -> int:
         return 0
     if not _check_and_maybe_choose(data, parent):
         return 1
-    result = _run_runtime("start", data, timeout=60)
+    result = _run_runtime("start", data, timeout=180)
     if result.returncode:
         _show_error("AI Live Studio 启动失败", (result.stderr or result.stdout).strip(), parent)
         return result.returncode or 1

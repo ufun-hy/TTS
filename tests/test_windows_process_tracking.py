@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -89,6 +90,19 @@ class ProcessTrackingTests(unittest.TestCase):
         with mock.patch.object(launcher, "_listener_pids", return_value=[20]), \
                 mock.patch.object(launcher, "_process_info", return_value=_info(20)):
             self.assertEqual(launcher._wait_for_owned_listener("text-studio", record, timeout=0.1), 20)
+
+    def test_all_listener_checks_share_one_parallel_deadline(self):
+        records = {f"service-{index}": {"pid": index + 1, "port": index + 2000} for index in range(5)}
+        barrier = threading.Barrier(len(records))
+
+        def wait_for_listener(*_args):
+            barrier.wait(timeout=1)
+            return None
+
+        with mock.patch.object(launcher, "_wait_for_owned_listener", side_effect=wait_for_listener):
+            resolved = launcher._resolve_owned_listeners(records, timeout=1)
+        self.assertEqual(set(resolved), set(records))
+        self.assertTrue(all(value is None for value in resolved.values()))
 
     def test_stop_only_kills_owned_process(self):
         owned = _record(pid=10)
@@ -187,6 +201,40 @@ class LauncherOwnershipTests(unittest.TestCase):
             self.assertEqual(windows_launcher._start(Path("data"), mock.Mock()), 1)
         check.assert_called_once()
         open_browser.assert_not_called()
+
+
+class StartupPersistenceTests(unittest.TestCase):
+    def test_records_survive_launcher_exit_before_final_listener_validation(self):
+        class Process:
+            def __init__(self, pid):
+                self.pid = pid
+
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "data"
+            models = Path(directory) / "models"
+            python = Path(directory) / "python.exe"
+            bin_dir = Path(directory) / "bin"
+            processes = [Process(index) for index in range(100, 106)]
+            fake_os = mock.Mock(wraps=os)
+            fake_os.name = "nt"
+            fake_os.pathsep = os.pathsep
+            fake_os.environ = os.environ
+            with mock.patch.object(launcher, "os", fake_os), \
+                    mock.patch.object(launcher, "startup_errors", return_value=[]), \
+                    mock.patch.object(launcher.subprocess, "Popen", side_effect=processes), \
+                    mock.patch.object(launcher, "_resolve_owned_listeners", side_effect=KeyboardInterrupt), \
+                    mock.patch("local_runtime.settings.tts_secret_store") as secret_store:
+                secret_store.return_value.get.return_value = "test-key"
+                args = type("Args", (), {
+                    "data": str(data), "models": str(models), "python": str(python),
+                    "bin_dir": str(bin_dir), "dry_run": False,
+                })()
+                with self.assertRaises(KeyboardInterrupt):
+                    launcher.start(args)
+            process_file = data / "runtime" / "windows-processes.json"
+            saved = json.loads(process_file.read_text(encoding="utf-8"))
+            self.assertEqual(set(saved["services"]), set(launcher.SERVICE_MATCHERS))
+            self.assertEqual(saved["services"]["text-studio"]["pid"], 104)
 
 
 if __name__ == "__main__":
