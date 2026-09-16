@@ -13,5 +13,8 @@
   },
   "shiliu_1": {
     "prompt_speech": "runtime/models/voices/shiliu_1.gguf"
+  },
+  "huangtao_1": {
+    "prompt_speech": "runtime/models/voices/huangtao_1.gguf"
   }
 }

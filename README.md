@@ -91,7 +91,7 @@ curl http://127.0.0.1:8765/voices \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-当前配置在 [voices.json](./voices.json)，已注册 `default`、经确认的 `speaker_a`、`speaker_b`、`speaker_c`，以及石榴女声 `shiliu_1`（显示名“石榴1”）。业务端只传 Voice ID，不传文件路径：
+当前配置在 [voices.json](./voices.json)，已注册 `default`、经确认的 `speaker_a`、`speaker_b`、`speaker_c`，石榴女声 `shiliu_1`（显示名“石榴1”）以及山东蒙阴黄桃 `huangtao_1`（显示名“黄桃1”）。业务端只传 Voice ID，不传文件路径：
 
 ```json
 {"text":"欢迎进入直播间","voice":"speaker_c"}

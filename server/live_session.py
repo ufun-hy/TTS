@@ -36,6 +36,7 @@ VOICE_LABELS = {
     "speaker_b": "主播B",
     "speaker_c": "主播C",
     "shiliu_1": "石榴1",
+    "huangtao_1": "黄桃1",
 }
 _DYNAMIC_TIME_TOKEN = re.compile(r"\{\{(current_time|current_date|current_weekday)\}\}")
 
