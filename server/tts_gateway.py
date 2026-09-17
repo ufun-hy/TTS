@@ -555,6 +555,13 @@ def main() -> int:
             "--port", args.engine_url.rsplit(":", 1)[-1],
             "--concurrency", "1",
         ]
+        if os.name == "nt":
+            engine_command.extend([
+                "--max-llm-len", "4096",
+                "--llm-kv-cache-type", "f16",
+                "--llm-flash-attn", "0",
+                "--flow-flash-attn", "0",
+            ])
         if args.engine_verbose:
             engine_command.append("--verbose")
 
