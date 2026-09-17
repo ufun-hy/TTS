@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,10 @@ import time
 from typing import Any, Callable, Dict, Optional
 from urllib import error, request
 from urllib.parse import urlencode, urljoin
+
+
+LIVE_STARTUP_BUFFER_SECONDS = 12.0
+CONTENT_CACHE_REVISION = "live-audio-v1"
 
 
 class AudioClientError(RuntimeError):
@@ -108,7 +113,7 @@ class AudioClient:
         for _item_id, metadata, _session_id in active_items:
             playback_status = str(metadata.get("playback_status") or "")
             statuses.append(playback_status)
-            if playback_status != "cached":
+            if playback_status not in ("buffering", "cached"):
                 continue
             buffered_segments += 1
             try:
@@ -159,6 +164,7 @@ class AudioClient:
         server_metadata = payload.get("metadata", {})
         if not isinstance(server_metadata, dict):
             server_metadata = {}
+        content_key = self._content_key(server_metadata)
         self._write_metadata(item_id, {
             "id": item_id,
             "status": "downloading",
@@ -166,10 +172,25 @@ class AudioClient:
             "server": self.server.rstrip("/"),
             "sequence": server_metadata.get("sequence"),
             "server_metadata": server_metadata,
+            "content_key": content_key,
         })
-        audio = self._download(audio_url)
         path = self.cache_dir / f"{item_id}.wav"
-        self._atomic_write(path, audio)
+        content_cache = "miss"
+        if content_key and self._restore_content_blob(content_key, path):
+            content_cache = "hit"
+        else:
+            audio = self._download(audio_url)
+            if content_key:
+                blob_path = self._content_blob_path(content_key)
+                self._atomic_write(blob_path, audio)
+                self._materialize_blob(blob_path, path)
+            else:
+                self._atomic_write(path, audio)
+
+        session_id = str(server_metadata.get("session_id") or "").strip()
+        playback_status = "cached"
+        if session_id and not self._session_playback_started(session_id):
+            playback_status = "buffering"
         metadata = {
             "id": item_id,
             "status": "downloaded",
@@ -178,9 +199,14 @@ class AudioClient:
             "downloaded_at": _utc_now(),
             "sequence": server_metadata.get("sequence"),
             "server_metadata": server_metadata,
-            "playback_status": "cached",
+            "playback_status": playback_status,
+            "content_key": content_key,
+            "content_cache": content_cache,
         }
         self._write_metadata(item_id, metadata)
+        if session_id and playback_status == "buffering":
+            self._release_startup_buffer(session_id, force=server_metadata.get("session_final") is True)
+            metadata = self._read_metadata(item_id) or metadata
         return ClientAudio(item_id, path, float(metadata["duration"] or 0), metadata)
 
     def ack(self, item_id: str, status: str = "completed") -> Dict[str, Any]:
@@ -232,8 +258,15 @@ class AudioClient:
             # The server keeps processing items across restarts. Retain the
             # local copy and let the caller decide when to acknowledge it.
             if not path.is_file():
-                audio = self._download(urljoin(self.server, f"audio/files/{metadata_path.stem}"))
-                self._atomic_write(path, audio)
+                content_key = str(metadata.get("content_key") or "")
+                if not (content_key and self._restore_content_blob(content_key, path)):
+                    audio = self._download(urljoin(self.server, f"audio/files/{metadata_path.stem}"))
+                    if content_key:
+                        blob_path = self._content_blob_path(content_key)
+                        self._atomic_write(blob_path, audio)
+                        self._materialize_blob(blob_path, path)
+                    else:
+                        self._atomic_write(path, audio)
                 metadata["status"] = "downloaded"
                 metadata["downloaded_at"] = _utc_now()
             if path.is_file() and metadata.get("status") == "downloading":
@@ -243,10 +276,109 @@ class AudioClient:
                 metadata["playback_status"] = "cached"
             if path.is_file():
                 self._write_metadata(metadata_path.stem, metadata)
+                server_metadata = metadata.get("server_metadata")
+                if isinstance(server_metadata, dict):
+                    session_id = str(server_metadata.get("session_id") or "").strip()
+                    if session_id and metadata.get("playback_status") == "buffering":
+                        self._release_startup_buffer(session_id, force=server_metadata.get("session_final") is True)
+                        metadata = self._read_metadata(metadata_path.stem) or metadata
             if not path.is_file():
                 continue
             return ClientAudio(metadata_path.stem, path, float(metadata.get("duration", 0) or 0), metadata)
         return None
+
+    def _content_key(self, server_metadata: Dict[str, Any]) -> str:
+        source_hash = str(server_metadata.get("source_audio_sha256") or "").strip().lower()
+        if len(source_hash) != 64 or any(character not in "0123456789abcdef" for character in source_hash):
+            return ""
+        try:
+            playback_speed = float(server_metadata.get("playback_speed", 1.0) or 1.0)
+            volume = float(server_metadata.get("volume", 100.0) if server_metadata.get("volume") is not None else 100.0)
+        except (TypeError, ValueError):
+            return ""
+        payload = json.dumps({
+            "revision": CONTENT_CACHE_REVISION,
+            "source_audio_sha256": source_hash,
+            "playback_speed": round(playback_speed, 6),
+            "volume": round(volume, 6),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _content_blob_path(self, content_key: str) -> Path:
+        return self.cache_dir / "blobs" / f"{content_key}.wav"
+
+    @staticmethod
+    def _valid_wav(path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                return handle.read(4) == b"RIFF"
+        except OSError:
+            return False
+
+    def _restore_content_blob(self, content_key: str, destination: Path) -> bool:
+        blob_path = self._content_blob_path(content_key)
+        if not self._valid_wav(blob_path):
+            return False
+        self._materialize_blob(blob_path, destination)
+        return True
+
+    def _materialize_blob(self, blob_path: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            os.link(blob_path, destination)
+        except OSError:
+            self._atomic_write(destination, blob_path.read_bytes())
+
+    def _session_playback_started(self, session_id: str) -> bool:
+        for metadata_path in self.cache_dir.glob("*.json"):
+            metadata = self._read_metadata(metadata_path.stem)
+            if not metadata:
+                continue
+            server_metadata = metadata.get("server_metadata")
+            if not isinstance(server_metadata, dict) or str(server_metadata.get("session_id") or "").strip() != session_id:
+                continue
+            if str(metadata.get("playback_status") or "") in ("playing", "played", "paused", "playback_failed"):
+                return True
+        return False
+
+    def _release_startup_buffer(self, session_id: str, force: bool = False) -> bool:
+        entries: list[tuple[str, Dict[str, Any]]] = []
+        buffered_seconds = 0.0
+        playback_started = False
+        for metadata_path in self.cache_dir.glob("*.json"):
+            metadata = self._read_metadata(metadata_path.stem)
+            if not metadata:
+                continue
+            server_metadata = metadata.get("server_metadata")
+            if not isinstance(server_metadata, dict) or str(server_metadata.get("session_id") or "").strip() != session_id:
+                continue
+            playback_status = str(metadata.get("playback_status") or "")
+            if playback_status in ("playing", "played", "paused", "playback_failed"):
+                playback_started = True
+            if playback_status not in ("buffering", "cached"):
+                continue
+            entries.append((metadata_path.stem, metadata))
+            try:
+                duration = float(metadata.get("duration", 0) or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+            if duration > 0:
+                buffered_seconds += duration
+        if not force and not playback_started and buffered_seconds < LIVE_STARTUP_BUFFER_SECONDS:
+            return False
+        changed = False
+        for item_id, metadata in entries:
+            if metadata.get("playback_status") != "buffering":
+                continue
+            metadata["playback_status"] = "cached"
+            metadata["startup_buffer_released_at"] = _utc_now()
+            self._write_metadata(item_id, metadata)
+            changed = True
+        return changed
 
     def _download(self, url: str) -> bytes:
         response = self._request("GET", url)
@@ -289,6 +421,7 @@ class AudioClient:
 
     @staticmethod
     def _atomic_write(path: Path, content: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
             handle.write(content)
             temporary = Path(handle.name)

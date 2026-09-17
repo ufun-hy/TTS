@@ -205,7 +205,21 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             item_id = body.get("id")
             metadata = {
                 key: body[key]
-                for key in ("text", "voice", "target_duration", "sequence", "source", "session_id", "playback_speed", "volume")
+                for key in (
+                    "text",
+                    "voice",
+                    "target_duration",
+                    "sequence",
+                    "source",
+                    "session_id",
+                    "playback_speed",
+                    "volume",
+                    "source_audio_sha256",
+                    "round_position",
+                    "round_total",
+                    "looping",
+                    "session_final",
+                )
                 if key in body
             }
             if "voice" not in metadata:

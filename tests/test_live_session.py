@@ -75,7 +75,7 @@ class LiveSessionTests(unittest.TestCase):
             manager.start("default", [{"id": "p0001", "text": "测试"}], playback_speed=0)
         self.assertEqual(error.exception.status, 400)
 
-    def test_audio_settings_are_sent_to_audio_cache(self):
+    def test_audio_settings_and_content_identity_are_sent_to_audio_cache(self):
         requests = []
         manager = LiveSessionManager("http://gateway", "http://cache", synthesize=lambda *_args: b"RIFF")
         manager._request_json = lambda method, path, body=None, cache=False, timeout=None: requests.append((method, path, body, cache, timeout)) or {}
@@ -88,6 +88,11 @@ class LiveSessionTests(unittest.TestCase):
         enqueue = next(item for item in requests if item[1] == "/audio/enqueue")
         self.assertEqual(enqueue[2]["playback_speed"], 1.05)
         self.assertEqual(enqueue[2]["volume"], 80.0)
+        self.assertEqual(len(enqueue[2]["source_audio_sha256"]), 64)
+        self.assertEqual(enqueue[2]["round_position"], 1)
+        self.assertEqual(enqueue[2]["round_total"], 1)
+        self.assertFalse(enqueue[2]["looping"])
+        self.assertTrue(enqueue[2]["session_final"])
         self.assertEqual(enqueue[4], CACHE_ENQUEUE_TIMEOUT_SECONDS)
 
     def test_session_generates_and_enqueues_each_segment(self):
@@ -165,7 +170,7 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(len({item[0] for item in enqueued}), 4)
         self.assertEqual(manager.status()["round_number"], 2)
 
-    def test_backpressure_pauses_at_high_watermark_and_resumes_at_low_watermark(self):
+    def test_backpressure_pauses_at_300_seconds_and_resumes_at_180_seconds(self):
         state = {"buffered_seconds": 0.0}
         synthesized = []
         enqueued = []
@@ -193,7 +198,7 @@ class LiveSessionTests(unittest.TestCase):
         def enqueue(item_id, sequence, text, voice, audio):
             enqueued.append((item_id, sequence, text, voice, audio))
             if len(enqueued) == 1:
-                state["buffered_seconds"] = 30.0
+                state["buffered_seconds"] = 300.0
 
         session = LiveSession(
             session_id,
@@ -202,8 +207,6 @@ class LiveSessionTests(unittest.TestCase):
             synthesize,
             enqueue,
             cache_status,
-            buffer_high_seconds=30.0,
-            buffer_low_seconds=12.0,
         )
         session.start()
         deadline = time.monotonic() + 1
@@ -214,7 +217,7 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(len(synthesized), 1)
         self.assertTrue(session.snapshot().backpressure_active)
 
-        state["buffered_seconds"] = 12.0
+        state["buffered_seconds"] = 180.0
         deadline = time.monotonic() + 1
         while len(enqueued) < 2 and time.monotonic() < deadline:
             time.sleep(0.01)

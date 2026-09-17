@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import math
 import os
@@ -25,8 +26,8 @@ SEGMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 MAX_LIVE_TEXT_CHARS = 1_000_000
 MAX_LIVE_SEGMENT_CHARS = 200  # matches the default TTS Gateway request limit
 VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-DEFAULT_BUFFER_HIGH_SECONDS = 30.0
-DEFAULT_BUFFER_LOW_SECONDS = 12.0
+DEFAULT_BUFFER_HIGH_SECONDS = 300.0
+DEFAULT_BUFFER_LOW_SECONDS = 180.0
 BUFFER_POLL_SECONDS = 0.25
 CACHE_ENQUEUE_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 120.0
@@ -610,6 +611,7 @@ class LiveSessionManager:
             self._enqueue_impl(item_id, sequence, text, voice, audio)
             return
         session = self._require_session()
+        round_position = session.generated_segments + 1
         self._request_json("POST", "/audio/enqueue", {
             "id": item_id,
             "sequence": sequence,
@@ -619,6 +621,11 @@ class LiveSessionManager:
             "voice": voice,
             "playback_speed": session.playback_speed,
             "volume": session.volume,
+            "source_audio_sha256": hashlib.sha256(audio).hexdigest(),
+            "round_position": round_position,
+            "round_total": session.total_segments,
+            "looping": session.looping,
+            "session_final": bool(not session.looping and session.total_segments and round_position >= session.total_segments),
             "audio_base64": base64.b64encode(audio).decode("ascii"),
         }, cache=True, timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
 
