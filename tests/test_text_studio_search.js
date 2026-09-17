@@ -87,7 +87,7 @@ assert.equal(findingOffset(repeatedRiskText, {position: 5, phrase: '风险'}), 6
 assert.equal(findingOffset('没有目标', {position: 0, phrase: '风险'}), -1);
 assert.deepEqual(
   riskContext(repeatedRiskText, {position: 6, phrase: '风险'}, 4),
-  {before: '…正常 ', phrase: '风险', after: ' 结尾', start: 6},
+  {before: '… 正常 ', phrase: '风险', after: ' 结尾', start: 6},
   'exact risk editor context must highlight the same occurrence used by selection',
 );
 
