@@ -84,6 +84,23 @@ const TextStudioSearch = (() => {
     ), positions[0]);
   }
 
+  function riskContext(text, finding, radius = 42) {
+    const source = String(text ?? '');
+    const phrase = String(finding?.phrase ?? '');
+    const start = findingOffset(source, finding);
+    if (start < 0 || !phrase) {
+      return {before: source.slice(0, radius), phrase: '', after: source.slice(radius, radius * 2), start: -1};
+    }
+    const left = Math.max(0, start - radius);
+    const right = Math.min(source.length, start + phrase.length + radius);
+    return {
+      before: (left > 0 ? '…' : '') + source.slice(left, start),
+      phrase,
+      after: source.slice(start + phrase.length, right) + (right < source.length ? '…' : ''),
+      start,
+    };
+  }
+
   function installUiFixes() {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
 
@@ -180,47 +197,216 @@ const TextStudioSearch = (() => {
         showMessage('已替换当前命中的候选文本并自动保存。', 'ok');
       }
 
-      function patchedLocateRiskById(id, pos) {
+      function ensureRiskEditor() {
+        let backdrop = document.getElementById('exactRiskEditorBackdrop');
+        let drawer = document.getElementById('exactRiskEditor');
+        if (backdrop && drawer) return {backdrop, drawer};
+
+        backdrop = document.createElement('div');
+        backdrop.id = 'exactRiskEditorBackdrop';
+        Object.assign(backdrop.style, {
+          position: 'fixed', inset: '0', background: 'rgba(15,23,42,.28)',
+          zIndex: '80', display: 'none',
+        });
+
+        drawer = document.createElement('aside');
+        drawer.id = 'exactRiskEditor';
+        drawer.setAttribute('aria-label', '风险精确编辑');
+        Object.assign(drawer.style, {
+          position: 'fixed', top: '0', right: '0', width: 'min(620px,96vw)', height: '100vh',
+          background: '#fff', zIndex: '81', boxShadow: '-24px 0 60px rgba(15,23,42,.2)',
+          display: 'none', flexDirection: 'column',
+        });
+
+        const header = document.createElement('div');
+        Object.assign(header.style, {
+          padding: '18px 20px 14px', borderBottom: '1px solid #e5e7eb',
+          display: 'flex', alignItems: 'flex-start', gap: '12px',
+        });
+        const heading = document.createElement('div');
+        heading.style.flex = '1';
+        const title = document.createElement('div');
+        title.id = 'exactRiskEditorTitle';
+        title.textContent = '定位修改';
+        Object.assign(title.style, {fontSize: '18px', fontWeight: '760', color: '#111827'});
+        const meta = document.createElement('div');
+        meta.id = 'exactRiskEditorMeta';
+        Object.assign(meta.style, {marginTop: '5px', fontSize: '12px', color: '#64748b'});
+        heading.append(title, meta);
+
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.textContent = '关闭';
+        close.className = 'btn ghost small';
+        close.id = 'exactRiskEditorClose';
+        header.append(heading, close);
+
+        const body = document.createElement('div');
+        Object.assign(body.style, {padding: '18px 20px', overflow: 'auto', flex: '1'});
+        const contextLabel = document.createElement('div');
+        contextLabel.textContent = '风险位置';
+        Object.assign(contextLabel.style, {fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '7px'});
+        const context = document.createElement('div');
+        context.id = 'exactRiskEditorContext';
+        Object.assign(context.style, {
+          padding: '12px 14px', border: '1px solid #fed7aa', borderRadius: '12px',
+          background: '#fffaf5', fontSize: '14px', lineHeight: '1.75', color: '#334155',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: '16px',
+        });
+        const editorLabel = document.createElement('label');
+        editorLabel.htmlFor = 'exactRiskEditorText';
+        editorLabel.textContent = '当前最终候选文本';
+        Object.assign(editorLabel.style, {display: 'block', fontSize: '12px', fontWeight: '700', color: '#475569', marginBottom: '7px'});
+        const textarea = document.createElement('textarea');
+        textarea.id = 'exactRiskEditorText';
+        Object.assign(textarea.style, {
+          width: '100%', minHeight: '320px', resize: 'vertical', lineHeight: '1.75',
+          fontSize: '14px', padding: '12px 14px', border: '1px solid #cbd5e1',
+          borderRadius: '12px', outline: 'none', background: '#fff', color: '#111827',
+        });
+        const hint = document.createElement('div');
+        hint.textContent = '这里直接编辑当前实际使用的候选文本。保存后会回写原记录，并要求重新执行风险检测。';
+        Object.assign(hint.style, {fontSize: '12px', color: '#64748b', marginTop: '8px', lineHeight: '1.55'});
+        body.append(contextLabel, context, editorLabel, textarea, hint);
+
+        const footer = document.createElement('div');
+        Object.assign(footer.style, {
+          padding: '14px 20px', borderTop: '1px solid #e5e7eb',
+          display: 'flex', justifyContent: 'flex-end', gap: '8px', background: '#fff',
+        });
+        const cancel = document.createElement('button');
+        cancel.type = 'button';
+        cancel.textContent = '取消';
+        cancel.className = 'btn ghost';
+        cancel.id = 'exactRiskEditorCancel';
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.textContent = '保存修改';
+        save.className = 'btn primary';
+        save.id = 'exactRiskEditorSave';
+        footer.append(cancel, save);
+
+        drawer.append(header, body, footer);
+        document.body.append(backdrop, drawer);
+        return {backdrop, drawer};
+      }
+
+      function closeExactRiskEditor() {
+        const backdrop = document.getElementById('exactRiskEditorBackdrop');
+        const drawer = document.getElementById('exactRiskEditor');
+        if (backdrop) backdrop.style.display = 'none';
+        if (drawer) drawer.style.display = 'none';
+        if (drawer) delete drawer.dataset.paragraphIndex;
+        if (drawer) delete drawer.dataset.candidateIndex;
+      }
+
+      function renderRiskContext(container, text, finding) {
+        container.replaceChildren();
+        const context = riskContext(text, finding);
+        if (context.start < 0) {
+          container.textContent = String(finding?.context || finding?.phrase || text || '');
+          return context;
+        }
+        container.append(document.createTextNode(context.before));
+        const mark = document.createElement('mark');
+        mark.textContent = context.phrase;
+        Object.assign(mark.style, {background: '#fde68a', borderRadius: '4px', padding: '1px 2px'});
+        container.append(mark, document.createTextNode(context.after));
+        return context;
+      }
+
+      function openExactRiskEditor(id, pos) {
         const paragraphIndex = state.paragraphs.findIndex(paragraph => paragraph.id === id);
         if (paragraphIndex < 0) return;
-        const paragraphState = state.paragraphs[paragraphIndex];
-        const activeText = selectedText(paragraphState);
+        const paragraph = state.paragraphs[paragraphIndex];
+        const candidateIndex = selectedCandidateIndex(paragraph);
+        if (!Array.isArray(paragraph.candidates) || !paragraph.candidates.length) {
+          showMessage('当前话术没有可编辑候选。', 'info');
+          return;
+        }
+
+        const activeText = selectedText(paragraph);
         const findings = state.riskFindings.filter(finding => (
           finding.paragraph_id === id && finding.position === pos
         ));
         const finding = findings.find(item => (
           activeText.slice(item.position, item.position + String(item.phrase ?? '').length) === item.phrase
         )) || findings[0];
+        if (!finding) {
+          showMessage('该风险项已经变化，请重新执行风险检测。', 'info');
+          return;
+        }
 
-        state.riskFocusParagraph = paragraphIndex;
-        state.searchFocusParagraph = -1;
-        paragraphState.expanded = true;
-        closeRisk();
-        switchView('prepare');
-        render();
+        const {backdrop, drawer} = ensureRiskEditor();
+        const title = document.getElementById('exactRiskEditorTitle');
+        const meta = document.getElementById('exactRiskEditorMeta');
+        const context = document.getElementById('exactRiskEditorContext');
+        const editor = document.getElementById('exactRiskEditorText');
+        const save = document.getElementById('exactRiskEditorSave');
+        const close = document.getElementById('exactRiskEditorClose');
+        const cancel = document.getElementById('exactRiskEditorCancel');
 
-        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-          const paragraph = document.getElementById(`para-${paragraphIndex}`);
-          const editor = paragraph?.querySelector('textarea.candidate');
-          if (!editor) {
-            paragraph?.scrollIntoView({behavior: 'smooth', block: 'center'});
+        title.textContent = '定位修改';
+        meta.textContent = `${id} · 候选 ${candidateIndex + 1} · ${finding.label || finding.type || '风险项'}`;
+        editor.value = activeText;
+        drawer.dataset.paragraphIndex = String(paragraphIndex);
+        drawer.dataset.candidateIndex = String(candidateIndex);
+        renderRiskContext(context, activeText, finding);
+
+        const closeHandler = () => closeExactRiskEditor();
+        close.onclick = closeHandler;
+        cancel.onclick = closeHandler;
+        backdrop.onclick = closeHandler;
+        save.onclick = () => {
+          const currentParagraphIndex = Number(drawer.dataset.paragraphIndex);
+          const currentCandidateIndex = Number(drawer.dataset.candidateIndex);
+          const currentParagraph = state.paragraphs[currentParagraphIndex];
+          if (!currentParagraph || !Array.isArray(currentParagraph.candidates)
+              || currentCandidateIndex < 0 || currentCandidateIndex >= currentParagraph.candidates.length) {
+            showMessage('当前记录已经变化，请重新打开定位修改。', 'info');
+            closeExactRiskEditor();
             return;
           }
+          const nextText = editor.value;
+          currentParagraph.candidates[currentCandidateIndex] = nextText;
+          if (selectedCandidateIndex(currentParagraph) === currentCandidateIndex) {
+            currentParagraph.editedText = nextText;
+          }
+          state.replacementHistory.push({
+            from: String(finding.phrase ?? ''),
+            to: nextText,
+            scope: 'risk_editor',
+            time: new Date().toISOString(),
+          });
+          invalidateReview();
+          refreshSearchMatches(false);
+          render();
+          scheduleSave(0);
+          closeExactRiskEditor();
+          showMessage('风险话术已保存，请重新执行风险检测确认结果。', 'ok');
+        };
 
-          // The editable textarea is the true target. Scrolling the entire card can
-          // leave the editor off-screen for tall expanded paragraphs.
-          editor.scrollIntoView({behavior: 'smooth', block: 'center'});
-          if (!finding) return;
+        if (typeof closeRisk === 'function') closeRisk();
+        backdrop.style.display = 'block';
+        drawer.style.display = 'flex';
+        window.requestAnimationFrame(() => {
           const start = findingOffset(editor.value, finding);
-          if (start < 0) return;
-          editor.focus({preventScroll: true});
-          editor.setSelectionRange(start, start + String(finding.phrase ?? '').length);
-        }));
+          editor.focus();
+          if (start >= 0) {
+            editor.setSelectionRange(start, start + String(finding.phrase ?? '').length);
+            window.setTimeout(() => {
+              if (document.activeElement === editor) {
+                editor.setSelectionRange(start, start + String(finding.phrase ?? '').length);
+              }
+            }, 0);
+          }
+        });
       }
 
       window.jumpToMatch = patchedJumpToMatch;
       window.replaceCurrent = patchedReplaceCurrent;
-      window.locateRiskById = patchedLocateRiskById;
+      window.locateRiskById = openExactRiskEditor;
+      window.closeExactRiskEditor = closeExactRiskEditor;
       prevButton.onclick = () => patchedJumpToMatch(-1);
       nextButton.onclick = () => patchedJumpToMatch(1);
       replaceButton.onclick = patchedReplaceCurrent;
@@ -234,7 +420,7 @@ const TextStudioSearch = (() => {
   }
 
   installUiFixes();
-  return {findMatches, replacementForHit, findingOffset};
+  return {findMatches, replacementForHit, findingOffset, riskContext};
 })();
 
 if (typeof module !== 'undefined') module.exports = TextStudioSearch;
