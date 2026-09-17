@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from audio_cache.manager import AudioCacheManager
+from audio_cache.manager import AudioCacheManager, DEFAULT_CLAIM_LEASE_SECONDS
 from audio_cache.processing import AudioProcessingConfig, AudioProcessor
 from audio_cache.server import serve
 from timeline.tts_client import TTSClient
@@ -35,7 +35,11 @@ def main() -> int:
             raise ValueError("audio cache config must be a JSON object")
         processing = AudioProcessingConfig.from_dict(raw)
         root = args.root if args.root.is_absolute() else ROOT / args.root
-        manager = AudioCacheManager(root, AudioProcessor(processing).process)
+        manager = AudioCacheManager(
+            root,
+            AudioProcessor(processing).process,
+            float(raw.get("claim_lease_seconds", DEFAULT_CLAIM_LEASE_SECONDS)),
+        )
         tts = TTSClient(args.tts_url, args.tts_api_key) if args.tts_url else None
         serve(manager, args.host, args.port, tts, args.api_key, int(raw.get("preload_segments", 5)))
         return 0

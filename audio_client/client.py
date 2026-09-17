@@ -13,6 +13,9 @@ import time
 from typing import Any, Callable, Dict, Optional
 from urllib import error, request
 from urllib.parse import urlencode, urljoin
+import uuid
+
+from .wav_compat import WavCompatibilityError, inspect_wav, prepare_mci_wav
 
 
 LIVE_STARTUP_BUFFER_SECONDS = 12.0
@@ -39,6 +42,7 @@ class AudioClient:
         self.poll_interval = max(0.05, float(poll_interval))
         self.api_key = api_key
         self.timeout = timeout
+        self.client_id = f"windows-{uuid.uuid4().hex[:12]}"
 
     def health(self) -> Dict[str, Any]:
         response = self._request("GET", "health")
@@ -123,12 +127,18 @@ class AudioClient:
             if duration > 0:
                 buffered_seconds += duration
 
+        session_started = any(status in ("playing", "played", "paused", "playback_failed") for status in statuses)
+        has_cached = any(status == "cached" for status in statuses)
         if "paused" in statuses:
             playback_status = "paused"
         elif "playing" in statuses:
             playback_status = "playing"
+        elif "buffering" in statuses:
+            playback_status = "rebuffering" if session_started and not has_cached else "buffering"
         elif buffered_segments:
             playback_status = "buffered"
+        elif session_started:
+            playback_status = "rebuffering"
         else:
             playback_status = "idle"
         return {
@@ -144,6 +154,7 @@ class AudioClient:
             return existing
         state = self.local_playback_state()
         query = urlencode({
+            "client_id": self.client_id,
             "client_session_id": state["session_id"],
             "client_buffered_segments": state["buffered_segments"],
             "client_buffered_seconds": state["buffered_seconds"],
@@ -165,6 +176,7 @@ class AudioClient:
         if not isinstance(server_metadata, dict):
             server_metadata = {}
         content_key = self._content_key(server_metadata)
+        download_started_at = _utc_now()
         self._write_metadata(item_id, {
             "id": item_id,
             "status": "downloading",
@@ -173,6 +185,7 @@ class AudioClient:
             "sequence": server_metadata.get("sequence"),
             "server_metadata": server_metadata,
             "content_key": content_key,
+            "download_started_at": download_started_at,
         })
         path = self.cache_dir / f"{item_id}.wav"
         content_cache = "miss"
@@ -187,9 +200,12 @@ class AudioClient:
             else:
                 self._atomic_write(path, audio)
 
+        download_ready_at = _utc_now()
+        prepared_path, prepared_at = self._prepare_for_playback(path, content_key)
+
         session_id = str(server_metadata.get("session_id") or "").strip()
         playback_status = "cached"
-        if session_id and not self._session_playback_started(session_id):
+        if session_id and self._session_needs_buffering(session_id):
             playback_status = "buffering"
         metadata = {
             "id": item_id,
@@ -197,12 +213,18 @@ class AudioClient:
             "duration": payload.get("duration", 0),
             "server": self.server.rstrip("/"),
             "downloaded_at": _utc_now(),
+            "download_started_at": download_started_at,
+            "download_ready_at": download_ready_at,
             "sequence": server_metadata.get("sequence"),
             "server_metadata": server_metadata,
             "playback_status": playback_status,
             "content_key": content_key,
             "content_cache": content_cache,
         }
+        if prepared_at:
+            metadata["prepared_at"] = prepared_at
+        if prepared_path:
+            metadata["prepared_path"] = prepared_path
         self._write_metadata(item_id, metadata)
         if session_id and playback_status == "buffering":
             self._release_startup_buffer(session_id, force=server_metadata.get("session_final") is True)
@@ -217,6 +239,7 @@ class AudioClient:
         metadata = self._read_metadata(item_id) or {"id": item_id}
         metadata["status"] = status
         metadata["acknowledged_at"] = _utc_now()
+        metadata["ack_at"] = metadata["acknowledged_at"]
         self._write_metadata(item_id, metadata)
         return payload
 
@@ -272,6 +295,14 @@ class AudioClient:
             if path.is_file() and metadata.get("status") == "downloading":
                 metadata["status"] = "downloaded"
                 metadata["downloaded_at"] = metadata.get("downloaded_at") or _utc_now()
+            if path.is_file() and not metadata.get("download_ready_at"):
+                metadata["download_ready_at"] = _utc_now()
+            if path.is_file() and not metadata.get("prepared_path"):
+                prepared_path, prepared_at = self._prepare_for_playback(path, str(metadata.get("content_key") or ""))
+                if prepared_at:
+                    metadata["prepared_at"] = prepared_at
+                if prepared_path:
+                    metadata["prepared_path"] = prepared_path
             if path.is_file() and "playback_status" not in metadata:
                 metadata["playback_status"] = "cached"
             if path.is_file():
@@ -333,7 +364,53 @@ class AudioClient:
         except OSError:
             self._atomic_write(destination, blob_path.read_bytes())
 
-    def _session_playback_started(self, session_id: str) -> bool:
+    def _prepare_for_playback(self, path: Path, content_key: str) -> tuple[str, str]:
+        """Prepare compatibility audio while the download path is still hot."""
+        try:
+            source_info = inspect_wav(path)
+        except (OSError, WavCompatibilityError):
+            return "", ""
+        if source_info.sample_kind == "pcm16":
+            return "", _utc_now()
+
+        prepared = self._prepared_blob_path(content_key) if content_key else None
+        if prepared and self._prepared_matches(prepared, source_info):
+            return str(prepared.relative_to(self.cache_dir)), _utc_now()
+        try:
+            converted = prepare_mci_wav(path)
+        except (OSError, WavCompatibilityError):
+            return "", ""
+        if converted == path:
+            return "", ""
+        if prepared:
+            self._atomic_write(prepared, converted.read_bytes())
+            return str(prepared.relative_to(self.cache_dir)), _utc_now()
+        try:
+            relative = str(converted.relative_to(self.cache_dir))
+        except ValueError:
+            relative = str(converted)
+        return relative, _utc_now()
+
+    def _prepared_blob_path(self, content_key: str) -> Optional[Path]:
+        if not content_key:
+            return None
+        return self.cache_dir / "blobs" / f"{content_key}.pcm16.wav"
+
+    @staticmethod
+    def _prepared_matches(path: Path, source_info: Any) -> bool:
+        try:
+            info = inspect_wav(path)
+        except (OSError, WavCompatibilityError):
+            return False
+        return (
+            info.sample_kind == "pcm16"
+            and info.channels == source_info.channels
+            and info.sample_rate == source_info.sample_rate
+            and info.frames == source_info.frames
+        )
+
+    def _session_items(self, session_id: str) -> list[Dict[str, Any]]:
+        entries = []
         for metadata_path in self.cache_dir.glob("*.json"):
             metadata = self._read_metadata(metadata_path.stem)
             if not metadata:
@@ -341,9 +418,22 @@ class AudioClient:
             server_metadata = metadata.get("server_metadata")
             if not isinstance(server_metadata, dict) or str(server_metadata.get("session_id") or "").strip() != session_id:
                 continue
-            if str(metadata.get("playback_status") or "") in ("playing", "played", "paused", "playback_failed"):
-                return True
-        return False
+            entries.append(metadata)
+        return entries
+
+    def _session_playback_started(self, session_id: str) -> bool:
+        return any(
+            str(metadata.get("playback_status") or "") in ("playing", "played", "paused", "playback_failed")
+            for metadata in self._session_items(session_id)
+        )
+
+    def _session_needs_buffering(self, session_id: str) -> bool:
+        statuses = [str(metadata.get("playback_status") or "") for metadata in self._session_items(session_id)]
+        if not statuses:
+            return True
+        if any(status in ("playing", "paused", "cached") for status in statuses):
+            return False
+        return True
 
     def _release_startup_buffer(self, session_id: str, force: bool = False) -> bool:
         entries: list[tuple[str, Dict[str, Any]]] = []
@@ -368,14 +458,18 @@ class AudioClient:
                 duration = 0.0
             if duration > 0:
                 buffered_seconds += duration
-        if not force and not playback_started and buffered_seconds < LIVE_STARTUP_BUFFER_SECONDS:
+        if not force and buffered_seconds < LIVE_STARTUP_BUFFER_SECONDS:
             return False
         changed = False
         for item_id, metadata in entries:
             if metadata.get("playback_status") != "buffering":
                 continue
             metadata["playback_status"] = "cached"
-            metadata["startup_buffer_released_at"] = _utc_now()
+            released_at = _utc_now()
+            if playback_started:
+                metadata["rebuffer_released_at"] = released_at
+            else:
+                metadata["startup_buffer_released_at"] = released_at
             self._write_metadata(item_id, metadata)
             changed = True
         return changed

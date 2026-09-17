@@ -5,6 +5,7 @@ Windows Client 现在把传输状态和播放状态分开：
 ```text
 server status: completed   = WAV 已传输到 Windows
 playback_status: cached    = 本地待播放
+playback_status: buffering = 启动或恢复播放前的安全库存累积
 playback_status: playing   = 正在播放
 playback_status: played    = 已播放完成
 playback_status: playback_failed = 单段播放失败
@@ -16,7 +17,7 @@ playback_status: playback_failed = 单段播放失败
 
 启动客户端后会自动连接并持续下载。下载完成后，GUI 在本地 WAV 原子落盘后发送现有 ACK；这只确认传输，不代表音频已播放。
 
-点击“开始播放”后，播放线程按 metadata 中的 `sequence` 排序消费 `cached` 项。下载线程和播放线程互不阻塞：网络中断时仍会继续播放已经落盘的音频。
+点击“开始播放”后，播放线程按 metadata 中的 `sequence` 排序消费 `cached` 项。Live Session 首次启动和库存耗尽后的 `rebuffering` 都会累计 12 秒安全库存；标记为 `buffering` 的项目不会被提前播放，最终项目可强制释放。下载线程和播放线程互不阻塞：网络中断时仍会继续播放已经落盘的音频。
 
 控制按钮：
 

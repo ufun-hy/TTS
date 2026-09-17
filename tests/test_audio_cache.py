@@ -6,10 +6,12 @@ from pathlib import Path
 import struct
 import tempfile
 import threading
+import time
 import unittest
 import wave
 
 from audio_client.client import AudioClient
+from audio_client.playback import PlaybackController
 from audio_client.config import ClientConfig
 from audio_cache.manager import AudioCacheManager
 from audio_cache.processing import AudioProcessingConfig, calculate_speed_factor, calculate_volume_gain
@@ -42,7 +44,7 @@ def float_wav_bytes(duration=1.0, rate=24000):
     frames = b"".join(struct.pack("<f", 0.25 * math.sin(2 * math.pi * 440 * index / rate)) for index in range(int(duration * rate)))
     fmt = struct.pack("<HHIIHH", 3, 1, rate, rate * 4, 4, 32)
     body = b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(frames)) + frames
-    return b"RIFF" + struct.pack("<I", len(body) + 4) + body
+    return b"RIFF" + struct.pack("<I", len(body)) + body
 
 
 def write_client_item(root, item_id, session_id, duration, playback_status, downloaded_at):
@@ -59,6 +61,92 @@ def write_client_item(root, item_id, session_id, duration, playback_status, down
 
 
 class AudioCacheTests(unittest.TestCase):
+    def test_startup_buffer_links_download_metadata_to_playback_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            session_id = "linked-startup"
+            for index, duration in enumerate((5.0, 4.0, 4.0), 1):
+                manager.add_audio(wav_bytes(), {
+                    "sequence": index,
+                    "session_id": session_id,
+                    "duration": duration,
+                    "source_audio_sha256": f"{index:064x}",
+                    "playback_speed": 1.0,
+                    "volume": 100.0,
+                    "session_final": False,
+                }, f"linked_{index:03d}")
+
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            played = []
+
+            class Player:
+                def play(self, path, stop_event, pause_event):
+                    played.append(path.stem)
+                    time.sleep(0.02)
+
+            controller = PlaybackController(root / "client", player=Player())
+            controller.start()
+            try:
+                client = AudioClient(f"http://127.0.0.1:{server.server_port}", root / "client")
+                for item_id in ("linked_001", "linked_002"):
+                    item = client.fetch_next()
+                    self.assertEqual(item.id, item_id)
+                    self.assertEqual(item.metadata["playback_status"], "buffering")
+                    client.ack(item.id)
+                    time.sleep(0.1)
+                    self.assertEqual(played, [])
+                item = client.fetch_next()
+                self.assertEqual(item.metadata["playback_status"], "cached")
+                client.ack(item.id)
+                deadline = time.time() + 2
+                while len(played) < 3 and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(played, ["linked_001", "linked_002", "linked_003"])
+            finally:
+                controller.stop()
+                server.shutdown()
+                server.server_close()
+
+    def test_delivery_claim_lease_requeues_only_expired_claims(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root, lambda audio, _metadata: audio, claim_lease_seconds=30)
+            manager.add_audio(wav_bytes(), {"sequence": 1}, "expired")
+            manager.add_audio(wav_bytes(), {"sequence": 2}, "active")
+            self.assertNotIn("processing_kind", manager.get("expired").metadata)
+            claimed = manager.claim_next("windows-a")
+            self.assertEqual(claimed.metadata["processing_kind"], "delivery")
+            self.assertEqual(claimed.metadata["claimed_by"], "windows-a")
+            claimed.metadata["claim_expires_at"] = "2000-01-01T00:00:00+00:00"
+            still_active = manager.claim_next("windows-b")
+            self.assertEqual(still_active.id, "expired")
+            self.assertEqual(manager.get("active").status, "ready")
+            self.assertEqual(manager.get("expired").metadata["claimed_by"], "windows-b")
+
+    def test_audio_processing_is_not_requeued_as_delivery_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            started = threading.Event()
+            release = threading.Event()
+
+            def process(audio, _metadata):
+                started.set()
+                release.wait(1)
+                return audio
+
+            manager = AudioCacheManager(root, process, claim_lease_seconds=0.01)
+            worker = threading.Thread(target=lambda: manager.add_audio(wav_bytes(), {}, "processing"))
+            worker.start()
+            self.assertTrue(started.wait(1))
+            time.sleep(0.05)
+            self.assertEqual(manager.requeue_expired_claims(), 0)
+            self.assertEqual(manager.get("processing").status, "processing")
+            release.set()
+            worker.join(1)
+
     def test_state_flow_keeps_order_and_ack_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = AudioCacheManager(Path(directory), lambda audio, _metadata: audio)
@@ -180,6 +268,14 @@ class AudioCacheTests(unittest.TestCase):
             self.assertEqual(state["buffered_segments"], 2)
             self.assertAlmostEqual(state["buffered_seconds"], 13.0, places=2)
             self.assertEqual(state["playback_status"], "playing")
+
+    def test_local_playback_state_marks_played_only_session_as_rebuffering(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            write_client_item(cache, "played_001", "session_rebuffer", 5.0, "played", "2026-09-13T10:00:00+00:00")
+            state = AudioClient("http://server:8000", cache).local_playback_state()
+            self.assertEqual(state["buffered_segments"], 0)
+            self.assertEqual(state["playback_status"], "rebuffering")
 
     def test_next_poll_reports_client_buffer_even_when_server_has_no_audio(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -307,6 +403,44 @@ class AudioCacheTests(unittest.TestCase):
                 self.assertEqual(second.metadata["content_cache"], "hit")
                 self.assertEqual(first.path.read_bytes(), second.path.read_bytes())
                 self.assertEqual(len(list((root / "client" / "blobs").glob("*.wav"))), 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_duplicate_float_audio_reuses_prepared_content_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                client = AudioClient(f"http://127.0.0.1:{server.server_port}", root / "client")
+                encoded = base64.b64encode(float_wav_bytes()).decode("ascii")
+                source_hash = "c" * 64
+                for index, session_id in enumerate(("float-a", "float-b"), 1):
+                    response = client._request_json("POST", "audio/enqueue", {
+                        "id": f"float_duplicate_{index:03d}",
+                        "sequence": index,
+                        "session_id": session_id,
+                        "source": "live_session",
+                        "source_audio_sha256": source_hash,
+                        "playback_speed": 1.0,
+                        "volume": 100.0,
+                        "session_final": True,
+                        "audio_base64": encoded,
+                    })
+                    self.assertEqual(response.status, 201)
+
+                first = client.fetch_next()
+                client.ack(first.id)
+                first_metadata = json.loads((root / "client" / f"{first.id}.json").read_text())
+                prepared = root / "client" / first_metadata["prepared_path"]
+                self.assertTrue(prepared.is_file())
+                second = client.fetch_next()
+                client.ack(second.id)
+                second_metadata = json.loads((root / "client" / f"{second.id}.json").read_text())
+                self.assertEqual(second_metadata["prepared_path"], first_metadata["prepared_path"])
             finally:
                 server.shutdown()
                 server.server_close()

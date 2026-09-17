@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -18,6 +18,7 @@ from .processing import AudioProcessor, ProcessingResult
 
 STATES = ("pending", "ready", "processing", "completed", "failed")
 ITEM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+DEFAULT_CLAIM_LEASE_SECONDS = 30.0
 
 
 class AudioCacheError(RuntimeError):
@@ -49,16 +50,28 @@ class AudioItem:
 class AudioCacheManager:
     """Keep filesystem durability while serving hot-path state from memory."""
 
-    def __init__(self, root: Path, processor: Optional[Callable[[bytes, Dict[str, Any]], Any]] = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        processor: Optional[Callable[[bytes, Dict[str, Any]], Any]] = None,
+        claim_lease_seconds: float = DEFAULT_CLAIM_LEASE_SECONDS,
+    ) -> None:
         self.root = Path(root)
         self._lock = threading.RLock()
         self._processor = processor or AudioProcessor().process
+        try:
+            self.claim_lease_seconds = float(claim_lease_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("claim lease must be numeric") from exc
+        if self.claim_lease_seconds <= 0:
+            raise ValueError("claim lease must be positive")
         self._items: Dict[str, AudioItem] = {}
         self._state_counts: Dict[str, int] = {state: 0 for state in STATES}
         self._session_counts: Dict[str, Dict[str, int]] = {}
         for state in STATES:
             (self.root / state).mkdir(parents=True, exist_ok=True)
         self._load_index()
+        self.requeue_expired_claims()
 
     def create_pending(self, metadata: Dict[str, Any], item_id: Optional[str] = None) -> AudioItem:
         with self._lock:
@@ -105,6 +118,7 @@ class AudioCacheManager:
                 if existing:
                     return existing
                 raise AudioCacheError(f"pending audio not found: {item_id}")
+            item.metadata["processing_kind"] = "audio_processing"
             self._move_state(item, "processing")
         try:
             if not item.audio_path.is_file():
@@ -116,20 +130,31 @@ class AudioCacheManager:
             os.replace(temporary, item.audio_path)
             with self._lock:
                 item.metadata.update(processing_metadata)
+                item.metadata.pop("processing_kind", None)
                 return self._move_state(item, "ready")
         except Exception as exc:
             self._mark_failed(item.id, str(exc), current_state="processing")
             raise
 
-    def claim_next(self) -> Optional[AudioItem]:
+    def claim_next(self, client_id: str = "") -> Optional[AudioItem]:
         with self._lock:
+            self._requeue_expired_claims()
             items = sorted(
                 (item for item in self._items.values() if item.status == "ready"),
                 key=_sort_key,
             )
             if not items:
                 return None
-            return self._move_state(items[0], "processing")
+            owner = str(client_id or "anonymous").strip()[:128] or "anonymous"
+            now = datetime.now(timezone.utc)
+            item = items[0]
+            item.metadata.update({
+                "processing_kind": "delivery",
+                "claimed_by": owner,
+                "claimed_at": now.isoformat(),
+                "claim_expires_at": (now + timedelta(seconds=self.claim_lease_seconds)).isoformat(),
+            })
+            return self._move_state(item, "processing")
 
     def ack(self, item_id: str, status: str = "completed") -> AudioItem:
         if status not in ("completed", "failed"):
@@ -142,6 +167,13 @@ class AudioCacheManager:
                 return current
             if current.status != "processing":
                 raise AudioCacheError(f"cannot ack {item_id} from {current.status}")
+            if current.metadata.get("processing_kind") != "delivery":
+                raise AudioCacheError(f"cannot ack {item_id} while audio processing is active")
+            current.metadata.pop("processing_kind", None)
+            current.metadata.pop("claimed_by", None)
+            current.metadata.pop("claimed_at", None)
+            current.metadata.pop("claim_expires_at", None)
+            current.metadata["acked_at"] = _utc_now()
             current = self._move_state(current, status)
             self._release_audio(current)
             return current
@@ -171,6 +203,11 @@ class AudioCacheManager:
     def stats(self) -> Dict[str, int]:
         with self._lock:
             return dict(self._state_counts)
+
+    def requeue_expired_claims(self) -> int:
+        """Return delivery claims whose lease expired without an ACK to ready."""
+        with self._lock:
+            return self._requeue_expired_claims()
 
     def session_stats(self, session_id: str) -> Dict[str, int]:
         if not session_id:
@@ -279,6 +316,24 @@ class AudioCacheManager:
         item.metadata["audio_released_at"] = _utc_now()
         self._write_metadata(item.directory, item.metadata)
 
+    def _requeue_expired_claims(self) -> int:
+        now = datetime.now(timezone.utc)
+        recovered = 0
+        for item in list(self._items.values()):
+            if item.status != "processing" or item.metadata.get("processing_kind") != "delivery":
+                continue
+            expires = _parse_utc(item.metadata.get("claim_expires_at"))
+            if expires is None or expires > now:
+                continue
+            item.metadata["claim_requeued_at"] = now.isoformat()
+            item.metadata.pop("claimed_by", None)
+            item.metadata.pop("claimed_at", None)
+            item.metadata.pop("claim_expires_at", None)
+            item.metadata.pop("processing_kind", None)
+            self._move_state(item, "ready")
+            recovered += 1
+        return recovered
+
     def _find(self, item_id: str, states: Iterable[str]) -> Optional[AudioItem]:
         item_id = self._validate_id(item_id)
         item = self._items.get(item_id)
@@ -298,6 +353,10 @@ class AudioCacheManager:
             if not item:
                 return
             item.metadata["error"] = error
+            item.metadata.pop("processing_kind", None)
+            item.metadata.pop("claimed_by", None)
+            item.metadata.pop("claimed_at", None)
+            item.metadata.pop("claim_expires_at", None)
             self._move_state(item, "failed")
 
     @staticmethod
@@ -344,3 +403,15 @@ def _sort_key(item: AudioItem) -> tuple[Any, str, str]:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_utc(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)

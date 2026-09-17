@@ -285,10 +285,25 @@ class AudioClientApp:
                 item = client.fetch_next()
                 if item:
                     self.logger.info("received %s", item.id)
+                    metadata = item.metadata
+                    server_metadata = metadata.get("server_metadata") if isinstance(metadata.get("server_metadata"), dict) else {}
+                    self.logger.info(
+                        "audio timeline session_id=%s item_id=%s sequence=%s download_started_at=%s "
+                        "download_ready_at=%s prepared_at=%s content_cache=%s",
+                        server_metadata.get("session_id", ""), item.id, metadata.get("sequence"),
+                        metadata.get("download_started_at", ""), metadata.get("download_ready_at", ""),
+                        metadata.get("prepared_at", ""), metadata.get("content_cache", "miss"),
+                    )
                     self.events.put(("received", client.local_stats()))
                     # V1 has no playback consumer acknowledgement on the server.
                     # The durable local WAV is the transport completion boundary.
-                    client.ack(item.id, "completed")
+                    ack_payload = client.ack(item.id, "completed")
+                    ack_metadata = ack_payload.get("metadata", {}) if isinstance(ack_payload, dict) else {}
+                    self.logger.info(
+                        "audio timeline item_id=%s ack_at=%s",
+                        item.id,
+                        ack_metadata.get("ack_at", ""),
+                    )
                     self.logger.info("completed %s", item.id)
                     self.events.put(("completed", client.local_stats()))
                 else:
@@ -354,8 +369,12 @@ class AudioClientApp:
         labels = {
             "playing": "播放中",
             "paused": "已暂停",
+            "buffering": "启动缓冲",
+            "rebuffering": "重新缓冲",
             "waiting": "等待音频" if stats.get("buffered_segments", 0) == 0 else "播放中",
             "stopped": "已停止",
+            "error": "播放错误",
+            "playback_failed": "播放错误",
         }
         self.playback_status_var.set(labels.get(state, state))
         if stats.get("playback_error"):

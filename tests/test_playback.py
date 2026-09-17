@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 
-from audio_client.playback import PlaybackController
+from audio_client.playback import PlaybackController, _playback_status
 
 
 class FakePlayer:
@@ -61,6 +61,88 @@ def _write_failed_float_item(root: Path, item_id: str, sequence: int, session_id
 
 
 class PlaybackTests(unittest.TestCase):
+    def test_explicit_buffering_is_not_legacy_cached(self):
+        self.assertEqual(_playback_status({"status": "completed", "playback_status": "buffering"}), "buffering")
+        self.assertEqual(_playback_status({"status": "completed"}), "cached")
+
+    def test_startup_buffer_is_enforced_by_playback_controller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "live_001", 1, "buffering", "session", "2026-09-17T00:00:01+00:00")
+            metadata = json.loads((root / "live_001.json").read_text())
+            metadata["duration"] = 5.0
+            (root / "live_001.json").write_text(json.dumps(metadata), encoding="utf-8")
+            player = FakePlayer(threading.Event())
+            controller = PlaybackController(root, player=player)
+            controller.start()
+            time.sleep(0.25)
+            self.assertEqual(player.ids, [])
+            self.assertEqual(controller.stats()["playback_status"], "buffering")
+
+            _write_item(root, "live_002", 2, "buffering", "session", "2026-09-17T00:00:02+00:00")
+            metadata = json.loads((root / "live_002.json").read_text())
+            metadata["duration"] = 7.0
+            (root / "live_002.json").write_text(json.dumps(metadata), encoding="utf-8")
+            deadline = time.time() + 2
+            while len(player.ids) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+            self.assertEqual(player.ids, ["live_001", "live_002"])
+
+    def test_rebuffering_waits_for_safe_inventory_after_underrun(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "live_001", 1, "cached", "session", "2026-09-17T00:00:01+00:00")
+            player = FakePlayer(threading.Event())
+            controller = PlaybackController(root, player=player)
+            controller.start()
+            deadline = time.time() + 2
+            while not player.ids and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(player.ids, ["live_001"])
+            time.sleep(0.1)
+
+            _write_item(root, "live_002", 2, "buffering", "session", "2026-09-17T00:00:02+00:00")
+            metadata = json.loads((root / "live_002.json").read_text())
+            metadata["duration"] = 3.0
+            (root / "live_002.json").write_text(json.dumps(metadata), encoding="utf-8")
+            time.sleep(0.3)
+            self.assertEqual(player.ids, ["live_001"])
+            self.assertEqual(controller.stats()["playback_status"], "rebuffering")
+
+            _write_item(root, "live_003", 3, "buffering", "session", "2026-09-17T00:00:03+00:00")
+            metadata = json.loads((root / "live_003.json").read_text())
+            metadata["duration"] = 9.0
+            (root / "live_003.json").write_text(json.dumps(metadata), encoding="utf-8")
+            deadline = time.time() + 2
+            while len(player.ids) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+            self.assertEqual(player.ids, ["live_001", "live_002", "live_003"])
+
+    def test_final_short_item_force_releases_rebuffer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "live_001", 1, "cached", "session", "2026-09-17T00:00:01+00:00")
+            player = FakePlayer(threading.Event())
+            controller = PlaybackController(root, player=player)
+            controller.start()
+            deadline = time.time() + 2
+            while not player.ids and time.time() < deadline:
+                time.sleep(0.01)
+            metadata = json.loads((root / "live_001.json").read_text())
+            metadata["server_metadata"]["session_final"] = False
+            (root / "live_001.json").write_text(json.dumps(metadata), encoding="utf-8")
+            _write_item(root, "live_002", 2, "buffering", "session", "2026-09-17T00:00:02+00:00")
+            metadata = json.loads((root / "live_002.json").read_text())
+            metadata["duration"] = 5.0
+            metadata["server_metadata"]["session_final"] = True
+            (root / "live_002.json").write_text(json.dumps(metadata), encoding="utf-8")
+            deadline = time.time() + 2
+            while len(player.ids) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+            self.assertEqual(player.ids, ["live_001", "live_002"])
     def test_current_session_float_failure_is_converted_once_and_requeued(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -29,7 +29,7 @@ python3 scripts/audio-cache-server.py \
   --tts-url http://127.0.0.1:8765
 ```
 
-`config/audio-cache.example.json` 可修改 `preload_segments`、速度范围和音量目标。服务支持可选的 `AUDIO_CACHE_API_KEY`；设置后客户端请求需使用同一个 Bearer key。
+`config/audio-cache.example.json` 可修改 `preload_segments`、`claim_lease_seconds`、速度范围和音量目标。服务支持可选的 `AUDIO_CACHE_API_KEY`；设置后客户端请求需使用同一个 Bearer key。
 
 ## 生成并提前缓存
 
@@ -56,7 +56,7 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 
 | 接口 | 作用 |
 | --- | --- |
-| `GET /audio/next` | 按 `sequence` 顺序领取一条 `ready` 音频；领取后立即进入 `processing` |
+| `GET /audio/next` | 按 `sequence` 顺序领取一条 `ready` 音频；领取后进入带租约的 delivery `processing` |
 | `GET /audio/files/{id}` | 下载 WAV |
 | `GET /audio/status/{id}` | 查询任务状态，供客户端重启恢复 |
 | `POST /audio/ack` | `{\"id\":\"segment_001\",\"status\":\"completed\"}` 确认消费 |
@@ -64,7 +64,7 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 | `POST /audio/cleanup` | 按 `session_id` 清理该 Session 创建的缓存项 |
 | `GET /health` | 返回各状态数量 |
 
-无 ready 音频时 `/audio/next` 返回 `204`。ACK 是幂等的；客户端下载完成后先把 WAV 和本地 metadata 原子写入 cache，网络断开时不会丢失本地文件。`/health` 和 Session 状态还会根据最近的 `/audio/next` 请求报告 `client_connected`。
+无 ready 音频时 `/audio/next` 返回 `204`。领取 metadata 会记录 `claimed_by`、`claimed_at` 和 `claim_expires_at`；没有 ACK 且租约过期的 delivery 项会重新进入 `ready`，音频处理阶段不会被这条恢复逻辑打断。ACK 是幂等的；客户端下载完成后先把 WAV 和本地 metadata 原子写入 cache，网络断开时不会丢失本地文件。`/health` 和 Session 状态还会根据最近的 `/audio/next` 请求报告 `client_connected`。
 
 ## 直播端客户端
 

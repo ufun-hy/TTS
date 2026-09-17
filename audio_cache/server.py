@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import hmac
 import json
 import threading
@@ -45,7 +46,7 @@ class AudioCacheServer(ThreadingHTTPServer):
         except (TypeError, ValueError):
             buffered_seconds = 0.0
         playback_status = first("client_playback_status", "idle")
-        if playback_status not in ("idle", "buffered", "playing", "paused"):
+        if playback_status not in ("idle", "buffered", "buffering", "playing", "rebuffering", "paused"):
             playback_status = "idle"
         state = {
             "session_id": first("client_session_id").strip(),
@@ -115,12 +116,15 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 })
                 return
             if path == "/audio/next":
-                self.server.update_client_state(parse_qs(split.query, keep_blank_values=True))  # type: ignore[attr-defined]
-                item = manager.claim_next()
+                query = parse_qs(split.query, keep_blank_values=True)
+                self.server.update_client_state(query)  # type: ignore[attr-defined]
+                client_id = query.get("client_id", [""])[0]
+                item = manager.claim_next(client_id)
                 if not item:
                     self.send_response(204)
                     self.end_headers()
                     return
+                self._timeline("claim", item.id, item.metadata)
                 self._json(200, _next_payload(item))
                 return
             if path.startswith("/audio/session-status/"):
@@ -180,10 +184,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 body = self._body()
                 if path == "/audio/ack":
                     item = manager.ack(str(body.get("id", "")), str(body.get("status", "completed")))
+                    self._timeline("ack", item.id, item.metadata)
                     self._json(200, _item_payload(item))
                     return
                 if path == "/audio/enqueue":
                     item = self._enqueue(body)
+                    self._timeline("enqueue", item.id, item.metadata)
                     self._json(201, _item_payload(item))
                     return
                 if path == "/audio/preload":
@@ -263,7 +269,23 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             self._json(200, {"preload_segments": target, "generated": generated, "ready": manager.stats()["ready"]})
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            print(f"audio-cache {self.address_string()} - {fmt % args}", flush=True)
+            split = urlsplit(self.path)
+            query = parse_qs(split.query, keep_blank_values=True)
+            item_id = unquote(split.path.rsplit("/", 1)[-1]) if "/audio/" in split.path else ""
+            session_id = query.get("client_session_id", [""])[0]
+            print(
+                f"{datetime.now(timezone.utc).isoformat()} audio-cache {self.address_string()} "
+                f"item_id={item_id} session_id={session_id} - {fmt % args}",
+                flush=True,
+            )
+
+        def _timeline(self, event: str, item_id: str, metadata: Dict[str, Any]) -> None:
+            print(
+                f"{datetime.now(timezone.utc).isoformat()} audio-cache event={event} "
+                f"item_id={item_id} session_id={metadata.get('session_id', '')} "
+                f"status={metadata.get('status', '')}",
+                flush=True,
+            )
 
     return Handler
 

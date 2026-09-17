@@ -1,5 +1,6 @@
 {
   "preload_segments": 5,
+  "claim_lease_seconds": 30,
   "speed": {
     "enabled": true,
     "min": 0.92,
