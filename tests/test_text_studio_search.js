@@ -1,6 +1,6 @@
 // Run: node tests/test_text_studio_search.js
 const assert = require('node:assert/strict');
-const {findMatches, replacementForHit, findingOffset} = require('../web/text-studio-search.js');
+const {findMatches, replacementForHit, findingOffset, riskContext} = require('../web/text-studio-search.js');
 
 const paragraphs = [{
   id: 'p0001',
@@ -81,8 +81,14 @@ assert.equal(
   'stale offsets must not fall back to another occurrence',
 );
 
-assert.equal(findingOffset('风险 正常 风险', {position: 6, phrase: '风险'}), 6);
-assert.equal(findingOffset('风险 正常 风险', {position: 5, phrase: '风险'}), 6);
+const repeatedRiskText = '风险 正常 风险 结尾';
+assert.equal(findingOffset(repeatedRiskText, {position: 6, phrase: '风险'}), 6);
+assert.equal(findingOffset(repeatedRiskText, {position: 5, phrase: '风险'}), 6);
 assert.equal(findingOffset('没有目标', {position: 0, phrase: '风险'}), -1);
+assert.deepEqual(
+  riskContext(repeatedRiskText, {position: 6, phrase: '风险'}, 4),
+  {before: '…正常 ', phrase: '风险', after: ' 结尾', start: 6},
+  'exact risk editor context must highlight the same occurrence used by selection',
+);
 
-console.log('Text Studio search checks passed: search scope, exact replacement target, trim offsets and risk locator offsets.');
+console.log('Text Studio search checks passed: search scope, exact replacement target, trim offsets and exact risk-editor context.');
