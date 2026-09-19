@@ -184,8 +184,8 @@ class SynthesisBlockLiveSession(LiveSession):
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(block["text"])
-                    audio = self._synthesize(speech_text, self.voice)
-                    if self._stop.is_set():
+                    audio = self._synthesize_with_recovery(speech_text, block["id"])
+                    if audio is None or self._stop.is_set():
                         return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"

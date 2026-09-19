@@ -394,7 +394,7 @@ def make_handler(
             if self.path == "/synthesize" and self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._json(403, {"success": False, "error": "local_only"})
                 return
-            if not rate_limiter.allow():
+            if self.path == "/speak" and not rate_limiter.allow():
                 self._json(429, {"success": False, "error": "rate_limited"}, {"Retry-After": "60"})
                 return
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].lower()
@@ -438,6 +438,11 @@ def make_handler(
                 except (EngineRuntimeError, OSError, ValueError, urllib.error.URLError) as exc:
                     self._json(502, {"success": False, "error": "tts_failed", "detail": str(exc)})
                     return
+                print(json.dumps({
+                    "event": "tts_synthesize", "status": 200,
+                    "voice": voice, "text_length": len(text),
+                    "cache_hit": cache_hit,
+                }), flush=True)
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav")
                 self.send_header("Content-Length", str(len(audio)))

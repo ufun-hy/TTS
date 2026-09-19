@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from email.message import Message
+import io
 import threading
 import time
 import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 from server.live_session import (
     LiveSession,
@@ -13,6 +17,137 @@ from server.live_session import (
     prepare_live_segments,
     resolve_dynamic_time,
 )
+from server.live_session_blocks import SynthesisBlockLiveSessionManager
+
+
+class LiveTTSRecoveryTests(unittest.TestCase):
+    manager_types = (LiveSessionManager, SynthesisBlockLiveSessionManager)
+
+    def make_manager(self, manager_type, enqueued, cache_status=None):
+        manager = manager_type(
+            "http://gateway", "http://cache", tts_api_key="test-key",
+            enqueue=lambda *args: enqueued.append(args),
+            cache_status=cache_status or (lambda _id: {}),
+            cache_cleanup=lambda _id: {},
+        )
+
+        def stop():
+            if manager._session:
+                manager.stop()
+                manager._session._thread.join(2)
+
+        self.addCleanup(stop)
+        return manager
+
+    @staticmethod
+    def failure(status, retry_after="1"):
+        headers = Message()
+        headers["Retry-After"] = retry_after
+        return HTTPError("http://gateway/synthesize", status, "upstream error", headers, io.BytesIO())
+
+    def test_temporary_error_recovers_same_segment_and_sequence_in_both_live_paths(self):
+        for manager_type in self.manager_types:
+            for status in (429, 503):
+                with self.subTest(manager=manager_type.__name__, status=status):
+                    enqueued, requests, times = [], [], []
+                    failed = threading.Event()
+                    manager = self.make_manager(manager_type, enqueued)
+
+                    def urlopen(req, **_kwargs):
+                        requests.append(req.data)
+                        times.append(time.monotonic())
+                        if len(requests) == 1:
+                            failed.set()
+                            raise self.failure(status)
+                        return io.BytesIO(b"RIFFtest")
+
+                    with patch("timeline.tts_client.request.urlopen", side_effect=urlopen):
+                        # Long first segment forces two blocks in the production path.
+                        manager.start("default", [{"id": "p1", "text": "甲" * 180}, {"id": "p2", "text": "第二段"}])
+                        self.assertTrue(failed.wait(1))
+                        self.assertEqual(manager.status()["status"], "running")
+                        manager._session._thread.join(3)
+                    self.assertFalse(manager._session._thread.is_alive())
+                    self.assertEqual(manager.status()["status"], "stopped")
+                    self.assertTrue(manager.status()["finished"])
+                    self.assertEqual(requests[0], requests[1])
+                    self.assertGreaterEqual(times[1] - times[0], 0.95)
+                    self.assertEqual([item[1] for item in enqueued], [1, 2])
+                    self.assertEqual([item[2] for item in enqueued], ["甲" * 180, "第二段"])
+
+    def test_permanent_http_error_fails_without_retry_in_both_live_paths(self):
+        for manager_type in self.manager_types:
+            for status in (400, 401, 403, 404):
+                with self.subTest(manager=manager_type.__name__, status=status):
+                    enqueued = []
+                    manager = self.make_manager(manager_type, enqueued)
+                    with patch("timeline.tts_client.request.urlopen", side_effect=self.failure(status)) as call:
+                        manager.start("default", [{"id": "p1", "text": "测试"}])
+                        manager._session._thread.join(1)
+                    self.assertEqual(manager.status()["status"], "failed")
+                    self.assertIn(str(status), manager.status()["error"])
+                    self.assertEqual(enqueued, [])
+                    call.assert_called_once()
+
+    def test_stop_interrupts_60_second_backoff_in_both_live_paths(self):
+        for manager_type in self.manager_types:
+            with self.subTest(manager=manager_type.__name__):
+                manager = self.make_manager(manager_type, [])
+                waiting = threading.Event()
+                with patch("timeline.tts_client.request.urlopen", side_effect=self.failure(429, "60")) as call, patch(
+                    "server.live_session.print", side_effect=lambda *_a, **_k: waiting.set()
+                ):
+                    manager.start("default", [{"id": "p1", "text": "测试"}])
+                    self.assertTrue(waiting.wait(1))
+                    started = time.monotonic()
+                    manager.stop()
+                    manager._session._thread.join(0.5)
+                    self.assertFalse(manager._session._thread.is_alive())
+                    self.assertLess(time.monotonic() - started, 0.5)
+                    self.assertEqual(manager.status()["status"], "stopped")
+                    call.assert_called_once()
+
+    def test_pause_prevents_retry_until_resume_in_both_live_paths(self):
+        for manager_type in self.manager_types:
+            with self.subTest(manager=manager_type.__name__):
+                enqueued = []
+                waiting = threading.Event()
+                manager = self.make_manager(manager_type, enqueued)
+                with patch("timeline.tts_client.request.urlopen", side_effect=[self.failure(503), io.BytesIO(b"RIFFtest")]) as call, patch(
+                    "server.live_session.print", side_effect=lambda *_a, **_k: waiting.set()
+                ):
+                    manager.start("default", [{"id": "p1", "text": "测试"}])
+                    self.assertTrue(waiting.wait(1))
+                    manager.pause()
+                    time.sleep(1.1)
+                    self.assertEqual(manager.status()["status"], "paused")
+                    call.assert_called_once()
+                    manager.resume()
+                    manager._session._thread.join(1)
+                self.assertTrue(manager.status()["finished"])
+                self.assertEqual(len(enqueued), 1)
+
+    def test_recovery_rechecks_buffer_watermarks(self):
+        for manager_type in self.manager_types:
+            with self.subTest(manager=manager_type.__name__):
+                buffered = [0]
+                waiting = threading.Event()
+                manager = self.make_manager(manager_type, [], lambda session_id: {
+                    "client_state": {"session_id": session_id, "buffered_seconds": buffered[0]},
+                    "client_connected": True,
+                })
+                with patch("timeline.tts_client.request.urlopen", side_effect=[self.failure(503), io.BytesIO(b"RIFFtest")]) as call, patch(
+                    "server.live_session.print", side_effect=lambda *_a, **_k: waiting.set()
+                ):
+                    manager.start("default", [{"id": "p1", "text": "测试"}])
+                    self.assertTrue(waiting.wait(1))
+                    buffered[0] = 300
+                    time.sleep(1.1)
+                    call.assert_called_once()
+                    self.assertTrue(manager.status()["backpressure_active"])
+                    buffered[0] = 180
+                    manager._session._thread.join(1)
+                self.assertTrue(manager.status()["finished"])
 
 
 class _RepeatRng:

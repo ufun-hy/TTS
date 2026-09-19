@@ -18,7 +18,7 @@ import urllib.request
 import uuid
 from typing import Any, Callable
 
-from timeline.tts_client import TTSClient, load_api_key
+from timeline.tts_client import RetryableTTSClientError, TTSClient, load_api_key
 
 
 LIVE_STATUSES = ("idle", "starting", "running", "paused", "stopping", "stopped", "failed")
@@ -423,6 +423,34 @@ class LiveSession:
                 continue
             return
 
+    def _synthesize_with_recovery(self, text: str, segment_id: str) -> bytes | None:
+        """Retain the current segment until synthesis succeeds or Live is stopped."""
+        retry_count = 0
+        while not self._stop.is_set():
+            # The caller gates the first attempt before resolving dynamic text.
+            if retry_count:
+                self._resume.wait()
+                self._wait_for_buffer_capacity()
+            if self._stop.is_set():
+                return None
+            try:
+                return self._synthesize(text, self.voice)
+            except RetryableTTSClientError as exc:
+                retry_count += 1
+                delay = exc.retry_delay(retry_count)
+                print(json.dumps({
+                    "event": "TTS temporary error", "session_id": self.session_id,
+                    "segment": segment_id, "round": self.round_number,
+                    "sequence": self._sequence + 1, "status": exc.status_code,
+                    "retryable": True, "retry_after": exc.retry_after,
+                    "backoff_seconds": delay, "retry_count": retry_count,
+                    "session_status": self.status, "error": str(exc),
+                }), flush=True)
+                # Stop wakes immediately; Pause gates every subsequent request.
+                if self._stop.wait(delay):
+                    return None
+        return None
+
     def _run(self) -> None:
         try:
             with self._lock:
@@ -446,8 +474,8 @@ class LiveSession:
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(segment["text"])
-                    audio = self._synthesize(speech_text, self.voice)
-                    if self._stop.is_set():
+                    audio = self._synthesize_with_recovery(speech_text, segment["id"])
+                    if audio is None or self._stop.is_set():
                         return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
@@ -603,7 +631,8 @@ class LiveSessionManager:
     def _synthesize(self, text: str, voice: str) -> bytes:
         if self._synthesize_impl:
             return self._synthesize_impl(text, voice)
-        audio, _latency = self._tts.synthesize(text, voice)
+        # Live owns retries so its Stop/Pause events control every backoff.
+        audio, _latency = self._tts.synthesize(text, voice, retries=0)
         return audio
 
     def _enqueue(self, item_id: str, sequence: int, text: str, voice: str, audio: bytes) -> None:

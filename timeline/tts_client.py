@@ -2,16 +2,62 @@
 
 from __future__ import annotations
 
+from email.utils import parsedate_to_datetime
+import errno
+import http.client
+import logging
+import math
 import os
-from pathlib import Path
+import socket
 import subprocess
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Tuple
 from urllib import error, request
 
 
 class TTSClientError(RuntimeError):
-    pass
+    retryable = False
+
+    def __init__(self, message: str, status_code: int | None = None, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+
+class RetryableTTSClientError(TTSClientError):
+    retryable = True
+
+    def retry_delay(self, retry_count: int) -> float:
+        # Keep a minimum delay even for Retry-After: 0 to prevent a hot loop.
+        if self.retry_after is not None:
+            return max(1.0, self.retry_after)
+        return min(30.0, 2.0 ** min(max(0, retry_count - 1), 5))
+
+
+def _retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        value = value.strip()
+        if value.isascii() and value.isdigit():
+            seconds = float(value)
+        else:
+            seconds = max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+        return seconds if math.isfinite(seconds) else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _temporary_transport_error(exc: BaseException) -> bool:
+    reason = exc.reason if isinstance(exc, error.URLError) else exc
+    return (
+        isinstance(reason, (TimeoutError, socket.timeout, ConnectionError, http.client.IncompleteRead))
+        or isinstance(reason, socket.gaierror) and reason.errno == socket.EAI_AGAIN
+        or isinstance(reason, OSError) and reason.errno in (
+            errno.ETIMEDOUT, errno.ECONNRESET, errno.ECONNABORTED,
+            errno.ECONNREFUSED, errno.EPIPE, errno.ENETUNREACH, errno.EHOSTUNREACH,
+        )
+    )
 
 
 def load_api_key() -> str:
@@ -37,8 +83,8 @@ class TTSClient:
         payload = ("{\"text\":" + _json_string(text) + ",\"voice\":" + _json_string(voice) + "}").encode("utf-8")
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
         started = time.monotonic()
-        last_error = "TTS request failed"
-        for _ in range(max(0, retries) + 1):
+        retries = max(0, retries)
+        for attempt in range(retries + 1):
             req = request.Request(f"{self.base_url}/synthesize", data=payload, headers=headers, method="POST")
             try:
                 with request.urlopen(req, timeout=self.timeout) as response:
@@ -46,9 +92,23 @@ class TTSClient:
                 if not audio.startswith(b"RIFF"):
                     raise TTSClientError("TTS returned a non-WAV response")
                 return audio, (time.monotonic() - started) * 1000
-            except (OSError, error.HTTPError, error.URLError, TTSClientError) as exc:
-                last_error = str(exc)
-        raise TTSClientError(last_error)
+            except error.HTTPError as exc:
+                error_type = RetryableTTSClientError if exc.code in (429, 502, 503, 504) else TTSClientError
+                failure = error_type(
+                    str(exc), status_code=exc.code,
+                    retry_after=_retry_after(exc.headers.get("Retry-After") if exc.headers else None),
+                )
+                exc.close()
+            except (OSError, error.URLError, http.client.HTTPException) as exc:
+                error_type = RetryableTTSClientError if _temporary_transport_error(exc) else TTSClientError
+                failure = error_type(str(exc))
+            logging.getLogger(__name__).warning(
+                "TTS request error status=%s retryable=%s retry_after=%s retry_count=%s error=%s",
+                failure.status_code, failure.retryable, failure.retry_after, attempt, failure,
+            )
+            if not isinstance(failure, RetryableTTSClientError) or attempt == retries:
+                raise failure
+            time.sleep(failure.retry_delay(attempt + 1))
 
 
 def _json_string(value: str) -> str:

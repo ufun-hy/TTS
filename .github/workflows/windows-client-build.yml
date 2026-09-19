@@ -9,7 +9,9 @@ on:
       - "audio_cache/**"
       - "server/engine_runtime.py"
       - "server/live_session.py"
+      - "server/live_session_blocks.py"
       - "server/tts_gateway.py"
+      - "timeline/tts_client.py"
       - "voice_datasets/prompt.py"
       - "voice_datasets/benchmark.py"
       - "scripts/stack-status.sh"
@@ -19,6 +21,9 @@ on:
       - "config/audio-client.example.json"
       - "tests/test_audio_cache.py"
       - "tests/test_live_session.py"
+      - "tests/test_live_session_blocks.py"
+      - "tests/test_tts_client.py"
+      - "tests/test_tts_gateway.py"
       - "tests/test_playback.py"
       - "tests/test_service_entrypoints.py"
       - "tests/test_stage1_efficiency.py"
@@ -51,7 +56,7 @@ jobs:
 
       - name: Run audio client and live tests
         shell: pwsh
-        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat
+        run: python -m unittest tests.test_audio_cache tests.test_live_session tests.test_live_session_blocks tests.test_tts_client tests.test_tts_gateway tests.test_playback tests.test_service_entrypoints tests.test_stage1_efficiency tests.test_stage3_efficiency tests.test_voice_prompt tests.test_wav_compat
 
       - name: Run WinMM smoke test
         shell: pwsh
