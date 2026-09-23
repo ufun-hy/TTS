@@ -80,11 +80,11 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn(str(expected_engine), entries["tts-gateway"][0])
         self.assertEqual(entries["ollama"][1], Path("runtime/bin/ollama"))
 
-    def test_windows_tts_uses_vulkan_backend(self):
+    def test_windows_tts_selects_vulkan_gpu_device(self):
         paths = Path("models"), Path("data"), Path("python"), Path("runtime/bin")
         with mock.patch.object(launcher.os, "name", "nt"):
             command = launcher.commands(*paths)["tts-gateway"][0]
-        self.assertEqual(command[command.index("--engine-backend") + 1], "vulkan")
+        self.assertEqual(command[command.index("--engine-backend") + 1], "Vulkan0")
 
     def test_single_machine_audio_client_uses_headless_playback_service(self):
         entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))

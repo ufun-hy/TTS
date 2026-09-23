@@ -565,7 +565,7 @@ def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str,
     asr_model = models / "asr" / "Qwen3-ASR-1.7B"
     engine = components["cosyvoice"] / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
     ollama = components["ollama"] / ("ollama.exe" if os.name == "nt" else "ollama")
-    engine_backend = "vulkan" if os.name == "nt" else "cuda"
+    engine_backend = "Vulkan0" if os.name == "nt" else "cuda"
     return {
         "ollama": ([str(ollama), "serve"], components["ollama"]),
         "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", engine_backend, "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),
