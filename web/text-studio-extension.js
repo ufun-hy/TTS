@@ -290,6 +290,9 @@
   async function polishParagraphs(targets) {
     const provider = $('provider').value;
     if (!targets.length || !state.providerStatus[provider]) return false;
+    if (state.contextGroups) return TextStudioVariants.polishTargets(targets,
+      `商品事实：${JSON.stringify(readFactsFromForm())}。只做必要自然口语润色，不恢复旧事实或新增事实。`,
+      targetText, writeTarget, () => detectFactConflicts(true));
     const snapshot = state.paragraphs;
     const paragraphs = targets.map(([pi, ci], i) => ({id: `fix${i}`, original_text: targetText(pi, ci)}));
     const data = await api('/api/generalize', {project_id: state.projectId, paragraph_indexes: targets.map(t => t[0]), provider, model: state.selectedModel, candidate_count: 1,

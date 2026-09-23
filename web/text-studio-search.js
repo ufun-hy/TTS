@@ -315,10 +315,14 @@ const TextStudioSearch = (() => {
         return context;
       }
 
-      function openExactRiskEditor(id, pos) {
+      function openExactRiskEditor(id, pos, candidate = null) {
         const paragraphIndex = state.paragraphs.findIndex(paragraph => paragraph.id === id);
         if (paragraphIndex < 0) return;
         const paragraph = state.paragraphs[paragraphIndex];
+        if (Number.isInteger(candidate) && typeof TextStudioVariants !== 'undefined') {
+          TextStudioVariants.select(paragraphIndex, candidate);
+          scheduleSave();
+        }
         const candidateIndex = selectedCandidateIndex(paragraph);
         if (!Array.isArray(paragraph.candidates) || !paragraph.candidates.length) {
           showMessage('当前话术没有可编辑候选。', 'info');
@@ -326,8 +330,11 @@ const TextStudioSearch = (() => {
         }
 
         const activeText = selectedText(paragraph);
+        const openedProject = state.paragraphs;
+        const openedCandidate = paragraph.candidates[candidateIndex];
         const findings = state.riskFindings.filter(finding => (
           finding.paragraph_id === id && finding.position === pos
+          && (candidate === null || finding.candidate_index === candidate)
         ));
         const finding = findings.find(item => (
           activeText.slice(item.position, item.position + String(item.phrase ?? '').length) === item.phrase
@@ -361,7 +368,9 @@ const TextStudioSearch = (() => {
           const currentParagraphIndex = Number(drawer.dataset.paragraphIndex);
           const currentCandidateIndex = Number(drawer.dataset.candidateIndex);
           const currentParagraph = state.paragraphs[currentParagraphIndex];
-          if (!currentParagraph || !Array.isArray(currentParagraph.candidates)
+          if (state.paragraphs !== openedProject || currentParagraph !== paragraph
+              || currentParagraph.candidates?.[currentCandidateIndex] !== openedCandidate
+              || !currentParagraph || !Array.isArray(currentParagraph.candidates)
               || currentCandidateIndex < 0 || currentCandidateIndex >= currentParagraph.candidates.length) {
             showMessage('当前记录已经变化，请重新打开定位修改。', 'info');
             closeExactRiskEditor();

@@ -34,6 +34,10 @@ else:
 
 from recording_transcript.results import list_results, load_result
 from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments
+from server.context_variants import (
+    build_context_groups, build_variant_prompt, normalize_units,
+    validate_context_project, validate_variant_result, ID as CONTEXT_ID,
+)
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
@@ -338,6 +342,46 @@ def _projects_root(root: Path) -> Path:
     return path
 
 
+def generalize_context_group(body: dict, diagnostic_root: Path) -> dict:
+    """Generate and publish a complete group; partial provider results never escape."""
+    units = normalize_units(body.get("paragraphs"))
+    if len(units) > 30 or sum(len(p["original_text"]) for p in units) > 8000:
+        raise ValueError("context group is too large")
+    group_id, revision = body.get("group_id"), body.get("revision", 0)
+    if not isinstance(group_id, str) or not CONTEXT_ID.fullmatch(group_id):
+        raise ValueError("invalid group_id")
+    if type(revision) is not int or not 0 <= revision < 1_000_000:
+        raise ValueError("invalid group revision")
+    count = body.get("candidate_count", 3)
+    provider, model = body.get("provider", "codex"), validate_model(body.get("model", ""))
+    if provider not in {"codex", "chatgpt", "gemini", "agy"}:
+        raise ValueError("invalid provider")
+    before, after = body.get("before", ""), body.get("after", "")
+    if any(not isinstance(t, str) or len(t) > 4000 for t in (before, after)):
+        raise ValueError("invalid neighboring context")
+    prompt = build_variant_prompt(units, count, body.get("instruction", ""), before, after)
+    directory = diagnostic_root / "context" / uuid.uuid4().hex
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "prompt.txt").write_text(prompt, encoding="utf-8")
+    diagnostic = {"group_id": group_id, "requested_model": model, "provider": provider,
+                  "response_path": str(directory / "response.txt"), "stderr_path": str(directory / "stderr.txt"),
+                  "status": "running", "started_at": _utc_timestamp()}
+    try:
+        raw = _run_provider(provider, prompt, DEFAULT_TIMEOUT_SECONDS, diagnostic=diagnostic, model=model)
+        result = validate_variant_result(raw, units, count, group_id, revision + 1)
+        result["group"]["generation_settings"] = {
+            "provider": provider, "model": model, "instruction": body.get("instruction", ""),
+        }
+        diagnostic["status"] = "success"
+        return result
+    except Exception as exc:
+        diagnostic.update(status="failed", error=str(exc))
+        raise
+    finally:
+        diagnostic["finished_at"] = _utc_timestamp()
+        (directory / "diagnostic.json").write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _validate_project_id(project_id: str) -> str:
     if not isinstance(project_id, str) or not PROJECT_ID_RE.fullmatch(project_id):
         raise ValueError("invalid project_id")
@@ -396,6 +440,9 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("project paragraphs must be an array")
     if len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
         raise ValueError(f"project exceeds {MAX_PARAGRAPHS_PER_REQUEST} paragraphs")
+    context_groups = payload.get("context_groups")
+    if context_groups is not None:
+        validate_context_project(paragraphs, context_groups)
 
     name = payload.get("name", "未命名项目")
     if not isinstance(name, str) or not name.strip():
@@ -447,6 +494,9 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
+    if existing.get("context_groups") and context_groups is None:
+        raise ValueError("context group data is required; refresh the editor before saving this project")
+
     kind = payload.get("project_kind", project_kind(existing) if existing else "saved")
     if kind not in {"saved", "draft"}:
         raise ValueError("invalid project_kind")
@@ -471,6 +521,8 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "created_at": created_at,
         "updated_at": now,
     }
+    if context_groups is not None:
+        project.update(schema_version=2, context_groups=context_groups)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name("project.json.tmp")
@@ -610,7 +662,7 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js"}:
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js", "/text-studio-variants.js"}:
                 is_risk_script = path.endswith('.js')
                 try:
                     if path == '/text-studio-prohibited-rules.js':
@@ -707,6 +759,33 @@ def make_handler(
                     })
                     return
 
+                if path == "/api/context/groups":
+                    self._json(200, {"context_groups": build_context_groups(body.get("paragraphs"))})
+                    return
+
+                if path == "/api/context/generalize":
+                    self._json(200, generalize_context_group(body, root / "runtime" / "text-studio"))
+                    return
+
+                if path == "/api/context/polish":
+                    units = normalize_units(body.get("paragraphs"))
+                    targets = body.get("target_ids")
+                    expected_ids = {p["id"] for p in units}
+                    if not isinstance(targets, list) or not targets or any(not isinstance(i, str) or i not in expected_ids for i in targets):
+                        raise ValueError("invalid polish target_ids")
+                    instruction = body.get("instruction", "")
+                    if not isinstance(instruction, str):
+                        raise ValueError("invalid polish instruction")
+                    request = {**body, "candidate_count": 1, "instruction": instruction +
+                               "。仅润色这些目标单元：" + json.dumps(targets, ensure_ascii=False) +
+                               "。所有其他单元必须逐字保持原样，不可改写；以完整上下文保持目标单元承接，不恢复已修正的旧事实。"}
+                    result = generalize_context_group(request, root / "runtime" / "text-studio")
+                    by_id = {p["id"]: p for p in result["paragraphs"]}
+                    if any(by_id[p["id"]]["candidates"][0] != p["original_text"] for p in units if p["id"] not in targets):
+                        raise ValueError("polish changed non-target units; deterministic edits retained")
+                    self._json(200, result)
+                    return
+
                 if path == "/api/generalize":
                     paragraphs = body.get("paragraphs")
                     if not isinstance(paragraphs, list):
@@ -766,9 +845,15 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
+                    segments = body.get("segments")
+                    if "context_groups" in body:
+                        validate_context_project(segments, body["context_groups"], complete=True)
+                        segments = {"paragraphs": segments, "context_groups": body["context_groups"]}
+                    else:
+                        segments = filter_segments(segments)
                     result = live.start(
                         body.get("voice", "default"),
-                        filter_segments(body.get("segments")),
+                        segments,
                         body.get("playback_speed", 1.0),
                         body.get("volume", 100.0),
                     )

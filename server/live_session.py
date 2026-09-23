@@ -19,6 +19,8 @@ import uuid
 from typing import Any, Callable
 
 from timeline.tts_client import RetryableTTSClientError, TTSClient, load_api_key
+from server.context_variants import choose_variant_round, prepare_context_live
+from server.semantic_tts_blocks import semantic_blocks
 
 
 LIVE_STATUSES = ("idle", "starting", "running", "paused", "stopping", "stopped", "failed")
@@ -253,12 +255,15 @@ class LiveSession:
         buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
         buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
+        context_project: dict | None = None,
     ) -> None:
         self.session_id = session_id
         self.voice = voice
         self.segments = segments
         self.candidate_pools = candidate_pools or []
-        self.looping = bool(self.candidate_pools)
+        self.context_project = context_project
+        self.variant_selection: list[dict] = []
+        self.looping = bool(self.candidate_pools or self.context_project)
         self._synthesize = synthesize
         self._enqueue = enqueue
         self._cache_status = cache_status
@@ -364,6 +369,15 @@ class LiveSession:
                 self.finished = False
 
     def _round_segments(self) -> list[dict[str, str]]:
+        if self.context_project:
+            groups = self.context_project["context_groups"]
+            selected, indexes = choose_variant_round(self.context_project["paragraphs"], groups,
+                                                     self._previous_candidate_indexes, self._random)
+            self._previous_candidate_indexes = indexes
+            self.variant_selection = [{"group_id": g["id"], "revision": g["revision"],
+                                       "variant_id": g["variants"][index]["id"]}
+                                      for g, index in zip(groups, indexes)]
+            return semantic_blocks(selected)
         if not self.looping:
             if self.round_number:
                 return []
@@ -425,6 +439,8 @@ class LiveSession:
 
     def _synthesize_with_recovery(self, text: str, segment_id: str) -> bytes | None:
         """Retain the current segment until synthesis succeeds or Live is stopped."""
+        if self.context_project and len(text) > MAX_LIVE_SEGMENT_CHARS:
+            raise LiveSessionError("resolved context block exceeds Gateway text limit", 400)
         retry_count = 0
         while not self._stop.is_set():
             # The caller gates the first attempt before resolving dynamic text.
@@ -537,13 +553,14 @@ class LiveSessionManager:
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
+            context_project = prepare_context_live(segments) if isinstance(segments, dict) else None
             loop_mode = bool(
                 isinstance(segments, list)
                 and segments
                 and all(isinstance(item, dict) and "candidates" in item for item in segments)
             )
             candidate_pools = prepare_candidate_pools(segments) if loop_mode else []
-            prepared_segments = [] if loop_mode else prepare_live_segments(segments)
+            prepared_segments = [] if loop_mode or context_project else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
         with self._lock:
@@ -561,6 +578,7 @@ class LiveSessionManager:
                 playback_speed,
                 volume,
                 candidate_pools=candidate_pools,
+                context_project=context_project,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,
@@ -574,7 +592,10 @@ class LiveSessionManager:
             session = self._session
         if not session:
             return LiveSnapshot("", "idle", 0, 0, 0, 0, 0, 0, False).as_dict()
-        return session.snapshot().as_dict()
+        result = session.snapshot().as_dict()
+        if session.context_project:
+            result["variant_selection"] = list(session.variant_selection)
+        return result
 
     def pause(self) -> dict[str, Any]:
         session = self._require_session()

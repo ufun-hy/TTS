@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import uuid
 from typing import Any
+from server.context_variants import prepare_context_live
 
 if __package__:
     from .live_session import (
@@ -169,7 +170,7 @@ class SynthesisBlockLiveSession(LiveSession):
                 round_segments = self._round_segments()
                 if not round_segments:
                     break
-                synthesis_blocks = prepare_synthesis_blocks(round_segments)
+                synthesis_blocks = round_segments if self.context_project else prepare_synthesis_blocks(round_segments)
                 with self._lock:
                     self.round_number += 1
                     self.generated_segments = 0
@@ -221,13 +222,14 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
+            context_project = prepare_context_live(segments) if isinstance(segments, dict) else None
             loop_mode = bool(
                 isinstance(segments, list)
                 and segments
                 and all(isinstance(item, dict) and "candidates" in item for item in segments)
             )
             candidate_pools = prepare_candidate_pools(segments) if loop_mode else []
-            prepared_segments = [] if loop_mode else prepare_live_segments(segments)
+            prepared_segments = [] if loop_mode or context_project else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
 
@@ -246,6 +248,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 playback_speed,
                 volume,
                 candidate_pools=candidate_pools,
+                context_project=context_project,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,

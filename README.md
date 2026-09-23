@@ -213,6 +213,8 @@ Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v
 
 ## Live Session V1
 
+Text Studio 新增可选的“复制为整组试验项目”：保留原项目，以相邻编辑单元共同生成多套完整 Variant，直播每轮按组选择版本，再按自然标点生成连续 TTS 块。单句编辑、风险定位及项目保存继续保留。实现、A/B/C 音频记录与使用方式见 [上下文整组泛化与连续合成](docs/context-variant-synthesis.md)。当前听感验收待人工确认，旧项目不自动迁移；后端更新需重启 Text Studio 并刷新页面才生效。
+
 Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终话术单元文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 CosyVoice 默认输出的 Float32 WAV 会在 Windows MCI 播放前按需转换为 PCM16，原始文件保留，兼容缓存与失败片段恢复说明见 [Windows WAV 格式兼容](docs/windows-wav-compatibility.md)。
