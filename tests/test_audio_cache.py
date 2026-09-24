@@ -61,6 +61,15 @@ def write_client_item(root, item_id, session_id, duration, playback_status, down
 
 
 class AudioCacheTests(unittest.TestCase):
+    def test_short_download_after_playback_does_not_reenter_startup_buffer(self):
+        root = Path(tempfile.mkdtemp(prefix="live-short-resume-"))
+        write_client_item(root, "old_001", "session", 30, "played", "2026-09-24T00:00:00Z")
+        client = AudioClient("http://unused", root)
+        self.assertFalse(client._session_needs_buffering("session"))
+        write_client_item(root, "new_002", "session", 3, "buffering", "2026-09-24T00:01:00Z")
+        self.assertTrue(client._release_startup_buffer("session"))
+        self.assertEqual(json.loads((root / "new_002.json").read_text())["playback_status"], "cached")
+
     def test_startup_buffer_links_download_metadata_to_playback_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

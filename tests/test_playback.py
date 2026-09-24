@@ -89,7 +89,7 @@ class PlaybackTests(unittest.TestCase):
             controller.stop()
             self.assertEqual(player.ids, ["live_001", "live_002"])
 
-    def test_rebuffering_waits_for_safe_inventory_after_underrun(self):
+    def test_rebuffering_resumes_immediately_with_short_ready_audio(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             _write_item(root, "live_001", 1, "cached", "session", "2026-09-17T00:00:01+00:00")
@@ -106,9 +106,10 @@ class PlaybackTests(unittest.TestCase):
             metadata = json.loads((root / "live_002.json").read_text())
             metadata["duration"] = 3.0
             (root / "live_002.json").write_text(json.dumps(metadata), encoding="utf-8")
-            time.sleep(0.3)
-            self.assertEqual(player.ids, ["live_001"])
-            self.assertEqual(controller.stats()["playback_status"], "rebuffering")
+            deadline = time.monotonic() + 1
+            while len(player.ids) < 2 and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertEqual(player.ids, ["live_001", "live_002"])
 
             _write_item(root, "live_003", 3, "buffering", "session", "2026-09-17T00:00:03+00:00")
             metadata = json.loads((root / "live_003.json").read_text())

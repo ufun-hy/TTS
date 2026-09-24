@@ -431,7 +431,7 @@ class AudioClient:
         statuses = [str(metadata.get("playback_status") or "") for metadata in self._session_items(session_id)]
         if not statuses:
             return True
-        if any(status in ("playing", "paused", "cached") for status in statuses):
+        if any(status in ("playing", "played", "paused", "playback_failed", "cached") for status in statuses):
             return False
         return True
 
@@ -458,7 +458,7 @@ class AudioClient:
                 duration = 0.0
             if duration > 0:
                 buffered_seconds += duration
-        if not force and buffered_seconds < LIVE_STARTUP_BUFFER_SECONDS:
+        if not force and not playback_started and buffered_seconds < LIVE_STARTUP_BUFFER_SECONDS:
             return False
         changed = False
         for item_id, metadata in entries:

@@ -415,27 +415,8 @@ class PlaybackController:
         self._maybe_release_buffer(items)
         with self._lock:
             self._last_items = items
-            current = self._current
-            controller_state = self._state
-            session_id = self._active_session_id
-        if session_id and current is None and self._holds_rebuffer(session_id, items, controller_state):
-            return None
         items = [item for item in items if _playback_status(item.metadata) == "cached"]
         return min(items, key=lambda item: (item.sequence, item.item_id)) if items else None
-
-    @staticmethod
-    def _holds_rebuffer(session_id: str, items: List[PlaybackItem], controller_state: str) -> bool:
-        session_items = [item for item in items if _session_id(item.metadata) == session_id]
-        statuses = [_playback_status(item.metadata) for item in session_items]
-        if not any(status in ("played", "playback_failed") for status in statuses):
-            return False
-        buffered = [item for item in session_items if _playback_status(item.metadata) in ("buffering", "cached")]
-        if any(_session_final(item.metadata) for item in buffered):
-            return False
-        buffered_seconds = sum(_duration(item.metadata) for item in buffered)
-        return buffered_seconds < LIVE_BUFFER_SECONDS and (
-            controller_state == "rebuffering" or any(status == "buffering" for status in statuses)
-        )
 
     def _maybe_release_buffer(self, items: List[PlaybackItem]) -> bool:
         with self._lock:
@@ -448,12 +429,12 @@ class PlaybackController:
             return False
         buffered_seconds = sum(_duration(item.metadata) for item in buffered)
         force = any(_session_final(item.metadata) for item in buffered)
-        if not force and buffered_seconds < LIVE_BUFFER_SECONDS:
-            return False
         started = any(
             _playback_status(item.metadata) in ("playing", "played", "paused", "playback_failed")
             for item in session_items
         )
+        if not force and not started and buffered_seconds < LIVE_BUFFER_SECONDS:
+            return False
         changed = False
         released_at = _utc_now()
         for item in buffered:
@@ -506,10 +487,6 @@ class PlaybackController:
         session_items = [item for item in items if _session_id(item.metadata) == session_id]
         statuses = [_playback_status(item.metadata) for item in session_items]
         if any(status == "cached" for status in statuses):
-            with self._lock:
-                controller_state = self._state
-            if self._holds_rebuffer(session_id, items, controller_state):
-                return "rebuffering"
             return "waiting"
         if any(status == "buffering" for status in statuses):
             return "rebuffering" if any(status in ("playing", "played", "paused", "playback_failed") for status in statuses) else "buffering"

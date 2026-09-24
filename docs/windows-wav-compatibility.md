@@ -62,7 +62,7 @@ machine or MCI device is available. It must be run with the updated executable:
 5. Verify the Mac default live fast path still avoids FFmpeg. The Mac-side
    Float32 WAV remains unchanged; only the Windows playback client adapts it.
 
-The Windows package is built on a Windows build host using the existing flow:
+The Windows package is built by the `Build Windows AI Audio Client` GitHub Actions workflow on `windows-latest`. A push to `main` that changes the client/build paths triggers it; it can also be started manually from the Actions page. The local Windows build flow remains:
 
 ```powershell
 python -m pip install pyinstaller
@@ -70,6 +70,5 @@ python -m pip install pyinstaller
 ```
 
 The expected deliverable is `build/windows/output/AI-Audio-Client-Setup.exe`.
-This checkout was tested on macOS, so no Windows executable was generated here;
-the Windows MCI real-device acceptance and build artifact remain pending on a
-Windows host.
+The GitHub workflow uploads that installer as a 30-day Actions artifact. The
+Windows MCI real-device acceptance must still be completed on a Windows client.
