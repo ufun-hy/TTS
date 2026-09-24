@@ -345,7 +345,7 @@ class AudioClientApp:
             client = AudioClient(self.config.server, resolve_cache_dir(self.config), self.config.poll_interval, self.config.api_key, self.config.timeout)
             self._set_network_stats(client.local_stats())
             if self.playback:
-                self._set_playback_stats(self.playback.stats())
+                self._set_playback_stats(self.playback.stats(refresh=True))
         except (OSError, ValueError, TypeError):
             pass
         self.root.after(1000, self._refresh_local_stats)

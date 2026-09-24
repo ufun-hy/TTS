@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 import wave
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from audio_client.playback import PlaybackStopped, WinMMPlayer
 
@@ -24,6 +24,56 @@ class FakeMCI:
 
 
 class WinMMPreparationTests(unittest.TestCase):
+    def test_device_gap_includes_previous_close_and_next_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "pcm.wav"
+            with wave.open(str(source), "wb") as audio:
+                audio.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+                audio.writeframes(b"\0\0" * 80)
+            clock = [100.0]
+            fake = FakeMCI()
+
+            def delayed_mci(command, target, length, callback):
+                if command.startswith("close "):
+                    clock[0] += .7
+                if command.startswith("open "):
+                    clock[0] += .4
+                return fake(command, target, length, callback)
+
+            player = WinMMPlayer()
+            player._mci = delayed_mci
+            with patch("audio_client.playback.time.perf_counter", side_effect=lambda: clock[0]):
+                player.play(source, threading.Event(), threading.Event())
+                self.assertEqual(player.last_timing["mci_close_ms"], 700)
+                clock[0] += .2  # controller work between calls
+                player.play(source, threading.Event(), threading.Event())
+            self.assertEqual(player.last_timing["mci_open_ms"], 400)
+            self.assertEqual(player.last_timing["inter_segment_gap_ms"], 1300)
+
+    def test_pause_before_start_can_be_stopped_without_issuing_play(self):
+        player = WinMMPlayer()
+        fake = FakeMCI()
+        player._mci = fake
+        stop, pause = threading.Event(), threading.Event()
+        pause.set()
+        errors = []
+
+        def run():
+            try:
+                player.play(Path("unused.wav"), stop, pause)
+            except PlaybackStopped:
+                pass
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        stop.set()
+        thread.join(1)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(fake.commands, [])
+
     def test_mci_open_uses_derived_pcm16_path_for_float_source(self):
         from audio_client.wav_compat import prepare_mci_wav
 

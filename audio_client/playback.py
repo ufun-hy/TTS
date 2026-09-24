@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+from .playback_cache import PlaybackMetadataCache
 from .wav_compat import (
     WavCompatibilityError,
     conversion_cache_valid,
@@ -57,6 +58,8 @@ class WinMMPlayer:
         self._mci = None
         self._error = None
         self.logger = logger
+        self.last_timing: Dict[str, Any] = {}
+        self._previous_stopped: Optional[float] = None
         if os.name == "nt":
             self._mci = ctypes.WinDLL("winmm").mciSendStringW
             self._mci.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
@@ -73,14 +76,21 @@ class WinMMPlayer:
     ) -> None:
         if self._mci is None:
             raise PlaybackError("Windows winmm playback is required")
-        started = time.monotonic()
+        self.last_timing = {}
+        if stop_event.is_set():
+            raise PlaybackStopped()
+        while pause_event.is_set():
+            if stop_event.wait(0.05):
+                raise PlaybackStopped()
+        started = time.perf_counter()
         source_path = Path(path)
         try:
             source_info = inspect_wav(source_path)
             cache_state = "not-needed"
             if source_info.sample_kind == "float32":
                 cache_state = "hit" if conversion_cache_valid(source_path) else "miss"
-            path = prepare_mci_wav(source_path)
+            # PCM16 has already been validated above; do not open it twice more.
+            path = source_path if source_info.sample_kind == "pcm16" else prepare_mci_wav(source_path)
         except WavCompatibilityError as exc:
             if self.logger:
                 self.logger.error(
@@ -88,20 +98,41 @@ class WinMMPlayer:
                     source_path.name, type(exc).__name__, str(exc),
                 )
             raise PlaybackError(str(exc)) from exc
-        if self.logger:
-            output_info = inspect_wav(path)
-            self.logger.info(
-                "wav compatibility source=%s input_format=%s output_format=%s cache=%s conversion_ms=%d",
-                source_path.name, source_info.sample_kind, output_info.sample_kind,
-                cache_state, round((time.monotonic() - started) * 1000),
-            )
+        prepared = time.perf_counter()
+        self.last_timing["prepare_ms"] = round((prepared - started) * 1000, 3)
         alias = f"ai_audio_{threading.get_ident()}"
         self._command(f'open "{str(path).replace(chr(34), "")}" type waveaudio alias {alias}')
+        opened = time.perf_counter()
+        self.last_timing["mci_open_ms"] = round((opened - prepared) * 1000, 3)
         try:
             self._command(f"set {alias} time format milliseconds")
+            configured = time.perf_counter()
+            self.last_timing["mci_set_ms"] = round((configured - opened) * 1000, 3)
+            if stop_event.is_set():
+                raise PlaybackStopped()
             # Keep Windows playback intentionally simple. Speed and volume are
             # applied on the Mac before the WAV enters Audio Cache.
             self._command(f"play {alias}")
+            commanded = time.perf_counter()
+            self.last_timing["play_command_at"] = _utc_now()
+            self.last_timing["mci_play_ms"] = round((commanded - configured) * 1000, 3)
+            if self._previous_stopped is not None:
+                self.last_timing["inter_segment_gap_ms"] = round((commanded - self._previous_stopped) * 1000, 3)
+            if self.logger:
+                # Log after play: even a slow FileHandler cannot delay this start.
+                self.logger.info(
+                    "wav compatibility source=%s input_format=%s output_format=%s cache=%s conversion_ms=%d",
+                    source_path.name, source_info.sample_kind, "pcm16", cache_state,
+                    round((prepared - started) * 1000),
+                )
+                self.logger.info(
+                    "playback device source=%s event=play_command play_command_at=%s "
+                    "prepare_ms=%s mci_open_ms=%s mci_set_ms=%s mci_play_ms=%s inter_segment_gap_ms=%s",
+                    source_path.name, self.last_timing["play_command_at"],
+                    self.last_timing["prepare_ms"], self.last_timing["mci_open_ms"],
+                    self.last_timing["mci_set_ms"], self.last_timing["mci_play_ms"],
+                    self.last_timing.get("inter_segment_gap_ms", "none"),
+                )
             paused = False
             while True:
                 if stop_event.is_set():
@@ -119,10 +150,22 @@ class WinMMPlayer:
                         raise PlaybackStopped()
                     if mode == "not ready":
                         raise PlaybackError("Windows audio device is not ready")
+                    self._previous_stopped = time.perf_counter()
+                    self.last_timing["stopped_observed_at"] = _utc_now()
                     return
                 time.sleep(0.05)
         finally:
+            closing = time.perf_counter()
             self._command(f"close {alias}", ignore_error=True)
+            self.last_timing["mci_close_ms"] = round((time.perf_counter() - closing) * 1000, 3)
+            if "stopped_observed_at" not in self.last_timing:
+                self._previous_stopped = None
+            if self.logger:
+                self.logger.info(
+                    "playback device source=%s event=close stopped_observed_at=%s mci_close_ms=%s",
+                    source_path.name, self.last_timing.get("stopped_observed_at", "none"),
+                    self.last_timing["mci_close_ms"],
+                )
 
     def _status(self, alias: str) -> str:
         buffer = ctypes.create_unicode_buffer(64)
@@ -154,6 +197,7 @@ class PlaybackController:
         player: Optional[Any] = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
+        self._metadata_cache = PlaybackMetadataCache(self.cache_dir)
         self.callback = callback
         self.logger = logger
         self.player = player or WinMMPlayer(logger=logger)
@@ -213,10 +257,17 @@ class PlaybackController:
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    def stats(self) -> Dict[str, Any]:
-        items = self._items()
-        self._sync_active_session(items)
-        items = [item for item in items if item.path.is_file() and item.metadata_path.is_file()]
+    def stats(self, *, refresh: bool = False) -> Dict[str, Any]:
+        # While running, only the playback worker reconciles disk/session state.
+        # GUI refreshes and callbacks must not scan or delete files at a boundary.
+        running = self.is_running()
+        if running and not refresh:
+            with self._lock:
+                items = list(self._last_items)
+        else:
+            items = self._items()
+            if not running:
+                self._sync_active_session(items)
         with self._lock:
             state = self._state
             current = self._current
@@ -232,7 +283,7 @@ class PlaybackController:
             "playback_failed": sum(_playback_status(item.metadata) == "playback_failed" for item in items),
             "superseded": sum(_playback_status(item.metadata) == "superseded" for item in items),
             "active_session_id": active_session_id or "",
-            "cache": sum(item.path.is_file() for item in items),
+            "cache": len(items),
             "playback_error": error,
         }
 
@@ -260,7 +311,9 @@ class PlaybackController:
     def _run(self) -> None:
         self._recover_failed_float_items()
         while not self._stop.is_set():
+            selection_started = time.perf_counter()
             item = self._next_item()
+            selection_ms = round((time.perf_counter() - selection_started) * 1000, 3)
             if item is None:
                 with self._lock:
                     previous_state = self._state
@@ -273,22 +326,15 @@ class PlaybackController:
                 self._stop.wait(0.2)
                 continue
 
-            play_started = time.monotonic()
+            play_started = time.perf_counter()
             with self._lock:
                 previous_end = self._last_play_end_monotonic
                 previous_item = self._last_play_end_item
             if previous_end is not None:
                 gap_ms = round((play_started - previous_end) * 1000, 3)
-                item.metadata["inter_segment_gap_ms"] = gap_ms
-                if self.logger:
-                    self.logger.info(
-                        "playback timeline session_id=%s item_id=%s sequence=%s next_item_ready=%s "
-                        "previous_item_id=%s inter_segment_gap_ms=%s buffered_segments=%s buffered_seconds=%s",
-                        _session_id(item.metadata), item.item_id, item.sequence, True,
-                        previous_item or "", gap_ms,
-                        sum(_playback_status(value.metadata) == "cached" for value in self._last_items),
-                        round(sum(_duration(value.metadata) for value in self._last_items if _playback_status(value.metadata) == "cached"), 3),
-                    )
+                item.metadata["controller_selection_gap_ms"] = gap_ms
+            item.metadata["selection_ms"] = selection_ms
+            item.metadata["previous_item_id"] = previous_item or ""
             next_item = self._next_cached_after(item, self._last_items)
             item.metadata["next_item_id"] = next_item.item_id if next_item else ""
             item.metadata["next_item_ready"] = bool(next_item)
@@ -299,19 +345,26 @@ class PlaybackController:
                 _duration(value.metadata) for value in self._last_items
                 if _playback_status(value.metadata) == "cached"
             ), 3)
+            # One durable update per transition, with timestamps in the same write.
+            # The actual MCI play timestamp is supplied by the player below.
+            item.metadata.pop("play_end_at", None)
+            item.metadata.pop("inter_segment_gap_ms", None)
+            item.metadata["play_requested_at"] = _utc_now()
             self._set_status(item, "playing")
-            item.metadata["play_start_at"] = _utc_now()
-            _atomic_write_json(item.metadata_path, item.metadata)
             with self._lock:
                 self._current = item.item_id
                 self._state = "paused" if self._pause.is_set() else "playing"
             self._emit()
+            dispatch_started = time.perf_counter()
+            item.metadata["dispatch_ms"] = round((dispatch_started - selection_started) * 1000, 3)
             try:
                 self.player.play(_prepared_path(item, self.cache_dir), self._stop, self._pause)
             except PlaybackStopped:
+                item.metadata["play_end_at"] = _utc_now()
                 self._set_status(item, "cached")
                 break
             except Exception as exc:
+                item.metadata["play_end_at"] = _utc_now()
                 self._set_status(item, "playback_failed", str(exc))
                 with self._lock:
                     self._error = str(exc)
@@ -319,14 +372,24 @@ class PlaybackController:
                 if self.logger:
                     self.logger.error("playback failed %s: %s", item.item_id, exc)
             else:
-                self._set_status(item, "played")
+                ended = time.perf_counter()
                 item.metadata["play_end_at"] = _utc_now()
-                _atomic_write_json(item.metadata_path, item.metadata)
+                timing = getattr(self.player, "last_timing", {})
+                item.metadata.update(timing)
+                item.metadata["play_start_at"] = timing.get("play_command_at", item.metadata["play_requested_at"])
+                self._set_status(item, "played")
+                if self.logger:
+                    self.logger.info(
+                        "playback timeline session_id=%s item_id=%s sequence=%s previous_item_id=%s "
+                        "selection_ms=%s dispatch_ms=%s end_write_ms=%s inter_segment_gap_ms=%s "
+                        "next_item_ready=%s buffered_segments=%s buffered_seconds=%s",
+                        _session_id(item.metadata), item.item_id, item.sequence, previous_item or "",
+                        selection_ms, item.metadata["dispatch_ms"], round((time.perf_counter() - ended) * 1000, 3),
+                        timing.get("inter_segment_gap_ms", "none"), item.metadata["next_item_ready"],
+                        item.metadata["buffered_segments"], item.metadata["buffered_seconds"],
+                    )
             finally:
-                if "play_end_at" not in item.metadata:
-                    item.metadata["play_end_at"] = _utc_now()
-                    _atomic_write_json(item.metadata_path, item.metadata)
-                ended = time.monotonic()
+                ended = time.perf_counter()
                 with self._lock:
                     self._current = None
                     self._last_play_end_monotonic = ended
@@ -372,7 +435,7 @@ class PlaybackController:
                 previous_count = int(previous.get("attempt_count", 0)) if isinstance(previous, dict) else 0
             except (TypeError, ValueError):
                 previous_count = 0
-            started = time.monotonic()
+            started = time.perf_counter()
             cache_state = "hit" if conversion_cache_valid(item.path) else "miss"
             try:
                 prepared = prepare_mci_wav(item.path)
@@ -390,7 +453,7 @@ class PlaybackController:
                 if self.logger:
                     self.logger.info(
                         "wav compatibility source=%s input_format=float32 output_format=pcm16 cache=%s conversion_ms=%d",
-                        item.path.name, cache_state, round((time.monotonic() - started) * 1000),
+                        item.path.name, cache_state, round((time.perf_counter() - started) * 1000),
                     )
                     self.logger.info("WAV compatibility recovery succeeded %s -> %s", item.item_id, prepared.name)
             except Exception as exc:
@@ -399,13 +462,13 @@ class PlaybackController:
                     "attempt_count": previous_count + 1, "success": False,
                     "attempted_at": _utc_now(), "error": str(exc),
                 }
-                _atomic_write_json(item.metadata_path, item.metadata)
+                self._write_metadata(item)
                 with self._lock:
                     self._error = str(exc)
                 if self.logger:
                     self.logger.warning(
                         "wav compatibility failed source=%s category=%s conversion_ms=%d detail=%s",
-                        item.path.name, type(exc).__name__, round((time.monotonic() - started) * 1000), str(exc),
+                        item.path.name, type(exc).__name__, round((time.perf_counter() - started) * 1000), str(exc),
                     )
                 continue
 
@@ -443,7 +506,7 @@ class PlaybackController:
             item.metadata["playback_status"] = "cached"
             item.metadata["playback_updated_at"] = released_at
             item.metadata["rebuffer_released_at" if started else "startup_buffer_released_at"] = released_at
-            _atomic_write_json(item.metadata_path, item.metadata)
+            self._write_metadata(item)
             changed = True
         if changed and self.logger:
             self.logger.info(
@@ -464,7 +527,7 @@ class PlaybackController:
             if _playback_status(item.metadata) not in ("buffering", "played", "playback_failed"):
                 continue
             item.metadata["rebuffer_started_at"] = started_at
-            _atomic_write_json(item.metadata_path, item.metadata)
+            self._write_metadata(item)
         if self.logger:
             self.logger.info("rebuffer started session_id=%s", session_id)
 
@@ -530,6 +593,7 @@ class PlaybackController:
         # Once a newer Live Session is active, older session files no longer
         # belong in the playback queue. Cached items are first marked as
         # superseded; safe old-session artifacts are then physically removed.
+        removed_ids = set()
         for item in items:
             session_id = _session_id(item.metadata)
             if not session_id or session_id == newest_session_id:
@@ -543,21 +607,15 @@ class PlaybackController:
                 self._set_status(item, "superseded")
                 status = "superseded"
             if status in self.SAFE_CLEANUP_STATUSES:
-                self._delete_item(item)
+                removed, _ = self._delete_item(item)
+                if removed:
+                    removed_ids.add(item.item_id)
+        items[:] = [item for item in items if item.item_id not in removed_ids]
 
     def _items(self) -> List[PlaybackItem]:
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         items = []
-        for metadata_path in self.cache_dir.glob("*.json"):
-            try:
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not isinstance(metadata, dict):
-                continue
+        for metadata_path, metadata in self._metadata_cache.read():
             path = self.cache_dir / f"{metadata_path.stem}.wav"
-            if not path.is_file():
-                continue
             sequence = _sequence(metadata)
             items.append(PlaybackItem(metadata_path.stem, path, metadata_path, metadata, sequence))
         return items
@@ -591,7 +649,11 @@ class PlaybackController:
             item.metadata["playback_error"] = error
         elif status != "playback_failed":
             item.metadata.pop("playback_error", None)
+        self._write_metadata(item)
+
+    def _write_metadata(self, item: PlaybackItem) -> None:
         _atomic_write_json(item.metadata_path, item.metadata)
+        self._metadata_cache.invalidate(item.metadata_path)
 
     def _recover_interrupted_items(self) -> None:
         for item in self._items():
