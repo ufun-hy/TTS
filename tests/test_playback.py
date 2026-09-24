@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from audio_client.playback import PlaybackController, _playback_status
 
@@ -61,6 +62,87 @@ def _write_failed_float_item(root: Path, item_id: str, sequence: int, session_id
 
 
 class PlaybackTests(unittest.TestCase):
+    def test_refresh_during_playback_finds_download_and_next_boundary_switches_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "old_one", 1, "cached", "old", "2026-09-24T00:00:00Z")
+            _write_item(root, "old_two", 2, "cached", "old", "2026-09-24T00:00:00Z")
+            started, release = threading.Event(), threading.Event()
+            ids = []
+
+            class Player:
+                def play(self, path, stop, pause):
+                    ids.append(path.stem)
+                    if len(ids) == 1:
+                        started.set()
+                        release.wait(2)
+
+            controller = PlaybackController(root, player=Player())
+            controller.start()
+            try:
+                self.assertTrue(started.wait(1))
+                _write_item(root, "new_one", 1, "cached", "new", "2026-09-24T01:00:00Z")
+                stats = controller.stats(refresh=True)
+                self.assertEqual(stats["buffered_segments"], 2)
+                self.assertEqual(stats["playing"], "old_one")
+                self.assertTrue((root / "old_two.wav").exists())
+                release.set()
+                deadline = time.monotonic() + 2
+                while len(ids) < 2 and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertEqual(ids, ["old_one", "new_one"])
+            finally:
+                release.set()
+                controller.stop()
+            self.assertEqual(controller.stats()["active_session_id"], "new")
+
+    def test_large_ready_queue_does_not_reread_all_json_at_each_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(250):
+                _write_item(root, f"segment_{index:03}", index, "cached" if index < 3 else "played")
+            player = FakePlayer(threading.Event())
+            events = []
+            controller = PlaybackController(root, player=player, callback=events.append)
+            reads = []
+            read_text = Path.read_text
+
+            def tracked_read(path, *args, **kwargs):
+                reads.append(path.name)
+                return read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", tracked_read):
+                controller.start()
+                try:
+                    deadline = time.monotonic() + 3
+                    while controller.stats()["played"] < 250 and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertEqual(controller.stats()["played"], 250)
+                finally:
+                    controller.stop()
+            self.assertEqual(player.ids, ["segment_000", "segment_001", "segment_002"])
+            self.assertTrue(events)
+            # Constructor warmed the index. Only the three changed items may
+            # be reopened, independent of the number of GUI stats/callbacks.
+            self.assertLessEqual(len(reads), 3, reads)
+
+    def test_metadata_index_notices_replace_new_file_and_missing_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "one", 1)
+            controller = PlaybackController(root)
+            self.assertEqual(controller._next_item().item_id, "one")
+            metadata = json.loads((root / "one.json").read_text())
+            metadata["playback_status"] = "played"
+            replacement = root / "one.json.tmp"
+            replacement.write_text(json.dumps(metadata))
+            replacement.replace(root / "one.json")
+            self.assertIsNone(controller._next_item())
+            _write_item(root, "two", 2)
+            self.assertEqual(controller._next_item().item_id, "two")
+            (root / "two.wav").rename(root / "two.unavailable")
+            self.assertIsNone(controller._next_item())
+
     def test_explicit_buffering_is_not_legacy_cached(self):
         self.assertEqual(_playback_status({"status": "completed", "playback_status": "buffering"}), "buffering")
         self.assertEqual(_playback_status({"status": "completed"}), "cached")
