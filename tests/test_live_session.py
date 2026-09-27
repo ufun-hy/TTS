@@ -127,7 +127,7 @@ class LiveTTSRecoveryTests(unittest.TestCase):
                 self.assertTrue(manager.status()["finished"])
                 self.assertEqual(len(enqueued), 1)
 
-    def test_recovery_rechecks_buffer_watermarks(self):
+    def test_recovery_ignores_buffer_watermarks(self):
         for manager_type in self.manager_types:
             with self.subTest(manager=manager_type.__name__):
                 buffered = [0]
@@ -143,10 +143,9 @@ class LiveTTSRecoveryTests(unittest.TestCase):
                     self.assertTrue(waiting.wait(1))
                     buffered[0] = 300
                     time.sleep(1.1)
-                    call.assert_called_once()
-                    self.assertTrue(manager.status()["backpressure_active"])
-                    buffered[0] = 180
                     manager._session._thread.join(1)
+                    self.assertEqual(call.call_count, 2)
+                    self.assertFalse(manager.status()["backpressure_active"])
                 self.assertTrue(manager.status()["finished"])
 
 
@@ -305,7 +304,7 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(len({item[0] for item in enqueued}), 4)
         self.assertEqual(manager.status()["round_number"], 2)
 
-    def test_backpressure_pauses_at_300_seconds_and_resumes_at_180_seconds(self):
+    def test_high_buffer_does_not_pause_generation(self):
         state = {"buffered_seconds": 0.0}
         synthesized = []
         enqueued = []
@@ -344,22 +343,11 @@ class LiveSessionTests(unittest.TestCase):
             cache_status,
         )
         session.start()
-        deadline = time.monotonic() + 1
-        while len(enqueued) < 1 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(len(enqueued), 1)
-        time.sleep(0.15)
-        self.assertEqual(len(synthesized), 1)
-        self.assertTrue(session.snapshot().backpressure_active)
-
-        state["buffered_seconds"] = 180.0
-        deadline = time.monotonic() + 1
-        while len(enqueued) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(len(enqueued), 2)
-        self.assertEqual(synthesized, ["第一段", "第二段"])
         session._thread.join(timeout=1)
         self.assertFalse(session._thread.is_alive())
+        self.assertEqual(len(enqueued), 2)
+        self.assertEqual(synthesized, ["第一段", "第二段"])
+        self.assertFalse(session.snapshot().backpressure_active)
         self.assertEqual(session.status, "stopped")
 
     def test_failed_segment_sets_failed_state(self):

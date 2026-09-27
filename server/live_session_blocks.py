@@ -9,9 +9,6 @@ from server.context_variants import prepare_context_live
 
 if __package__:
     from .live_session import (
-        BUFFER_POLL_SECONDS,
-        DEFAULT_BUFFER_HIGH_SECONDS,
-        DEFAULT_BUFFER_LOW_SECONDS,
         VOICE_ID,
         LiveSession,
         LiveSessionError,
@@ -24,9 +21,6 @@ if __package__:
     )
 else:
     from live_session import (
-        BUFFER_POLL_SECONDS,
-        DEFAULT_BUFFER_HIGH_SECONDS,
-        DEFAULT_BUFFER_LOW_SECONDS,
         VOICE_ID,
         LiveSession,
         LiveSessionError,
@@ -92,74 +86,6 @@ def prepare_synthesis_blocks(segments: list[dict[str, str]]) -> list[dict[str, s
 
 class SynthesisBlockLiveSession(LiveSession):
     """LiveSession that synthesizes adjacent short segments as one utterance."""
-
-    def _wait_for_buffer_capacity(self) -> None:
-        """Resume synthesis when a connected Windows client reports no session buffer.
-
-        The base LiveSession treats a missing current-session state as unsafe
-        after that session has been seen once. In practice the Windows client
-        can temporarily report no current session once its local buffer drains
-        or cached session files disappear, while it is still actively polling.
-        Keeping backpressure active in that state deadlocks synthesis forever.
-
-        For the synthesis-block live path, an actively connected client with no
-        current-session state means there is no trustworthy positive buffer to
-        protect, so release backpressure and refill. A truly disconnected client
-        still pauses generation to avoid an unbounded Mac-side backlog.
-        """
-        while not self._stop.is_set():
-            self._resume.wait()
-            if self._stop.is_set():
-                return
-
-            cache = self._cache_status(self.session_id)
-            client_state = cache.get("client_state") if isinstance(cache.get("client_state"), dict) else {}
-            client_connected = bool(cache.get("client_connected", False))
-            valid_state = client_state.get("session_id") == self.session_id
-
-            if valid_state:
-                self._client_session_seen = True
-            elif not self._client_session_seen:
-                # Bootstrap: Windows cannot report this session until the first
-                # generated item reaches it, so allow initial synthesis.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            elif client_connected:
-                # Windows is still polling but no longer reports buffered audio
-                # for this session. Treat that as an empty buffer and refill
-                # immediately instead of leaving backpressure stuck forever.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            else:
-                # Once Windows has acknowledged this session, only a genuine
-                # disconnect/stale client state should stop generation.
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-
-            try:
-                buffered_seconds = max(0.0, float(client_state.get("buffered_seconds", 0) or 0))
-            except (TypeError, ValueError):
-                buffered_seconds = 0.0
-
-            with self._lock:
-                active = self._backpressure_active
-            if active:
-                if buffered_seconds <= self.buffer_low_seconds:
-                    with self._lock:
-                        self._backpressure_active = False
-                    return
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            if buffered_seconds >= self.buffer_high_seconds:
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            return
 
     def _run(self) -> None:
         try:
@@ -249,8 +175,6 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 volume,
                 candidate_pools=candidate_pools,
                 context_project=context_project,
-                buffer_high_seconds=self.buffer_high_seconds,
-                buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
@@ -268,13 +192,11 @@ def build_live_manager(
     tts_api_key: str = "",
     cache_api_key: str = "",
 ) -> SynthesisBlockLiveSessionManager:
-    high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
-    low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
+    stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
     return SynthesisBlockLiveSessionManager(
         gateway_url,
         cache_url,
         tts_api_key,
         cache_api_key,
-        buffer_high_seconds=high,
-        buffer_low_seconds=low,
+        stop_timeout_seconds=stop_timeout,
     )

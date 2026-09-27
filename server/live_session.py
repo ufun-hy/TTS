@@ -28,9 +28,6 @@ SEGMENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 MAX_LIVE_TEXT_CHARS = 1_000_000
 MAX_LIVE_SEGMENT_CHARS = 200  # matches the default TTS Gateway request limit
 VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-DEFAULT_BUFFER_HIGH_SECONDS = 300.0
-DEFAULT_BUFFER_LOW_SECONDS = 180.0
-BUFFER_POLL_SECONDS = 0.25
 CACHE_ENQUEUE_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 120.0
 VOICE_LABELS = {
@@ -94,17 +91,6 @@ def _live_audio_settings(playback_speed: Any, volume: Any) -> tuple[float, float
     if not math.isfinite(volume) or volume < 0:
         raise LiveSessionError("volume must not be negative", 400)
     return playback_speed, volume
-
-
-def _buffer_thresholds(high: Any, low: Any) -> tuple[float, float]:
-    try:
-        high = float(high)
-        low = float(low)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("buffer thresholds must be numeric") from exc
-    if not math.isfinite(high) or not math.isfinite(low) or low < 0 or high <= low:
-        raise ValueError("buffer high must be greater than buffer low and both must be non-negative")
-    return high, low
 
 
 def _technical_chunks(text: str) -> list[str]:
@@ -254,8 +240,8 @@ class LiveSession:
         playback_speed: float = 1.0,
         volume: float = 100.0,
         candidate_pools: list[dict[str, Any]] | None = None,
-        buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
-        buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
+        buffer_high_seconds: float | None = None,
+        buffer_low_seconds: float | None = None,
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
         context_project: dict | None = None,
     ) -> None:
@@ -271,7 +257,7 @@ class LiveSession:
         self._cache_status = cache_status
         self.playback_speed = playback_speed
         self.volume = volume
-        self.buffer_high_seconds, self.buffer_low_seconds = _buffer_thresholds(buffer_high_seconds, buffer_low_seconds)
+        # Legacy buffer arguments are accepted but no longer control generation.
         try:
             self.stop_timeout_seconds = float(stop_timeout_seconds)
         except (TypeError, ValueError) as exc:
@@ -287,7 +273,6 @@ class LiveSession:
         self._previous_candidate_indexes: list[int] | None = None
         self._sequence = 0
         self._backpressure_active = False
-        self._client_session_seen = False
         self.status = "starting"
         self.generated_segments = 0
         self.total_segments = len(segments)
@@ -393,51 +378,10 @@ class LiveSession:
         return prepare_live_segments(selected)
 
     def _wait_for_buffer_capacity(self) -> None:
-        """Pause synthesis while the Windows player has a healthy local buffer."""
-        while not self._stop.is_set():
-            self._resume.wait()
-            if self._stop.is_set():
-                return
-            cache = self._cache_status(self.session_id)
-            client_state = cache.get("client_state") if isinstance(cache.get("client_state"), dict) else {}
-            valid_state = client_state.get("session_id") == self.session_id
-            if valid_state:
-                self._client_session_seen = True
-            elif not self._client_session_seen:
-                # Bootstrap: Windows cannot report this session until the first
-                # generated item reaches it, so allow initial synthesis.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            else:
-                # Once Windows has acknowledged this session, a missing/stale
-                # state means there is no trustworthy consumer state. Wait
-                # rather than generating an unbounded backlog on the Mac.
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-
-            try:
-                buffered_seconds = max(0.0, float(client_state.get("buffered_seconds", 0) or 0))
-            except (TypeError, ValueError):
-                buffered_seconds = 0.0
-
-            with self._lock:
-                active = self._backpressure_active
-            if active:
-                if buffered_seconds <= self.buffer_low_seconds:
-                    with self._lock:
-                        self._backpressure_active = False
-                    return
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            if buffered_seconds >= self.buffer_high_seconds:
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            return
+        """Compatibility entrypoint: only a manual pause can hold generation."""
+        self._resume.wait()
+        with self._lock:
+            self._backpressure_active = False
 
     def _synthesize_with_recovery(self, text: str, segment_id: str) -> bytes | None:
         """Retain the current segment until synthesis succeeds or Live is stopped."""
@@ -528,8 +472,8 @@ class LiveSessionManager:
         enqueue: Callable[[str, int, str, str, bytes], None] | None = None,
         cache_status: Callable[[str], dict[str, Any]] | None = None,
         cache_cleanup: Callable[[str], dict[str, Any]] | None = None,
-        buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
-        buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
+        buffer_high_seconds: float | None = None,
+        buffer_low_seconds: float | None = None,
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
     ) -> None:
         self.gateway_url = gateway_url.rstrip("/")
@@ -540,7 +484,7 @@ class LiveSessionManager:
         self._enqueue_impl = enqueue
         self._cache_status_impl = cache_status
         self._cache_cleanup_impl = cache_cleanup
-        self.buffer_high_seconds, self.buffer_low_seconds = _buffer_thresholds(buffer_high_seconds, buffer_low_seconds)
+        # Legacy buffer arguments are accepted but no longer control generation.
         try:
             self.stop_timeout_seconds = float(stop_timeout_seconds)
         except (TypeError, ValueError) as exc:
@@ -581,8 +525,6 @@ class LiveSessionManager:
                 volume,
                 candidate_pools=candidate_pools,
                 context_project=context_project,
-                buffer_high_seconds=self.buffer_high_seconds,
-                buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,
             )
             self._session = session
@@ -724,15 +666,11 @@ class LiveSessionManager:
 
 
 def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "") -> LiveSessionManager:
-    high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
-    low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
     stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
     return LiveSessionManager(
         gateway_url,
         cache_url,
         tts_api_key,
         cache_api_key,
-        buffer_high_seconds=high,
-        buffer_low_seconds=low,
         stop_timeout_seconds=stop_timeout,
     )
