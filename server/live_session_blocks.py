@@ -143,6 +143,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
         segments: Any,
         playback_speed: Any = 1.0,
         volume: Any = 100.0,
+        first_round: dict | None = None,
     ) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
             raise LiveSessionError("voice is invalid", 400)
@@ -164,7 +165,15 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 if self._session.status in ("starting", "running", "paused"):
                     raise LiveSessionError("a live session is already running")
                 raise LiveSessionError("reset the previous live session before starting a new one")
-            session = SynthesisBlockLiveSession(
+            session_type = SynthesisBlockLiveSession
+            if loop_mode or context_project:
+                if __package__:
+                    from .prepared_live_session import PREPARED_ROUND_COUNT, PreparedLiveSession
+                else:
+                    from prepared_live_session import PREPARED_ROUND_COUNT, PreparedLiveSession
+                session_type = PreparedLiveSession
+            options = {"first_round": first_round} if first_round and (loop_mode or context_project) else {}
+            session = session_type(
                 uuid.uuid4().hex[:12],
                 voice.strip(),
                 prepared_segments,
@@ -176,6 +185,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 candidate_pools=candidate_pools,
                 context_project=context_project,
                 stop_timeout_seconds=self.stop_timeout_seconds,
+                **options,
             )
             self._session = session
             session.start()
@@ -183,6 +193,8 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 "session_id": session.session_id,
                 "status": "starting",
                 "looping": session.looping,
+                "phase": getattr(session, "phase", "playing"),
+                "preparation_total_rounds": PREPARED_ROUND_COUNT if session.looping else 0,
             }
 
 

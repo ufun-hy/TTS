@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from server.prohibited_speech import analyze
+from server.prohibited_speech import analyze, is_confirmed
 from server.speech_units import PAIRS
 
 TARGET_CHARS = 180
@@ -30,7 +30,15 @@ def continuous_text(segments: list[dict]) -> tuple[str, list[dict]]:
 
 def safe_continuous_text(segments: list[dict]) -> tuple[str, list[dict], list[dict]]:
     text, spans = continuous_text(segments)
-    blocked = analyze(text)["blocked"]
+    by_id = {s['id']: s for s in segments}
+    blocked = []
+    for hit in analyze(text)['blocked']:
+        affected = [s for s in spans if s['start'] < hit['end'] and s['end'] > hit['start']]
+        if affected and all(is_confirmed(by_id[s['paragraph_id']]['text'].strip(),
+                {**hit, 'start': hit['start'] - s['start']},
+                by_id[s['paragraph_id']].get('prohibited_reviews', [])) for s in affected):
+            continue
+        blocked.append(hit)
     if not blocked:
         return text, spans, []
     kept, cursor = [], 0

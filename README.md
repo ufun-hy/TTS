@@ -213,9 +213,15 @@ Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v
 
 ## Live Session V1
 
+泛化可与首轮音频准备同时进行：文本准备页勾选“泛化时同步准备首轮音频”，每批保存后就开始合成稳定的完整块。页面显示准备进度并可暂停；点击开播时沿用相同的随机候选选择与已准备音频，避免重复合成。修改文案、审核状态或音色后重新校验对应块。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。
+
+循环智播先准备一轮启动库存，随后持续从每个话术单元的完整可播候选池独立随机选择，保持原稿顺序合块、合成并发送。Mac 不按未 ACK 数量、Windows 水位或在线状态等待；不自动重复固定一轮，不加入兜底音频。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。更新后需重启 Text Studio，Windows 的短音频恢复修改需更新客户端。
+
+规则命中的话术默认整句屏蔽，现在可对具体句子“确认可播报”或“恢复屏蔽”。确认记录随项目保存，试听和普通/整组直播均识别，原规则提示继续保留。详见 [禁止播报检测与人工处理](docs/text-studio-prohibited-speech.md)。
+
 Text Studio 新增可选的“复制为整组试验项目”：保留原项目，以相邻编辑单元共同生成多套完整 Variant，直播每轮按组选择版本，再按自然标点生成连续 TTS 块。单句编辑、风险定位及项目保存继续保留。实现、A/B/C 音频记录与使用方式见 [上下文整组泛化与连续合成](docs/context-variant-synthesis.md)。当前听感验收待人工确认，旧项目不自动迁移；后端更新需重启 Text Studio 并刷新页面才生效。
 
-Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后点击“开始智播”，服务会直接使用当前项目的最终话术单元文本调用 TTS Gateway，由 Mac Audio Processor 生成最终 WAV 后写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
+Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后准备开播。循环会话先调用 TTS Gateway 准备一轮音频，发送首轮后持续合成新随机轮次。Mac Audio Processor 处理播放参数并写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 CosyVoice 默认输出的 Float32 WAV 会在 Windows MCI 播放前按需转换为 PCM16，原始文件保留，兼容缓存与失败片段恢复说明见 [Windows WAV 格式兼容](docs/windows-wav-compatibility.md)。
 
@@ -226,7 +232,7 @@ export AUDIO_CACHE_URL="http://127.0.0.1:8000"
 
 状态接口为 `/api/live/status`；另有暂停/继续、停止和重置接口。停止只停止后续生成并保留已有缓存，重置只清理当前 Session 标记的缓存项。直播连续播放问题的实测原因与处理选项见 [智播连续播放问题现状](docs/live-playback-diagnosis.md)。
 
-Live 合成遇到 429、502、503、504 或临时连接错误时保留当前段及序号，状态保持 `running`，等待后重试。优先遵守 `Retry-After` 秒数或 HTTP 日期；缺失或无效时按 1、2、4 秒指数退避，最高 30 秒，最短等待 1 秒以避免请求风暴。暂停会阻止后续重试，停止能立即打断退避等待；每次重试仍检查 300 / 180 秒库存水位。400、401、403、404 等永久错误直接失败。此策略同时覆盖普通 Live 和合并短段的实际入口，不改变音频缓存或 Windows 播放逻辑。已经发出的同步合成请求仍受原有请求超时约束，不能通过停止事件取消。
+Live 合成遇到 429、502、503、504 或临时连接错误时保留当前段等待重试。优先遵守 `Retry-After` 秒数或 HTTP 日期；缺失或无效时按 1、2、4 秒指数退避，最高 30 秒，最短等待 1 秒以避免请求风暴。暂停会阻止后续重试，停止能立即打断退避等待。合成、重试和发送均不按 Windows 库存限流，人工暂停和停止仍有效。400、401、403、404 等永久错误直接失败。已经发出的同步合成请求仍受原有请求超时约束，不能通过停止事件取消。
 
 ## 当前限制
 
@@ -239,3 +245,6 @@ Text Studio 支持接续已有清洗版项目、按完整句子和话题整理�
 
 Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 [Mac 运行链路可靠性任务](docs/mac-runtime-reliability-v1-task.md)。
+
+当前分支用途、工作目录对应关系、未提交成果整理及 Windows 后续工作顺序见
+[分支整理与 Windows 后续工作任务](docs/branch-consolidation-task.md)。

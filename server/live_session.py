@@ -203,6 +203,12 @@ class LiveSnapshot:
     backpressure_active: bool = False
     stop_timed_out: bool = False
     stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS
+    phase: str = "playing"
+    prepared_segments: int = 0
+    preparation_total_segments: int = 0
+    prepared_rounds: int = 0
+    preparation_total_rounds: int = 0
+    prepared_round_number: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -225,6 +231,12 @@ class LiveSnapshot:
             "finished": self.finished,
             "round_number": self.round_number,
             "looping": self.looping,
+            "phase": self.phase,
+            "prepared_segments": self.prepared_segments,
+            "preparation_total_segments": self.preparation_total_segments,
+            "prepared_rounds": self.prepared_rounds,
+            "preparation_total_rounds": self.preparation_total_rounds,
+            "prepared_round_number": self.prepared_round_number,
         }
 
 
@@ -666,8 +678,13 @@ class LiveSessionManager:
 
 
 def build_live_manager(gateway_url: str, cache_url: str, tts_api_key: str = "", cache_api_key: str = "") -> LiveSessionManager:
+    # Both Text Studio entrypoints use the same prepared-loop implementation.
+    if __package__:
+        from .live_session_blocks import SynthesisBlockLiveSessionManager
+    else:
+        from live_session_blocks import SynthesisBlockLiveSessionManager
     stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
-    return LiveSessionManager(
+    return SynthesisBlockLiveSessionManager(
         gateway_url,
         cache_url,
         tts_api_key,

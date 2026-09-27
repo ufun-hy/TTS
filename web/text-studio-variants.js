@@ -48,7 +48,7 @@ const TextStudioVariants = (() => {
       state.projectKind = 'draft';
       state.projectName = (state.projectName || defaultProjectName()) + '-整组试验';
       $('projectName').value = state.projectName;
-      state.paragraphs = original.map(p => ({...p, candidates: [], selectedIndex: 0, editedText: ''}));
+      state.paragraphs = original.map(p => ({...p, candidates: [], selectedIndex: 0, editedText: '', prohibited_reviews: []}));
       state.contextGroups = context_groups;
       pending = null;
       invalidateReview();
@@ -81,6 +81,7 @@ const TextStudioVariants = (() => {
     const byId = Object.fromEntries(data.result.paragraphs.map(p => [p.id, p]));
     for (const p of members(data.group)) {
       p.candidates = byId[p.id].candidates;
+      p.prohibited_reviews = [];
       p.selectedIndex = 0;
       p.editedText = p.candidates[0];
     }
@@ -94,6 +95,7 @@ const TextStudioVariants = (() => {
     state.generalizing = true;
     render();
     try {
+      await TextStudioPreparation.beforeGeneralize();
       const groups = state.contextGroups;
       for (const group of groups.filter(g => !g.variants?.length)) {
         if (state.contextGroups !== groups) break;
@@ -170,34 +172,7 @@ const TextStudioVariants = (() => {
     return applied;
   }
 
-  function blockedFindings() {
-    const findings = [];
-    for (const group of state.contextGroups || []) {
-      for (const variant of group.variants) {
-        const ci = variant.candidate_index, spans = [];
-        let text = '';
-        for (const p of members(group)) {
-          const value = (p.candidates[ci] || '').trim();
-          if (/[A-Za-z0-9]$/.test(text) && /^[A-Za-z0-9]/.test(value)) text += ' ';
-          const start = text.length;
-          text += value;
-          spans.push({p, value, start, end: text.length});
-        }
-        for (const hit of TextStudioProhibited.analyze(text).blocked) {
-          for (const span of spans) {
-            const start = Math.max(span.start, hit.start), end = Math.min(span.end, hit.end);
-            if (start >= end) continue;
-            findings.push({paragraph_id: span.p.id, paragraph_index: state.paragraphs.indexOf(span.p),
-              candidate_index: ci, variant_id: variant.id, position: start - span.start, end: end - span.start,
-              phrase: text.slice(start, end), context: hit.text, type: '禁止播报', label: '禁止播报',
-              severity: 'blocked', blocked: true, ignored: false, reason: hit.labels.join('、'),
-              suggestion: '整句不会播报；若整组版本丢失完整单元，需修改后才能开始智播。'});
-          }
-        }
-      }
-    }
-    return findings;
-  }
+  function blockedFindings() { return TextStudioReviews.findings(); }
 
   function renderGroups() {
     const button = $('contextCopyBtn'), info = $('contextInfo');

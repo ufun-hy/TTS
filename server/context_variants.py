@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from server.speech_units import _linked
+from server.prohibited_speech import candidate_reviews
 
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 END = re.compile(r'[。！？!?；;][”’」』）)]*$')
@@ -186,6 +187,7 @@ def choose_variant_round(paragraphs: list[dict], groups: list[dict], previous: l
         variant = group["variants"][index]
         for identifier in group["paragraph_ids"]:
             segments.append({"id": identifier, "text": by_id[identifier]["candidates"][variant["candidate_index"]],
+                             "prohibited_reviews": candidate_reviews(by_id[identifier], variant['candidate_index'], by_id[identifier]['candidates'][variant['candidate_index']]),
                              "group_id": group["id"], "variant_id": variant["id"]})
     return segments, indexes
 
@@ -202,9 +204,11 @@ def prepare_context_live(raw: Any) -> dict:
     for group in groups:
         for variant in group["variants"]:
             slot = variant["candidate_index"]
-            segments = [{"id": i, "text": by_id[i]["candidates"][slot]} for i in group["paragraph_ids"]]
+            segments = [{"id": i, "text": by_id[i]["candidates"][slot],
+                         "prohibited_reviews": candidate_reviews(by_id[i], slot, by_id[i]['candidates'][slot])}
+                        for i in group["paragraph_ids"]]
             safe, spans, _ = safe_continuous_text(segments)
             surviving = {s["paragraph_id"] for s in spans}
             if not safe.strip() or surviving != set(group["paragraph_ids"]):
-                raise ValueError(f"group {group['id']} variant {variant['id']} has fully blocked units; edit before Live")
+                raise ValueError(f"group {group['id']} variant {variant['id']} has fully blocked units; 请修改或人工确认可播报后再开始智播")
     return copy.deepcopy({"paragraphs": units, "context_groups": groups})

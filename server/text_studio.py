@@ -33,7 +33,12 @@ else:
     from live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 
 from recording_transcript.results import list_results, load_result
-from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments
+from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments, validate_reviews, candidate_reviews
+from server.semantic_tts_blocks import safe_continuous_text
+from server.first_round_preparation import FirstRoundPreparation
+from server.first_round_plan import normalized_source
+from server.tts_gateway import VoiceStore
+from timeline.tts_client import TTSClient, load_api_key
 from server.context_variants import (
     build_context_groups, build_variant_prompt, normalize_units,
     validate_context_project, validate_variant_result, ID as CONTEXT_ID,
@@ -440,6 +445,9 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("project paragraphs must be an array")
     if len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
         raise ValueError(f"project exceeds {MAX_PARAGRAPHS_PER_REQUEST} paragraphs")
+    for paragraph in paragraphs:
+        if isinstance(paragraph, dict) and 'prohibited_reviews' in paragraph:
+            validate_reviews(paragraph['prohibited_reviews'])
     context_groups = payload.get("context_groups")
     if context_groups is not None:
         validate_context_project(paragraphs, context_groups)
@@ -589,10 +597,28 @@ def _tts_health(gateway_url: str) -> bool:
         return False
 
 
-def _tts_preview(text: str, voice: str, gateway_url: str) -> dict[str, Any] | bytes:
-    text = broadcast_text(text)
+def _tts_preview(text: str, voice: str, gateway_url: str, reviews: list[dict] | None = None,
+                 context_segments: list[dict] | None = None, paragraph_id: str = '') -> dict[str, Any] | bytes:
+    if context_segments is not None:
+        # Filter the complete context first, then extract the selected edit unit.
+        prepared = []
+        seen = set()
+        for segment in context_segments:
+            if not isinstance(segment, dict) or not isinstance(segment.get('id'), str) or segment['id'] in seen:
+                raise ValueError('invalid preview context ids')
+            value = segment.get('text')
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError('invalid preview context text')
+            seen.add(segment['id'])
+            prepared.append({**segment, 'prohibited_reviews': candidate_reviews(segment, 0, value)})
+        if paragraph_id not in seen:
+            raise ValueError('preview paragraph is missing from context')
+        safe, spans, _ = safe_continuous_text(prepared)
+        text = ''.join(safe[s['start']:s['end']] for s in spans if s['paragraph_id'] == paragraph_id).strip()
+    else:
+        text = broadcast_text(text, reviews)
     if not text:
-        raise ValueError("本段全部为禁止播报话术，没有可试听内容。")
+        raise ValueError("本段全部为待处理的禁止播报话术，没有可试听内容；请修改或人工确认可播报。")
     key = _read_keychain_api_key()
     if not key:
         raise RuntimeError("TTS API key is not available")
@@ -635,6 +661,9 @@ def make_handler(
 ):
     html_path = root / "web" / "text-studio.html"
     live = build_live_manager(gateway_url, audio_cache_url, tts_api_key, audio_cache_api_key)
+    preparation_tts = TTSClient(gateway_url, tts_api_key or load_api_key())
+    preparation = FirstRoundPreparation(root, lambda text, voice: preparation_tts.synthesize(text, voice, retries=0)[0],
+        VoiceStore(root, Path("voices.json"), gateway_url).cache_fingerprint)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
@@ -662,7 +691,7 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js", "/text-studio-variants.js"}:
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js", "/text-studio-variants.js", "/text-studio-reviews.js", "/text-studio-preparation.js"}:
                 is_risk_script = path.endswith('.js')
                 try:
                     if path == '/text-studio-prohibited-rules.js':
@@ -698,6 +727,14 @@ def make_handler(
 
             if path == "/api/live/status":
                 self._json(200, live.status())
+                return
+
+            if path == "/api/preparation/status":
+                try:
+                    identifier = _validate_project_id((query.get("project_id") or [""])[0])
+                    self._json(200, preparation.status(identifier))
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
                 return
 
             if path == "/api/live/voices":
@@ -746,6 +783,15 @@ def make_handler(
             path = self.path.split("?", 1)[0]
             try:
                 body = self._read_json()
+
+                if path == "/api/preparation/start":
+                    project = load_project(root, _validate_project_id(body.get("project_id")))
+                    self._json(202, preparation.update(project, activate=True))
+                    return
+
+                if path == "/api/preparation/pause":
+                    self._json(200, preparation.pause(_validate_project_id(body.get("project_id"))))
+                    return
 
                 if path == "/api/parse":
                     text = body.get("text")
@@ -818,10 +864,12 @@ def make_handler(
 
                 if path == "/api/project/save":
                     project = save_project(root, body)
+                    preparation_status = preparation.update(project)
                     self._json(200, {
                         "project_id": project["project_id"],
                         "project": project,
                         "summary": _project_summary(project),
+                        "preparation": preparation_status,
                     })
                     return
 
@@ -832,7 +880,15 @@ def make_handler(
                         raise ValueError("text is required")
                     if not isinstance(voice, str) or not voice.strip():
                         raise ValueError("voice is required")
-                    result = _tts_preview(text.strip(), voice.strip(), gateway_url)
+                    options = {}
+                    if 'prohibited_reviews' in body:
+                        options['reviews'] = candidate_reviews(body, 0, text)
+                    if 'context_segments' in body:
+                        context = body['context_segments']
+                        if not isinstance(context, list) or not 1 <= len(context) <= 30:
+                            raise ValueError('invalid preview context')
+                        options.update(context_segments=context, paragraph_id=body.get('paragraph_id'))
+                    result = _tts_preview(text.strip(), voice.strip(), gateway_url, **options)
                     if isinstance(result, bytes):
                         self.send_response(200)
                         self.send_header("Content-Type", "audio/wav")
@@ -846,6 +902,16 @@ def make_handler(
 
                 if path == "/api/live/start":
                     segments = body.get("segments")
+                    options = {}
+                    if body.get("project_id"):
+                        identifier = _validate_project_id(body["project_id"])
+                        # Rebuild the saved plan after voice/review/text edits;
+                        # adoption still requires an exact request match below.
+                        preparation.update(load_project(root, identifier))
+                        source = normalized_source(segments, body.get("context_groups"))
+                        first_round = preparation.handoff(identifier, source, body.get("voice", "default"))
+                        if first_round:
+                            options["first_round"] = first_round
                     if "context_groups" in body:
                         validate_context_project(segments, body["context_groups"], complete=True)
                         segments = {"paragraphs": segments, "context_groups": body["context_groups"]}
@@ -856,7 +922,10 @@ def make_handler(
                         segments,
                         body.get("playback_speed", 1.0),
                         body.get("volume", 100.0),
+                        **options,
                     )
+                    result["preparation_reused"] = bool(options)
+                    preparation.pause_active()
                     self._json(202, result)
                     return
 
@@ -891,6 +960,7 @@ def make_handler(
         def log_message(self, fmt: str, *args: Any) -> None:
             print(f"text-studio {self.address_string()} - {fmt % args}", flush=True)
 
+    Handler.audio_preparation = preparation
     return Handler
 
 
@@ -929,6 +999,7 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        server.RequestHandlerClass.audio_preparation.close()
         server.server_close()
     return 0
 

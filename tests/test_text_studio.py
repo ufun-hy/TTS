@@ -33,7 +33,7 @@ class TextStudioTest(unittest.TestCase):
         html = (Path(__file__).resolve().parents[1] / "web" / "text-studio.html").read_text(encoding="utf-8")
         self.assertNotIn('id="liveText"', html)
         self.assertIn("liveCandidatePools", html)
-        self.assertIn("开始循环智播", html)
+        self.assertIn("准备 1 轮并开播", html)
         self.assertIn("candidates", html)
         self.assertIn("p.candidates[ci]=value", html)
         self.assertIn('id="livePlaybackSpeed"', html)

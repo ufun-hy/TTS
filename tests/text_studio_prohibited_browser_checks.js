@@ -17,7 +17,7 @@
   check(document.querySelector('#para-0 .prohibited-mark').textContent.includes('先试吃'),'source not red');
   check(document.querySelector('#para-0 .generated-preview').textContent==='口感清甜。','unsafe final preview');
   check(document.querySelector('#para-1 .para-head-actions button').disabled,'empty paragraph preview enabled');
-  check(JSON.stringify(liveCandidatePools())===JSON.stringify([{id:'p1',candidates:['口感清甜。']}]),'unsafe live candidates');
+  check(liveCandidatePools().length===1&&liveCandidatePools()[0].candidates[0]===raw&&!liveCandidatePools()[0].prohibited_reviews.length,'live must send original candidate plus exact review state for server filtering');
   $('riskBtn').click();setRiskFilter('blocked');
   check(document.querySelectorAll('#riskResults .prohibited-item').length===2,'blocked filter missing');
   check(![...document.querySelectorAll('#riskResults button')].some(b=>b.textContent==='忽略'),'prohibition can be ignored');
@@ -31,11 +31,10 @@
   clearInterval(state.liveTimer);state.liveTimer=null;state.liveStatus={status:'idle'};
   locateRiskById('p1',finding.position);
   await new Promise(r=>requestAnimationFrame(r));
-  let editor=document.querySelector('#para-0 textarea');
+  let editor=document.querySelector('#exactRiskEditorText');
   check(document.activeElement===editor&&editor.value.slice(editor.selectionStart,editor.selectionEnd)===finding.phrase,'locate did not select full sentence');
   const repaired='口感清甜。有问题联系客服处理售后。';
-  editor.value=repaired;editor.dispatchEvent(new Event('input',{bubbles:true}));
-  check(document.querySelector('#para-0 textarea')===editor,'editing replaced focused textarea');
+  editor.value=repaired;document.querySelector('#exactRiskEditorSave').click();
   check(broadcastText(state.paragraphs[0])===repaired,'edit did not update broadcast text');
   await waitUntil(async()=>{if(!state.projectId)return false;const p=(await apiGet('/api/project?project_id='+state.projectId)).project;return p.paragraphs[0].editedText===repaired;});
   const id=state.projectId;await loadProject(id);
