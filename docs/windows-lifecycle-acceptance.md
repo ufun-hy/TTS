@@ -11,8 +11,9 @@
 - `8ea7dd9`：将 main 的缓存播放调度优化适配到 Windows 单机分支，保留严格会话字段。
 - `ce10c3a`：暂停/停止联动、Audio Cache 会话控制、严格会话重绑和生命周期测试。
 - `c8eb9ce`：复制固定验收基线文档到 Windows 分支。
+- `1ebf9ae`：兼容尚未提供可选 `session-control` 接口的旧 Audio Cache 服务。
 
-当前 HEAD 在本记录提交前为 `c8eb9ce`；本记录提交后以新的 HEAD 为准。远端分支没有推送。
+本记录初次提交前 HEAD 为 `c8eb9ce`；当前分支 HEAD 为 `1ebf9ae`。远端分支没有推送。
 
 ## 已完成的实现
 
