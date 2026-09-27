@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .client import AudioClient, AudioClientError
 from .config import ClientConfig, config_path, install_dir, load_config, resolve_cache_dir, save_config
-from .playback import PlaybackController
+from .playback import PlaybackController, PlaybackError
 
 
 class AudioClientApp:
@@ -26,6 +26,10 @@ class AudioClientApp:
         self.worker: Optional[threading.Thread] = None
         self.playback: Optional[PlaybackController] = None
         self.restart_requested = False
+        self._download_paused = threading.Event()
+        self._local_paused = threading.Event()
+        self._remote_paused = threading.Event()
+        self._playback_requested = False
         self.logger = _make_logger()
 
         try:
@@ -182,7 +186,16 @@ class AudioClientApp:
             return
         if not self.save():
             return
+        if self.config.strict_session and not self.config.session_id and self.playback:
+            try:
+                self.playback.reset_session()
+            except PlaybackError as exc:
+                self.error_var.set(str(exc))
+                return
         self.stop_event = threading.Event()
+        self._download_paused.clear()
+        self._local_paused.clear()
+        self._remote_paused.clear()
         self.restart_requested = False
         self.status_var.set("连接中")
         self.start_button.configure(state="disabled")
@@ -194,6 +207,12 @@ class AudioClientApp:
     def stop(self) -> None:
         if self.stop_event:
             self.stop_event.set()
+        self._download_paused.set()
+        self._local_paused.clear()
+        self._remote_paused.clear()
+        self._playback_requested = False
+        if self.playback:
+            self.playback.stop()
         self.status_var.set("已停止")
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
@@ -230,24 +249,31 @@ class AudioClientApp:
         if not self.save():
             return
         try:
-            self._playback_controller().start()
+            controller = self._playback_controller()
+            self._playback_requested = True
+            if self.config.strict_session and not self.config.session_id and not controller.stats().get("session_id"):
+                self.playback_status_var.set("等待新会话")
+                return
+            controller.start()
         except (OSError, ValueError, RuntimeError) as exc:
             self.error_var.set(str(exc))
             self.logger.error("start playback failed: %s", exc)
 
     def pause_playback(self) -> None:
         if self.playback:
+            self._download_paused.set()
+            self._local_paused.set()
             self.playback.pause()
 
     def resume_playback(self) -> None:
         if self.playback:
-            self.playback.resume()
+            self._local_paused.clear()
+            if not self._remote_paused.is_set():
+                self._download_paused.clear()
+                self.playback.resume()
 
     def stop_playback(self) -> None:
-        if self.playback:
-            self.playback.stop()
-        else:
-            self.playback_status_var.set("已停止")
+        self.stop()
 
     def clear_cache(self) -> None:
         if not self.save():
@@ -284,12 +310,37 @@ class AudioClientApp:
         client = AudioClient(config.server, resolve_cache_dir(config), config.poll_interval, config.api_key, config.timeout, config.session_id)
         connected = False
         while not stop.is_set():
+            if self._download_paused.is_set() and not self._remote_paused.is_set():
+                stop.wait(0.1)
+                continue
             try:
                 health = client.health()
                 if not connected:
                     self.logger.info("connect server success: %s", config.server)
                     connected = True
                 self.events.put(("connected", health))
+                if config.strict_session:
+                    controller = self._playback_controller()
+                    session_id = controller.stats().get("session_id", "") or config.session_id
+                    if session_id:
+                        control = client.session_control(session_id)
+                        control_status = control.get("status", "running")
+                        if control_status == "paused":
+                            self._remote_paused.set()
+                            self._download_paused.set()
+                            controller.pause()
+                            continue
+                        if control_status in ("stopping", "stopped"):
+                            self._download_paused.set()
+                            controller.stop()
+                            self._playback_requested = False
+                            stop.set()
+                            continue
+                        if self._remote_paused.is_set():
+                            self._remote_paused.clear()
+                            if not self._local_paused.is_set():
+                                self._download_paused.clear()
+                                controller.resume()
                 item = client.fetch_next()
                 if item:
                     self.logger.info("received %s", item.id)
@@ -298,9 +349,17 @@ class AudioClientApp:
                         session_id = server_metadata.get("session_id") if isinstance(server_metadata, dict) else ""
                         if session_id:
                             try:
-                                self._playback_controller().set_session(session_id)
-                            except RuntimeError:
-                                pass
+                                controller = self._playback_controller()
+                                current = controller.stats().get("session_id", "")
+                                if current != session_id:
+                                    if controller.is_running():
+                                        self.logger.warning("ignoring late session %s while %s is playing", session_id, current)
+                                    else:
+                                        controller.set_session(session_id)
+                                if self._playback_requested and not controller.is_running() and current != session_id:
+                                    controller.start()
+                            except (PlaybackError, ValueError) as exc:
+                                self.logger.warning("session bind deferred: %s", exc)
                     self.events.put(("received", client.local_stats()))
                     # V1 has no playback consumer acknowledgement on the server.
                     # The durable local WAV is the transport completion boundary.

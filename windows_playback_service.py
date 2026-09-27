@@ -46,6 +46,12 @@ def main() -> int:
             if session_id:
                 playback.set_session(session_id)
                 bound_session = session_id
+        elif config.strict_session:
+            metadata = item.metadata.get("server_metadata")
+            incoming = metadata.get("session_id", "") if isinstance(metadata, dict) else ""
+            if incoming and incoming != bound_session:
+                logger.warning("ignoring late session %s while %s is bound", incoming, bound_session)
+                return "completed"
         if not playback.is_running() and (
             not config.strict_session or config.session_id or session_id
         ):
@@ -53,10 +59,28 @@ def main() -> int:
         logger.info("received %s", item.id)
         return "completed"
 
+    def before_fetch() -> None:
+        nonlocal bound_session
+        if not bound_session:
+            return
+        control = client.session_control(bound_session)
+        status = control.get("status", "running")
+        if status == "paused":
+            playback.pause()
+        elif status == "running":
+            playback.resume()
+        elif status in ("stopping", "stopped"):
+            playback.stop()
+            if config.strict_session and not config.session_id:
+                playback.reset_session()
+                bound_session = ""
+            else:
+                stop_event.set()
+
     if not config.strict_session or config.session_id:
         playback.start()
     try:
-        client.run(on_audio, stop=stop_event.is_set)
+        client.run(on_audio, stop=stop_event.is_set, before_fetch=before_fetch)
     except KeyboardInterrupt:
         stop_event.set()
     finally:

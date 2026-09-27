@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from audio_client.playback import PlaybackController
+from audio_client.playback import PlaybackController, _playback_status
 
 
 class FakePlayer:
@@ -62,6 +62,67 @@ def _write_failed_float_item(root: Path, item_id: str, sequence: int, session_id
 
 
 class PlaybackTests(unittest.TestCase):
+    def test_pause_resume_stop_keeps_current_item_and_blocks_next(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "segment_001", 1)
+            _write_item(root, "segment_002", 2)
+            started = threading.Event()
+            paused = threading.Event()
+            release = threading.Event()
+            ids = []
+
+            class Player:
+                def play(self, path, stop_event, pause_event):
+                    ids.append(path.stem)
+                    started.set()
+                    while not stop_event.is_set() and not release.is_set():
+                        if pause_event.is_set():
+                            paused.set()
+                        time.sleep(0.01)
+
+            controller = PlaybackController(root, player=Player())
+            controller.start()
+            self.assertTrue(started.wait(1))
+            controller.pause()
+            self.assertTrue(paused.wait(1))
+            self.assertEqual(controller.stats()["playback_status"], "paused")
+            self.assertEqual(ids, ["segment_001"])
+            controller.resume()
+            release.set()
+            deadline = time.monotonic() + 1
+            while ids != ["segment_001", "segment_002"] and time.monotonic() < deadline:
+                time.sleep(0.01)
+            controller.stop()
+            self.assertEqual(ids, ["segment_001", "segment_002"])
+
+    def test_strict_session_restart_binds_new_session_after_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_item(root, "old_001", 1, session_id="old", downloaded_at="2026-09-27T10:00:00Z")
+            _write_item(root, "new_001", 1, session_id="new", downloaded_at="2026-09-27T10:01:00Z")
+            ids = []
+            seen = threading.Event()
+
+            class Player:
+                def play(self, path, stop_event, pause_event):
+                    ids.append(path.stem)
+                    seen.set()
+                    stop_event.wait(0.01)
+
+            controller = PlaybackController(root, player=Player(), strict_session=True, session_id="old")
+            controller.start()
+            self.assertTrue(seen.wait(1))
+            controller.stop()
+            self.assertEqual(ids, ["old_001"])
+            controller.set_session("new")
+            seen.clear()
+            controller.start()
+            self.assertTrue(seen.wait(1))
+            controller.stop()
+            self.assertEqual(ids, ["old_001", "new_001"])
+            self.assertEqual(controller.stats()["session_id"], "new")
+
     def test_refresh_during_playback_finds_download_and_next_boundary_switches_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

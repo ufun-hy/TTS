@@ -21,8 +21,8 @@ playback_status: playback_failed = 单段播放失败
 控制按钮：
 
 - `开始播放`：从第一个未播放段开始。
-- `暂停播放` / `继续播放`：只控制播放线程，下载继续运行。
-- `停止播放`：停止当前播放并保留当前段为 `cached`，再次开始时不会跳过它。
+- `暂停播放` / `继续播放`：同时暂停/恢复当前 Live Session 的播放消费和下一块领取；当前已下载文件保留。
+- `停止播放`：停止播放和领取线程，保留当前段为 `cached`；重新点击启动后等待新的 Live Session 绑定，不会把旧会话接着播。
 
 播放速度和音量由 Mac Live Session 配置并在进入 Audio Cache 前写入最终 WAV。Windows 不保存、不解释、不二次调整这两个参数。
 
@@ -31,6 +31,8 @@ playback_status: playback_failed = 单段播放失败
 播放层使用 Windows 自带 `winmm.dll` 的 MCI `waveaudio` 接口，通过 `ctypes` 只控制打开、播放、暂停、继续、停止和关闭，不弹出外部播放器窗口，也不要求用户另装播放器。速度和音量由 Mac 在缓存前处理。
 
 Float32 WAV 的 MCI 兼容、`pcm16/` 派生缓存、失败片段恢复和 Windows 验收步骤见 [Windows WAV 格式兼容](windows-wav-compatibility.md)。
+
+Live Session 会通过 Audio Cache 的 `session-control` 状态同步 `starting/running/paused/stopping/stopped`。严格模式按显式 `session_id` 和期望 `sequence` 播放；暂停或停止时不领取下一项，停止后的再次开播先解除旧绑定，再绑定新 Session。旧会话文件不会因严格模式的状态查询自动清理。
 
 ## 构建安装包
 

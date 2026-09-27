@@ -61,6 +61,8 @@ curl -X POST http://127.0.0.1:8000/audio/preload \
 | `GET /audio/status/{id}` | 查询任务状态，供客户端重启恢复 |
 | `POST /audio/ack` | `{\"id\":\"segment_001\",\"status\":\"completed\"}` 确认消费 |
 | `GET /audio/session-status/{session_id}` | 查询一个 Live Session 的 ready/processing/completed 数量及客户端在线状态 |
+| `GET /audio/session-control/{session_id}` | 查询 Live Session 的 `starting/running/paused/stopping/stopped` 播放控制状态 |
+| `POST /audio/session-control` | 由 Live Session 写入播放控制状态；暂停/停止时 Windows 不再领取下一项 |
 | `POST /audio/cleanup` | 按 `session_id` 清理该 Session 创建的缓存项 |
 | `GET /health` | 返回各状态数量 |
 

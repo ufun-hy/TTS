@@ -571,13 +571,16 @@ class LiveSessionManager:
             )
             self._session = session
             self._runtime_lease = runtime_lease
+            self._cache_control(session.session_id, "starting")
             session.start()
+            self._cache_control(session.session_id, "running")
             if runtime_lease:
                 threading.Thread(target=self._release_runtime_after_session, args=(session, runtime_lease), daemon=True, name="live-runtime-release").start()
             return {"session_id": session.session_id, "status": "starting", "looping": session.looping}
 
     def _release_runtime_after_session(self, session: LiveSession, lease: RuntimeLease) -> None:
         session._thread.join()
+        self._cache_control(session.session_id, "stopped")
         released = self._release_runtime_lease(lease)
         if released:
             with self._lock:
@@ -609,16 +612,19 @@ class LiveSessionManager:
     def pause(self) -> dict[str, Any]:
         session = self._require_session()
         session.pause()
+        self._cache_control(session.session_id, "paused")
         return self.status()
 
     def resume(self) -> dict[str, Any]:
         session = self._require_session()
         session.resume()
+        self._cache_control(session.session_id, "running")
         return self.status()
 
     def stop(self) -> dict[str, Any]:
         session = self._require_session()
         session.stop()
+        self._cache_control(session.session_id, "stopping")
         with self._lock:
             lease = self._runtime_lease
         if lease and self.runtime:
@@ -650,6 +656,8 @@ class LiveSessionManager:
                     self._runtime_lease = None
         with self._lock:
             self._session = None
+        if session:
+            self._cache_control(session.session_id, "stopped")
         return self.status()
 
     def voices(self) -> dict[str, Any]:
@@ -715,6 +723,18 @@ class LiveSessionManager:
             return body if isinstance(body, dict) else {}
         except (OSError, ValueError, RuntimeError) as exc:
             raise LiveSessionError(f"audio cache reset failed: {exc}", 502) from exc
+
+    def _cache_control(self, session_id: str, status: str) -> None:
+        """Tell a real Audio Cache client to stop claiming new session items."""
+        if self._enqueue_impl is not None or self._cache_status_impl is not None:
+            return
+        try:
+            self._request_json("POST", "/audio/session-control", {"session_id": session_id, "status": status}, cache=True)
+        except (OSError, ValueError, RuntimeError):
+            # Older cache servers do not know this optional endpoint. The
+            # generator lifecycle remains authoritative and normal playback
+            # continues to work against those servers.
+            return
 
     def _request_json(
         self,

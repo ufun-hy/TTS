@@ -186,6 +186,19 @@ class AudioClient:
         self._write_metadata(item_id, metadata)
         return ClientAudio(item_id, path, float(metadata["duration"] or 0), metadata)
 
+    def session_control(self, session_id: str) -> Dict[str, str]:
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return {"session_id": "", "status": "running"}
+        response = self._request("GET", f"audio/session-control/{session_id}")
+        if response.status != 200:
+            raise AudioClientError(f"session control failed: HTTP {response.status}")
+        value = json.loads(response.body.decode("utf-8"))
+        if not isinstance(value, dict):
+            raise AudioClientError("session control response must be an object")
+        status = value.get("status", "running")
+        return {"session_id": str(value.get("session_id", session_id)), "status": str(status)}
+
     def ack(self, item_id: str, status: str = "completed") -> Dict[str, Any]:
         response = self._request_json("POST", "audio/ack", {"id": item_id, "status": status})
         if response.status != 200:
@@ -197,9 +210,18 @@ class AudioClient:
         self._write_metadata(item_id, metadata)
         return payload
 
-    def run(self, on_audio: Callable[[ClientAudio], Optional[str]], stop: Optional[Callable[[], bool]] = None) -> None:
+    def run(
+        self,
+        on_audio: Callable[[ClientAudio], Optional[str]],
+        stop: Optional[Callable[[], bool]] = None,
+        before_fetch: Optional[Callable[[], None]] = None,
+    ) -> None:
         while not (stop and stop()):
             try:
+                if before_fetch:
+                    before_fetch()
+                if stop and stop():
+                    break
                 item = self.fetch_next()
                 if item:
                     status = on_audio(item)

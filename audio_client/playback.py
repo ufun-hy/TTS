@@ -30,6 +30,18 @@ class PlaybackStopped(PlaybackError):
     pass
 
 
+PLAYBACK_STATUSES = (
+    "cached",
+    "buffering",
+    "playing",
+    "paused",
+    "played",
+    "playback_failed",
+    "superseded",
+)
+LIVE_BUFFER_SECONDS = 12.0
+
+
 @dataclass
 class PlaybackItem:
     item_id: str
@@ -207,6 +219,9 @@ class PlaybackController:
         self._error = ""
         self._active_session_id: Optional[str] = None
         self._superseded_session_ids: set[str] = set()
+        self._last_play_end_monotonic: Optional[float] = None
+        self._last_play_end_item: Optional[str] = None
+        self._last_items: List[PlaybackItem] = []
         self._expected_sequence: Optional[float] = 1.0 if self.strict_session else None
         self._startup_buffer_pending = self.strict_session and self.startup_buffer_seconds > 0
         self._recover_interrupted_items()
@@ -220,6 +235,15 @@ class PlaybackController:
             if self.is_running():
                 raise PlaybackError("cannot change session while playback is running")
             self._strict_session_id = session_id
+            self._expected_sequence = 1.0 if self.strict_session else None
+            self._startup_buffer_pending = self.strict_session and self.startup_buffer_seconds > 0
+
+    def reset_session(self) -> None:
+        """Forget a previous dynamic session before the next explicit start."""
+        with self._lock:
+            if self.is_running():
+                raise PlaybackError("cannot reset session while playback is running")
+            self._strict_session_id = ""
             self._expected_sequence = 1.0 if self.strict_session else None
             self._startup_buffer_pending = self.strict_session and self.startup_buffer_seconds > 0
 
@@ -238,7 +262,7 @@ class PlaybackController:
 
     def pause(self) -> None:
         with self._lock:
-            if self._thread and self._thread.is_alive() and self._state in ("playing", "waiting"):
+            if self._thread and self._thread.is_alive() and self._state in ("playing", "waiting", "buffering", "rebuffering"):
                 self._pause.set()
                 self._state = "paused"
         self._emit()
@@ -274,7 +298,7 @@ class PlaybackController:
                 items = list(self._last_items)
         else:
             items = self._items()
-            if not running:
+            if not running and not self.strict_session:
                 self._sync_active_session(items)
         with self._lock:
             state = self._state
@@ -285,6 +309,7 @@ class PlaybackController:
             "playback_status": state,
             "playing": current or "-",
             "buffered_segments": sum(_playback_status(item.metadata) == "cached" for item in items),
+            "buffering_segments": sum(_playback_status(item.metadata) == "buffering" for item in items),
             "played": sum(_playback_status(item.metadata) == "played" for item in items),
             "playback_failed": sum(_playback_status(item.metadata) == "playback_failed" for item in items),
             "superseded": sum(_playback_status(item.metadata) == "superseded" for item in items),
@@ -301,7 +326,8 @@ class PlaybackController:
     def clear_cache(self) -> Dict[str, int]:
         """Delete only audio that is no longer needed for current playback."""
         items = self._items()
-        self._sync_active_session(items)
+        if not self.strict_session:
+            self._sync_active_session(items)
         removed_items = 0
         removed_bytes = 0
         for item in self._items():
@@ -322,13 +348,27 @@ class PlaybackController:
     def _run(self) -> None:
         self._recover_failed_float_items()
         while not self._stop.is_set():
+            items = self._items()
+            if self.strict_session and self._startup_buffer_pending:
+                if self._buffered_seconds(items) < self.startup_buffer_seconds:
+                    with self._lock:
+                        self._last_items = items
+                        self._state = "buffering"
+                    self._emit()
+                    self._stop.wait(0.2)
+                    continue
+                self._startup_buffer_pending = False
             selection_started = time.perf_counter()
             item = self._next_item()
             selection_ms = round((time.perf_counter() - selection_started) * 1000, 3)
             if item is None:
                 with self._lock:
+                    previous_state = self._state
+                    next_state = self._idle_state(self._last_items)
                     if self._state != "paused":
-                        self._state = "waiting"
+                        self._state = next_state
+                if next_state == "rebuffering" and previous_state != "rebuffering":
+                    self._mark_rebuffer_started(self._last_items)
                 self._emit()
                 self._stop.wait(0.2)
                 continue
@@ -386,6 +426,9 @@ class PlaybackController:
                 item.metadata.update(timing)
                 item.metadata["play_start_at"] = timing.get("play_command_at", item.metadata["play_requested_at"])
                 self._set_status(item, "played")
+                if self.strict_session:
+                    with self._lock:
+                        self._expected_sequence = (self._expected_sequence or item.sequence) + 1
                 if self.logger:
                     self.logger.info(
                         "playback timeline session_id=%s item_id=%s sequence=%s previous_item_id=%s "
@@ -412,7 +455,8 @@ class PlaybackController:
     def _recover_failed_float_items(self) -> None:
         """Requeue eligible Float32 failures once per source file version."""
         items = self._items()
-        self._sync_active_session(items)
+        if not self.strict_session:
+            self._sync_active_session(items)
         with self._lock:
             active_session_id = self._active_session_id
         if not active_session_id:
@@ -482,10 +526,26 @@ class PlaybackController:
             expected = self._expected_sequence
             if expected is not None:
                 cached = [item for item in cached if item.sequence == expected]
+            with self._lock:
+                self._last_items = items
             return min(cached, key=lambda item: (item.sequence, item.item_id)) if cached else None
         self._sync_active_session(items)
-        items = [item for item in self._items() if _playback_status(item.metadata) == "cached"]
+        self._maybe_release_buffer(items)
+        with self._lock:
+            self._last_items = items
+        items = [item for item in items if _playback_status(item.metadata) == "cached"]
         return min(items, key=lambda item: (item.sequence, item.item_id)) if items else None
+
+    def _buffered_seconds(self, items: List[PlaybackItem]) -> float:
+        session_id = self._strict_session_id if self.strict_session else self._active_session_id
+        total = 0.0
+        for item in items:
+            if session_id and _session_id(item.metadata) != session_id:
+                continue
+            if _playback_status(item.metadata) != "cached":
+                continue
+            total += _duration(item.metadata)
+        return round(total, 3)
 
     def _maybe_release_buffer(self, items: List[PlaybackItem]) -> bool:
         with self._lock:
@@ -673,7 +733,7 @@ class PlaybackController:
 
 def _playback_status(metadata: Dict[str, Any]) -> str:
     value = metadata.get("playback_status")
-    if value in ("cached", "playing", "paused", "played", "playback_failed", "superseded"):
+    if value in PLAYBACK_STATUSES:
         return str(value) if metadata.get("status") == "completed" else "unknown"
     # Cache files created by the transport-only client predate this field.
     return "cached" if metadata.get("status") == "completed" else "unknown"
@@ -701,6 +761,21 @@ def _sequence(metadata: Dict[str, Any]) -> float:
     except (TypeError, ValueError):
         # Missing sequence is an invalid producer item; put it after sequenced audio.
         return float("inf")
+
+
+def _duration(metadata: Dict[str, Any]) -> float:
+    try:
+        value = float(metadata.get("duration", metadata.get("raw_duration", 0)) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, value)
+
+
+def _session_final(metadata: Dict[str, Any]) -> bool:
+    if metadata.get("session_final") is True:
+        return True
+    server_metadata = metadata.get("server_metadata")
+    return isinstance(server_metadata, dict) and server_metadata.get("session_final") is True
 
 
 def _atomic_write_json(path: Path, value: Dict[str, Any]) -> None:

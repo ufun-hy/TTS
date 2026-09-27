@@ -202,6 +202,24 @@ class AudioCacheTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_session_control_round_trips_to_audio_client(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                client = AudioClient(f"http://127.0.0.1:{server.server_port}", root / "client")
+                self.assertEqual(client.session_control("live-1")["status"], "running")
+                server.set_session_control("live-1", "paused")
+                self.assertEqual(client.session_control("live-1")["status"], "paused")
+                server.set_session_control("live-1", "stopping")
+                self.assertEqual(client.session_control("live-1")["status"], "stopping")
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

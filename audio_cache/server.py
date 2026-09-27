@@ -27,6 +27,7 @@ class AudioCacheServer(ThreadingHTTPServer):
         self._client_state: Dict[str, Any] = {}
         self._client_state_at = 0.0
         self._client_state_lock = threading.RLock()
+        self._session_controls: Dict[str, str] = {}
 
     def client_connected(self) -> bool:
         return time.monotonic() - self.last_client_at <= self.client_timeout
@@ -68,6 +69,16 @@ class AudioCacheServer(ThreadingHTTPServer):
         if session_id and state.get("session_id") != session_id:
             return {}
         return state
+
+    def set_session_control(self, session_id: str, status: str) -> None:
+        if not session_id or status not in {"starting", "running", "paused", "stopping", "stopped"}:
+            raise ValueError("invalid session control")
+        with self._client_state_lock:
+            self._session_controls[session_id] = status
+
+    def session_control(self, session_id: str) -> Dict[str, str]:
+        with self._client_state_lock:
+            return {"session_id": session_id, "status": self._session_controls.get(session_id, "running")}
 
 
 def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, api_key: str = ""):
@@ -132,7 +143,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                     "client_state": client_state,
                     "client_buffered_segments": int(client_state.get("buffered_segments", 0) or 0),
                     "client_buffered_seconds": float(client_state.get("buffered_seconds", 0) or 0),
+                    "control_status": self.server.session_control(session_id)["status"],  # type: ignore[attr-defined]
                 })
+                return
+            if path.startswith("/audio/session-control/"):
+                session_id = unquote(path.rsplit("/", 1)[-1])
+                self._json(200, self.server.session_control(session_id))  # type: ignore[attr-defined]
                 return
             if path.startswith("/audio/files/"):
                 item_id = unquote(path.rsplit("/", 1)[-1])
@@ -194,6 +210,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                     if not isinstance(session_id, str) or not session_id:
                         raise ValueError("session_id is required")
                     self._json(200, {"removed": manager.cleanup_session(session_id)})
+                    return
+                if path == "/audio/session-control":
+                    session_id = body.get("session_id")
+                    status = body.get("status")
+                    self.server.set_session_control(session_id, status)  # type: ignore[attr-defined]
+                    self._json(200, self.server.session_control(session_id))  # type: ignore[attr-defined]
                     return
                 self._json(404, {"error": "not_found"})
             except (AudioCacheError, ValueError, TypeError, json.JSONDecodeError) as exc:
