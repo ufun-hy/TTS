@@ -91,7 +91,7 @@ curl http://127.0.0.1:8765/voices \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-当前配置在 [voices.json](./voices.json)，已注册 `default`、经确认的 `speaker_a`、`speaker_b`、`speaker_c`，石榴女声 `shiliu_1`（显示名“石榴1”）以及山东蒙阴黄桃 `huangtao_1`（显示名“黄桃1”）。业务端只传 Voice ID，不传文件路径：
+当前配置在 [voices.json](./voices.json)，已注册 `default`、经确认的 `speaker_a`、`speaker_b`、`speaker_c`，石榴女声 `shiliu_1`（显示名“石榴1”）、山东蒙阴黄桃 `huangtao_1`（显示名“黄桃1”）、`dama-nvzhuang-9-26`（大码女装-9.26）和 `nvzhuang-fengyi-9-23`（女装风衣9.23）。业务端只传 Voice ID，不传文件路径：
 
 ```json
 {"text":"欢迎进入直播间","voice":"speaker_c"}
@@ -108,7 +108,7 @@ mkdir -p voices/host_female
 
 `reference.txt` 必须是音频中实际说出的准确文字。脚本会生成 `runtime/models/voices/host_female.gguf` 并更新 `voices.json`。Gateway 会在配置文件变化后自动注册/删除音色，不需要重启 CosyVoice 主进程。
 
-没有真实且已确认的 Reference 时，不注册或伪造音色。当前 `speaker_c` 的 Reference 和运行时提示音来自 `runtime/voice-datasets/`，这些运行数据不提交 Git；在另一台机器部署时需重新准备对应运行时文件。
+没有真实且已确认的 Reference 时，不注册或伪造音色。当前 `speaker_c` 的 Reference 和运行时提示音来自 `runtime/voice-datasets/`，这些运行数据不提交 Git；在另一台机器部署时需重新准备对应运行时文件。两个新增音色同样只提交注册配置；2026-09-27 本机检查对应 GGUF 文件存在，但未执行真实合成，其他环境须另行准备资产。
 
 ## Tailscale Funnel 公网 HTTPS
 
@@ -233,7 +233,7 @@ Live 合成遇到 429、502、503、504 或临时连接错误时保留当前段�
 - API Key 保护 `/speak` 和 `/voices`；`/health` 可公开访问，只返回健康状态和队列长度，不暴露本机路径。
 - FIFO 是单 worker，返回成功前必须完成合成和本机播放。
 - 日志记录 job ID、来源、音色、文本长度、排队/合成/播放耗时和结果，不记录全文文本或 API Key。
-- 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF，默认后端为更稳定的 `cpu`；如需实验 Metal，可设置 `COSYVOICE_BACKEND=auto`。
+- 当前模型为 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF。Mac 启动脚本默认 `COSYVOICE_BACKEND=auto`、4 线程、f16 KV cache，关闭 LLM/Flow Flash Attention；可设置 `COSYVOICE_BACKEND=cpu` 显式回退。配置不等于当前运行服务已更新，也不代表本轮完成真实推理验收。
 
 Text Studio 支持接续已有清洗版项目、按完整句子和话题整理话术单元、统一全部候选事实，以及临时/正式项目分离。用法与限制见 [Text Studio 验收说明](docs/text-studio-facts-restore.md#本轮验收候选导入与项目保存)。
 

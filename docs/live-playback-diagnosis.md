@@ -1,8 +1,8 @@
 # 智播连续播放问题现状
 
-更新时间：2026-09-14
+历史诊断：2026-09-14；配置说明校正：2026-09-27
 
-> 当前 main 的复诊、现场数据和新增缺陷见 [2026-09-17 完整诊断](live-playback-diagnosis-2026-09-17.md)。本文保留历史背景，水位参数与建议不再代表当前实现。
+> 后续现场诊断见 [2026-09-17 完整诊断](live-playback-diagnosis-2026-09-17.md)。本文保留历史背景；快照、测试数字及水位建议不代表本轮验收或当前运行状态。2026-09-27 源码默认 auto/f16、关闭两类 Flash Attention；运行服务是否采用该配置需另行核对。
 
 ## 一、当前现象
 
@@ -44,11 +44,11 @@ GGML_ASSERT(ggml_are_same_layout(src, dst)
   && "cannot copy tensors with different layouts") failed
 ```
 
-原生引擎进程因此退出，Gateway 返回 502。当前默认后端已切换为 CPU，Metal 仍可通过环境变量手动实验，但不适合作为当前默认路径。
+原生引擎进程因此退出，Gateway 返回 502。后续未提交成果记录了 Metal 兼容配置（本轮未复跑真实推理）：f16 KV cache，并关闭 LLM/Flow Flash Attention。
 
 ### 3. CPU 生成速度低于播放速度
 
-当前 CPU 日志中的典型数据：
+CPU 回归测试日志中的典型数据：
 
 | 项目 | 实测范围 |
 | --- | ---: |
@@ -137,13 +137,13 @@ CosyVoice: CPU backend
 
 缺点：启动等待时间长、占用磁盘；包含 `{{current_time}}` 等动态时间的段落不能过早生成。
 
-### 方案 D：恢复稳定的高速 Metal 后端
+### 方案 D：使用 Metal 兼容配置
 
-修复或更换触发 `ggml_are_same_layout` 的 Metal runtime/build，使 TTS 速度恢复到至少 1 倍实时。
+使用 f16 KV cache，并关闭 LLM/Flow Flash Attention；此前工作记录称同一 M4 Pro 上吞吐高于播放速度；该说法不作为 2026-09-27 整理版本的验收结论。
 
 优点：最符合实时智播目标，也不需要无限增大缓存。
 
-缺点：需要继续定位 native runtime 的 Metal 调度问题；仅升级到 v0.1.3 已经证明不够。
+边界：需要长时间直播继续观察 Metal 稳定性；此前 auto + Flash Attention 配置仍有崩溃记录。
 
 ### 方案 E：多引擎并行生成
 
@@ -157,10 +157,9 @@ CosyVoice: CPU backend
 
 如果目标是“长时间连续直播”，建议顺序是：
 
-1. 保留 CPU 作为稳定兜底，避免再次出现 Metal 原生崩溃。
-2. 短期把缓存水位提高到 `180 / 60 秒`，并增加启动预缓存。
-3. 长期修复稳定的高速 Metal runtime；否则整轮预生成是唯一能保证 CPU 播放连续的方式。
-4. 动态时间段继续保持即将生成时替换，不能为了预缓存而在直播开始时提前固定时间。
+1. 源码默认使用 auto/f16/no-Flash 配置，保留 `COSYVOICE_BACKEND=cpu` 作为显式回退方式。
+2. 持续记录真实直播中的 RTF、错误和 Windows 库存，若 Metal 运行不稳则切回 CPU。
+3. 动态时间段仍需在请求合成时解析，不能为了预缓存而提前固定时间。
 
 ## 八、验收标准
 

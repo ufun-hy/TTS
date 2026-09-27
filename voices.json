@@ -16,5 +16,11 @@
   },
   "huangtao_1": {
     "prompt_speech": "runtime/models/voices/huangtao_1.gguf"
+  },
+  "dama-nvzhuang-9-26": {
+    "prompt_speech": "runtime/models/voices/dama-nvzhuang-9-26.gguf"
+  },
+  "nvzhuang-fengyi-9-23": {
+    "prompt_speech": "runtime/models/voices/nvzhuang-fengyi-9-23.gguf"
   }
 }

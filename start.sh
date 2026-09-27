@@ -8,7 +8,11 @@ LOG_DIR="$ROOT/runtime/logs"
 ENGINE_PORT="${COSYVOICE_ENGINE_PORT:-8766}"
 API_PORT="${TTS_PORT:-8765}"
 HOST="0.0.0.0"
-BACKEND="${COSYVOICE_BACKEND:-cpu}"
+BACKEND="${COSYVOICE_BACKEND:-auto}"
+ENGINE_THREADS="${COSYVOICE_THREADS:-4}"
+ENGINE_LLM_KV_CACHE_TYPE="${COSYVOICE_LLM_KV_CACHE_TYPE:-f16}"
+ENGINE_LLM_FLASH_ATTN="${COSYVOICE_LLM_FLASH_ATTN:-0}"
+ENGINE_FLOW_FLASH_ATTN="${COSYVOICE_FLOW_FLASH_ATTN:-0}"
 KEYCHAIN_SERVICE="${TTS_KEYCHAIN_SERVICE:-com.ufun.tts.api-key}"
 ENGINE_IDLE_SECONDS="${TTS_ENGINE_IDLE_SECONDS:-600}"
 
@@ -71,6 +75,10 @@ exec python3 "$ROOT/server/tts_gateway.py" \
   --engine-bin "$BIN_DIR/cosyvoice-server" \
   --engine-model "$MODEL_DIR/CosyVoice3-2512_Q8_0.gguf" \
   --engine-backend "$BACKEND" \
+  --engine-threads "$ENGINE_THREADS" \
+  --engine-llm-kv-cache-type "$ENGINE_LLM_KV_CACHE_TYPE" \
+  --engine-llm-flash-attn "$ENGINE_LLM_FLASH_ATTN" \
+  --engine-flow-flash-attn "$ENGINE_FLOW_FLASH_ATTN" \
   --engine-log "$LOG_DIR/cosyvoice-server.log" \
   --engine-idle-seconds "$ENGINE_IDLE_SECONDS" \
   ${ENGINE_VERBOSE_ARGS[@]-} \

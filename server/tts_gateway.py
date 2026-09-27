@@ -487,6 +487,10 @@ def main() -> int:
     parser.add_argument("--engine-bin", type=Path)
     parser.add_argument("--engine-model", type=Path)
     parser.add_argument("--engine-backend", default="auto")
+    parser.add_argument("--engine-threads", type=int, default=4)
+    parser.add_argument("--engine-llm-kv-cache-type", default="f16")
+    parser.add_argument("--engine-llm-flash-attn", choices=("0", "1"), default="0")
+    parser.add_argument("--engine-flow-flash-attn", choices=("0", "1"), default="0")
     parser.add_argument("--engine-log", type=Path, default=Path("runtime/logs/cosyvoice-server.log"))
     parser.add_argument("--engine-idle-seconds", type=float, default=600.0)
     parser.add_argument("--engine-startup-timeout", type=float, default=180.0)
@@ -530,10 +534,17 @@ def main() -> int:
             "--model", str(engine_model),
             "--served-model-name", "cosyvoice-3",
             "--backend", args.engine_backend,
+            "--threads", str(args.engine_threads),
             "--host", "127.0.0.1",
             "--port", args.engine_url.rsplit(":", 1)[-1],
             "--concurrency", "1",
         ]
+        if args.engine_backend.lower() != "cpu":
+            engine_command.extend([
+                "--llm-kv-cache-type", args.engine_llm_kv_cache_type,
+                "--llm-flash-attn", args.engine_llm_flash_attn,
+                "--flow-flash-attn", args.engine_flow_flash_attn,
+            ])
         if args.engine_verbose:
             engine_command.append("--verbose")
 

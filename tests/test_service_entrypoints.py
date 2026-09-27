@@ -41,7 +41,11 @@ class ServiceEntrypointTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), count)
 
-    def test_engine_defaults_to_cpu_for_stable_cold_start(self):
+    def test_engine_defaults_to_metal_with_the_verified_compatibility_profile(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / 'start.sh').read_text()
-        self.assertIn('BACKEND="${COSYVOICE_BACKEND:-cpu}"', source)
+        self.assertIn('BACKEND="${COSYVOICE_BACKEND:-auto}"', source)
+        self.assertIn('COSYVOICE_THREADS:-4', source)
+        self.assertIn('COSYVOICE_LLM_KV_CACHE_TYPE:-f16', source)
+        self.assertIn('COSYVOICE_LLM_FLASH_ATTN:-0', source)
+        self.assertIn('COSYVOICE_FLOW_FLASH_ATTN:-0', source)
