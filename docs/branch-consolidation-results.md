@@ -83,3 +83,6 @@ Windows 单机分支保留 `d7a24c3`。已复查 `windows_playback_service.py` �
 | 后续 | 人工确认、整组泛化、批量替换 | 按依赖迁移，保留 Windows provider、DPAPI、启动器和运行时管理 |
 
 第一轮建议验收仍为：启动 → 开播 → 暂停 → 继续 → 停止 → 换稿/音色 → 再次开播。无缓存吞吐用 Windows 已有 benchmark 单独测量；首轮库存不能弥补长期产出不足。此范围不因本轮整理自动实施。
+
+2026-09-27 后续在 Windows worktree 完成的播放生命周期适配、提交和真机待验收状态见
+[Windows 单机播放生命周期验收记录](../../TTS-windows-offline-runtime-v1/docs/windows-lifecycle-acceptance.md)。
