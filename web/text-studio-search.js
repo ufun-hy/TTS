@@ -40,6 +40,25 @@ const TextStudioSearch = (() => {
     return Number.isInteger(paragraph?.selectedIndex) ? paragraph.selectedIndex : 0;
   }
 
+  function replaceAllCandidates(paragraphs, query, replacement) {
+    const needle = String(query ?? '').trim();
+    if (!needle) return 0;
+    const value = String(replacement ?? '');
+    let replaced = 0;
+    (Array.isArray(paragraphs) ? paragraphs : []).forEach(paragraph => {
+      if (!Array.isArray(paragraph?.candidates)) return;
+      paragraph.candidates.forEach((candidate, candidateIndex) => {
+        if (typeof candidate !== 'string' || !candidate.includes(needle)) return;
+        const pieces = candidate.split(needle);
+        const next = pieces.join(value);
+        paragraph.candidates[candidateIndex] = next;
+        if (candidateIndex === selectedCandidateIndex(paragraph)) paragraph.editedText = next;
+        replaced += pieces.length - 1;
+      });
+    });
+    return replaced;
+  }
+
   function replacementForHit(paragraph, hit, query, replacement) {
     const needle = String(query ?? '').trim();
     if (!needle) return {ok: false, reason: 'empty_query'};
@@ -429,7 +448,7 @@ const TextStudioSearch = (() => {
   }
 
   installUiFixes();
-  return {findMatches, replacementForHit, findingOffset, riskContext};
+  return {findMatches, replaceAllCandidates, replacementForHit, findingOffset, riskContext};
 })();
 
 if (typeof module !== 'undefined') module.exports = TextStudioSearch;

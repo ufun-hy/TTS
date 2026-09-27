@@ -1,6 +1,6 @@
 // Run: node tests/test_text_studio_search.js
 const assert = require('node:assert/strict');
-const {findMatches, replacementForHit, findingOffset, riskContext} = require('../web/text-studio-search.js');
+const {findMatches, replaceAllCandidates, replacementForHit, findingOffset, riskContext} = require('../web/text-studio-search.js');
 
 const paragraphs = [{
   id: 'p0001',
@@ -36,6 +36,63 @@ const replacementParagraph = {
   selectedIndex: 0,
   candidates: ['关键词在候选一', '普通候选', '关键词在候选三'],
 };
+
+const batchParagraphs = [{
+  original_text: '关键词在原稿中，原稿保持不变',
+  selectedIndex: 0,
+  candidates: ['关键词在候选一', '关键词在候选二', '关键词在候选三'],
+  editedText: '关键词在候选一',
+}, {
+  original_text: '第二段原稿也不修改',
+  selectedIndex: 1,
+  candidates: ['第二段候选一', '第二段关键词在候选二'],
+  editedText: '第二段关键词在候选二',
+}];
+assert.equal(replaceAllCandidates(batchParagraphs, '关键词', '新词'), 4);
+assert.deepEqual(batchParagraphs[0].candidates, ['新词在候选一', '新词在候选二', '新词在候选三']);
+assert.equal(batchParagraphs[0].selectedIndex, 0, 'replace-all must preserve the selected candidate');
+assert.equal(batchParagraphs[0].editedText, '新词在候选一', 'replace-all must sync editedText for the selected candidate');
+assert.equal(batchParagraphs[0].original_text, '关键词在原稿中，原稿保持不变', 'replace-all must leave the original text unchanged');
+assert.deepEqual(batchParagraphs[1].candidates, ['第二段候选一', '第二段新词在候选二']);
+assert.equal(batchParagraphs[1].selectedIndex, 1);
+assert.equal(batchParagraphs[1].editedText, '第二段新词在候选二');
+assert.equal(batchParagraphs[1].original_text, '第二段原稿也不修改');
+assert.deepEqual(findMatches(batchParagraphs, '关键词'), [
+  {paragraphIndex: 0, start: 0, kind: 'original', candidateIndex: null},
+], 'only read-only original matches should remain after candidate-wide replacement');
+
+const unselectedBatchParagraph = {
+  original_text: '原稿不参与批量替换',
+  selectedIndex: 0,
+  candidates: ['当前选中没有命中', '关键词在候选二', '关键词在候选三'],
+  editedText: '当前选中没有命中',
+};
+assert.equal(replaceAllCandidates([unselectedBatchParagraph], '关键词', '新词'), 2);
+assert.deepEqual(unselectedBatchParagraph.candidates, ['当前选中没有命中', '新词在候选二', '新词在候选三']);
+assert.equal(unselectedBatchParagraph.selectedIndex, 0);
+assert.equal(unselectedBatchParagraph.editedText, '当前选中没有命中', 'unselected replacements must not overwrite editedText');
+
+const dynamicBatchParagraph = {
+  selectedIndex: 0,
+  candidates: Array.from({length: 8}, (_, index) => `候选${index + 1}关键词`),
+  editedText: '候选1关键词',
+};
+dynamicBatchParagraph.candidates[7] += '和关键词';
+assert.equal(replaceAllCandidates([dynamicBatchParagraph], '关键词', '新词'), 9);
+assert.deepEqual(dynamicBatchParagraph.candidates, [
+  '候选1新词', '候选2新词', '候选3新词', '候选4新词',
+  '候选5新词', '候选6新词', '候选7新词', '候选8新词和新词',
+]);
+assert.equal(dynamicBatchParagraph.editedText, '候选1新词');
+
+const repeatedBatchParagraph = {
+  selectedIndex: 0,
+  candidates: ['这个关键词很好，这个关键词也需要修改'],
+  editedText: '这个关键词很好，这个关键词也需要修改',
+};
+assert.equal(replaceAllCandidates([repeatedBatchParagraph], '关键词', '新词'), 2);
+assert.deepEqual(repeatedBatchParagraph.candidates, ['这个新词很好，这个新词也需要修改']);
+assert.equal(repeatedBatchParagraph.editedText, '这个新词很好，这个新词也需要修改');
 
 assert.deepEqual(
   replacementForHit(
@@ -91,4 +148,4 @@ assert.deepEqual(
   'exact risk editor context must highlight the same occurrence used by selection',
 );
 
-console.log('Text Studio search checks passed: search scope, exact replacement target, trim offsets and exact risk-editor context.');
+console.log('Text Studio search checks passed: search scope, candidate-wide replacement, exact replacement target, trim offsets and exact risk-editor context.');
