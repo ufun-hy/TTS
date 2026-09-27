@@ -248,3 +248,6 @@ Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 
 当前分支用途、工作目录对应关系、未提交成果整理及 Windows 后续工作顺序见
 [分支整理与 Windows 后续工作任务](docs/branch-consolidation-task.md)。
+
+2026-09-27 本地整理的提交清单、验证结果和 Windows 待办见
+[分支整理执行记录](docs/branch-consolidation-results.md)。
