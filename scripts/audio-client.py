@@ -32,6 +32,8 @@ def main() -> int:
             poll_interval,
             str(config.get("api_key", "")),
             int(config.get("timeout", 15)),
+            str(config.get("session_id", "")),
+            bool(config.get("strict_session", False)),
         )
         if args.once:
             item = client.fetch_next()

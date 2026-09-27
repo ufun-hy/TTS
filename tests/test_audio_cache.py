@@ -220,6 +220,78 @@ class AudioCacheTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_paused_session_does_not_claim_ready_audio(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            manager.add_audio(wav_bytes(), {"session_id": "live-paused", "sequence": 1}, "paused_001")
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                server.set_session_control("live-paused", "paused")
+                client = AudioClient(
+                    f"http://127.0.0.1:{server.server_port}", root / "client",
+                    session_id="live-paused", strict_session=True,
+                )
+                self.assertIsNone(client.fetch_next())
+                self.assertEqual(manager.stats()["ready"], 1)
+                server.set_session_control("live-paused", "running")
+                self.assertEqual(client.fetch_next().id, "paused_001")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_dynamic_strict_client_discovers_new_session_after_old_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = AudioCacheManager(root / "server", lambda audio, _metadata: audio)
+            manager.add_audio(wav_bytes(), {"session_id": "old-session", "sequence": 1}, "old_001")
+            manager.add_audio(wav_bytes(), {"session_id": "new-session", "sequence": 1}, "new_001")
+            server = AudioCacheServer(("127.0.0.1", 0), make_handler(manager))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                server.set_session_control("old-session", "stopped")
+                server.set_session_control("new-session", "starting")
+                client = AudioClient(
+                    f"http://127.0.0.1:{server.server_port}", root / "client",
+                    strict_session=True,
+                )
+                item = client.fetch_next()
+                self.assertEqual(item.id, "new_001")
+                self.assertEqual(item.metadata["server_metadata"]["session_id"], "new-session")
+                self.assertEqual(manager.stats()["ready"], 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_strict_client_ignores_downloaded_audio_from_another_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            write_client_item(cache, "old_001", "old-session", 1.0, "cached", "2026-09-13T10:00:00+00:00")
+            client = AudioClient(
+                "http://127.0.0.1:1", cache,
+                session_id="new-session", strict_session=True,
+            )
+            self.assertIsNone(client._recoverable())
+
+    def test_client_loop_skips_fetch_while_control_callback_blocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = AudioClient("http://unused", Path(directory), poll_interval=0.001)
+            stop = threading.Event()
+            fetch_calls = []
+            control_results = iter((False, True))
+
+            def fetch_next():
+                fetch_calls.append(True)
+                stop.set()
+                return None
+
+            client.fetch_next = fetch_next
+            client.run(lambda _item: "completed", stop=stop.is_set, before_fetch=lambda: next(control_results))
+            self.assertEqual(len(fetch_calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

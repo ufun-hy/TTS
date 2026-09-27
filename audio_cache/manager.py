@@ -121,10 +121,12 @@ class AudioCacheManager:
             self._mark_failed(item.id, str(exc), current_state="processing")
             raise
 
-    def claim_next(self) -> Optional[AudioItem]:
+    def claim_next(self, session_id: Optional[str] = None) -> Optional[AudioItem]:
         with self._lock:
             items = sorted(
-                (item for item in self._items.values() if item.status == "ready"),
+                (item for item in self._items.values()
+                 if item.status == "ready"
+                 and (session_id is None or item.metadata.get("session_id", "") == session_id)),
                 key=_sort_key,
             )
             if not items:

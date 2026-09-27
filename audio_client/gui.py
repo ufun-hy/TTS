@@ -307,7 +307,7 @@ class AudioClientApp:
         self.root.destroy()
 
     def _worker_loop(self, config: ClientConfig, stop: threading.Event) -> None:
-        client = AudioClient(config.server, resolve_cache_dir(config), config.poll_interval, config.api_key, config.timeout, config.session_id)
+        client = AudioClient(config.server, resolve_cache_dir(config), config.poll_interval, config.api_key, config.timeout, config.session_id, config.strict_session)
         connected = False
         while not stop.is_set():
             if self._download_paused.is_set() and not self._remote_paused.is_set():
@@ -356,6 +356,7 @@ class AudioClientApp:
                                         self.logger.warning("ignoring late session %s while %s is playing", session_id, current)
                                     else:
                                         controller.set_session(session_id)
+                                        client.session_id = session_id
                                 if self._playback_requested and not controller.is_running() and current != session_id:
                                     controller.start()
                             except (PlaybackError, ValueError) as exc:
@@ -402,7 +403,7 @@ class AudioClientApp:
 
     def _refresh_local_stats(self) -> None:
         try:
-            client = AudioClient(self.config.server, resolve_cache_dir(self.config), self.config.poll_interval, self.config.api_key, self.config.timeout, self.config.session_id)
+            client = AudioClient(self.config.server, resolve_cache_dir(self.config), self.config.poll_interval, self.config.api_key, self.config.timeout, self.config.session_id, self.config.strict_session)
             self._set_network_stats(client.local_stats())
             if self.playback:
                 self._set_playback_stats(self.playback.stats(refresh=True))

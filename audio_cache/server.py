@@ -80,6 +80,30 @@ class AudioCacheServer(ThreadingHTTPServer):
         with self._client_state_lock:
             return {"session_id": session_id, "status": self._session_controls.get(session_id, "running")}
 
+    def claim_next(self, manager: AudioCacheManager, requested_session: str = "") -> Optional[AudioItem]:
+        """Claim only from an active session, or discover the newest one."""
+        ready = manager.list_items("ready")
+        if requested_session:
+            status = self.session_control(requested_session)["status"]
+            if status in {"paused", "stopping", "stopped"}:
+                return None
+            return manager.claim_next(requested_session)
+
+        active = []
+        for item in ready:
+            session_id = str(item.metadata.get("session_id", "") or "")
+            if not session_id:
+                continue
+            if self.session_control(session_id)["status"] in {"starting", "running"}:
+                active.append(item)
+        if active:
+            newest = max(active, key=lambda item: (str(item.metadata.get("created_at", "")), item.id))
+            return manager.claim_next(str(newest.metadata.get("session_id", "")))
+        # Preserve the legacy untagged cache protocol when no session exists.
+        if any(not item.metadata.get("session_id") for item in ready):
+            return manager.claim_next("")
+        return None
+
 
 def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, api_key: str = ""):
     class Handler(BaseHTTPRequestHandler):
@@ -126,8 +150,10 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 })
                 return
             if path == "/audio/next":
-                self.server.update_client_state(parse_qs(split.query, keep_blank_values=True))  # type: ignore[attr-defined]
-                item = manager.claim_next()
+                query = parse_qs(split.query, keep_blank_values=True)
+                self.server.update_client_state(query)  # type: ignore[attr-defined]
+                requested_session = (query.get("client_session_id") or [""])[0].strip()
+                item = self.server.claim_next(manager, requested_session)  # type: ignore[attr-defined]
                 if not item:
                     self.send_response(204)
                     self.end_headers()

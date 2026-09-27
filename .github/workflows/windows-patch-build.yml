@@ -6,6 +6,7 @@ on:
       - codex/windows-offline-runtime-v1
     paths:
       - "server/**"
+      - "audio_cache/**"
       - "audio_client/**"
       - "scripts/**"
       - "windows_playback_service.py"
@@ -33,12 +34,14 @@ jobs:
           $output = Join-Path $workspace "build\windows\patch-output"
           New-Item -ItemType Directory -Force -Path $stage, $output | Out-Null
 
-          foreach ($directory in @("server", "audio_client", "scripts")) {
+          foreach ($directory in @("server", "audio_cache", "audio_client", "scripts")) {
             Copy-Item -LiteralPath (Join-Path $workspace $directory) -Destination $stage -Recurse -Force
           }
           foreach ($file in @("windows_playback_service.py", "windows_client.py", "windows_launcher.py")) {
             Copy-Item -LiteralPath (Join-Path $workspace $file) -Destination $stage -Force
           }
+
+          git rev-parse HEAD | Set-Content -LiteralPath (Join-Path $stage "PATCH_COMMIT.txt") -Encoding ASCII
 
           # Keep this small static directory in every patch so a single ZIP
           # can repair the Text Studio liveness/dependency UI change.

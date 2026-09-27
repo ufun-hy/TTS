@@ -27,7 +27,7 @@ class ClientAudio:
 
 
 class AudioClient:
-    def __init__(self, server: str, cache_dir: Path, poll_interval: float = 1.0, api_key: str = "", timeout: int = 15, session_id: str = "") -> None:
+    def __init__(self, server: str, cache_dir: Path, poll_interval: float = 1.0, api_key: str = "", timeout: int = 15, session_id: str = "", strict_session: bool = False) -> None:
         self.server = server.rstrip("/") + "/"
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -35,6 +35,7 @@ class AudioClient:
         self.api_key = api_key
         self.timeout = timeout
         self.session_id = str(session_id or "").strip()
+        self.strict_session = bool(strict_session)
 
     def health(self) -> Dict[str, Any]:
         response = self._request("GET", "health")
@@ -79,6 +80,11 @@ class AudioClient:
             if not isinstance(session_id, str) or not session_id.strip():
                 continue
             live_items.append((metadata_path.stem, metadata, session_id.strip()))
+
+        if self.session_id:
+            live_items = [item for item in live_items if item[2] == self.session_id]
+        elif self.strict_session:
+            live_items = []
 
         if not live_items:
             return {
@@ -216,12 +222,14 @@ class AudioClient:
         self,
         on_audio: Callable[[ClientAudio], Optional[str]],
         stop: Optional[Callable[[], bool]] = None,
-        before_fetch: Optional[Callable[[], None]] = None,
+        before_fetch: Optional[Callable[[], Optional[bool]]] = None,
     ) -> None:
         while not (stop and stop()):
             try:
                 if before_fetch:
-                    before_fetch()
+                    if before_fetch() is False:
+                        time.sleep(self.poll_interval)
+                        continue
                 if stop and stop():
                     break
                 item = self.fetch_next()
@@ -244,9 +252,15 @@ class AudioClient:
                 time.sleep(self.poll_interval)
 
     def _recoverable(self) -> Optional[ClientAudio]:
+        if self.strict_session and not self.session_id:
+            return None
         for metadata_path in sorted(self.cache_dir.glob("*.json")):
             metadata = self._read_metadata(metadata_path.stem)
             if not metadata or metadata.get("status") not in ("downloading", "downloaded"):
+                continue
+            server_metadata = metadata.get("server_metadata")
+            item_session = server_metadata.get("session_id", "") if isinstance(server_metadata, dict) else ""
+            if self.session_id and item_session != self.session_id:
                 continue
             path = self.cache_dir / f"{metadata_path.stem}.wav"
             response = self._request("GET", f"audio/status/{metadata_path.stem}")

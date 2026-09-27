@@ -46,6 +46,8 @@ D:\AI-Live-Studio-Models\
 
 ## 单机运行诊断
 
+已有安装的增量修复使用 Windows Patch workflow 生成的 ZIP。补丁必须与其 `PATCH_COMMIT.txt` 和 SHA256 文件一起保存；补丁内容包含 `audio_cache/`、`audio_client/`、`server/`、`scripts/`、网页及 Windows 入口。补丁只覆盖源码，不包含模型、用户项目、缓存或日志；应用前记录安装版本并停止本机 Runtime。
+
 Windows 单机版本的后台服务由 `scripts/windows-runtime.py` 管理，模型和用户数据放在安装目录之外：
 
 ```powershell

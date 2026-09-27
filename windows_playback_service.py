@@ -26,6 +26,7 @@ def main() -> int:
         config.api_key,
         config.timeout,
         config.session_id,
+        config.strict_session,
     )
     playback = PlaybackController(
         cache_dir,
@@ -46,6 +47,7 @@ def main() -> int:
             if session_id:
                 playback.set_session(session_id)
                 bound_session = session_id
+                client.session_id = session_id
         elif config.strict_session:
             metadata = item.metadata.get("server_metadata")
             incoming = metadata.get("session_id", "") if isinstance(metadata, dict) else ""
@@ -59,23 +61,30 @@ def main() -> int:
         logger.info("received %s", item.id)
         return "completed"
 
-    def before_fetch() -> None:
+    def before_fetch() -> bool:
         nonlocal bound_session
         if not bound_session:
-            return
+            # Dynamic strict mode discovers the next active session through
+            # /audio/next; the cache excludes stopped sessions.
+            return True
         control = client.session_control(bound_session)
         status = control.get("status", "running")
         if status == "paused":
             playback.pause()
+            return False
         elif status == "running":
             playback.resume()
+            return True
         elif status in ("stopping", "stopped"):
             playback.stop()
             if config.strict_session and not config.session_id:
                 playback.reset_session()
                 bound_session = ""
+                client.session_id = ""
             else:
                 stop_event.set()
+            return False
+        return True
 
     if not config.strict_session or config.session_id:
         playback.start()

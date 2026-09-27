@@ -66,6 +66,11 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertIn("AI-Live-Studio-Windows-Test-Setup.exe", build)
         self.assertNotIn("AI-Audio-Client-Setup.exe", workflow)
 
+    def test_patch_archive_contains_audio_cache_control_service(self):
+        workflow = (ROOT / ".github/workflows/windows-patch-build.yml").read_text(encoding="utf-8")
+        self.assertIn('"audio_cache/**"', workflow)
+        self.assertIn('"audio_cache"', workflow)
+
     def test_tts_and_online_provider_secrets_have_separate_dpapi_files(self):
         from local_runtime.settings import secret_store, tts_secret_store
 
