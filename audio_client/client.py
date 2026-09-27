@@ -191,6 +191,8 @@ class AudioClient:
         if not session_id:
             return {"session_id": "", "status": "running"}
         response = self._request("GET", f"audio/session-control/{session_id}")
+        if response.status == 404:
+            return {"session_id": session_id, "status": "running"}
         if response.status != 200:
             raise AudioClientError(f"session control failed: HTTP {response.status}")
         value = json.loads(response.body.decode("utf-8"))
