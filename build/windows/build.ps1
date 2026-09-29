@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.0"
+    [string]$Version = "1.0.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -111,6 +111,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "qwen-asr installation failed" }
     & $HostPython -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages `
         --index-url https://pypi.org/simple --extra-index-url $TorchIndex `
+        -c (Join-Path $PSScriptRoot "python-constraints.txt") `
         -r (Join-Path $Root "scripts\requirements-qwen-asr-windows.txt")
     if ($LASTEXITCODE -ne 0) { throw "Windows ASR dependency installation failed" }
 
@@ -149,7 +150,8 @@ try {
     $vcRuntime = $null
     foreach ($vcRoot in $vcRoots) {
         if (-not $vcRoot) { continue }
-        $vcRuntime = Get-ChildItem -LiteralPath $vcRoot -Filter "Microsoft.VC143.CRT" -Directory -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        $vcRuntime = Get-ChildItem -LiteralPath $vcRoot -Filter "Microsoft.VC143.CRT" -Directory -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Parent.Name -eq "x64" } | Sort-Object FullName -Descending | Select-Object -First 1
         if ($vcRuntime) { break }
     }
     if ($vcRuntime) {
@@ -157,24 +159,17 @@ try {
             Copy-Item -Path (Join-Path $vcRuntime.FullName "*.dll") -Destination $component -Force
         }
     } else {
-        Write-Warning "MSVC x64 redist directory was not found; relying on Windows/Python runtime DLLs"
+        throw "MSVC x64 redist directory was not found"
     }
 
     Normalize-Component $ollamaBin @("ollama.exe")
     Normalize-Component $cosyvoiceBin @("cosyvoice-server.exe", "cosyvoice.dll", "onnxruntime.dll")
     Normalize-Component $ffmpegDir @("ffmpeg.exe", "ffprobe.exe")
 
-    $sourceDirs = @("audio_cache", "audio_client", "local_runtime", "recording_transcript", "server", "timeline", "voice_datasets", "web", "config", "scripts")
-    foreach ($directory in $sourceDirs) {
-        Copy-Item -Path (Join-Path $Root $directory) -Destination $Stage -Recurse -Force
-    }
-    Copy-Item -Path (Join-Path $Root "windows_client.py") -Destination $Stage -Force
-    Copy-Item -Path (Join-Path $Root "windows_playback_service.py") -Destination $Stage -Force
-    Copy-Item -Path (Join-Path $Root "voices.json") -Destination $Stage -Force
-
     $manifest = [ordered]@{
         product = "AI Live Studio"
         version = $Version
+        commit = (git rev-parse HEAD)
         python = "3.11.9-embed-amd64"
         torch = $TorchVersion
         qwen_asr = "0.0.6"
@@ -189,6 +184,25 @@ try {
 
     & $HostPython -m PyInstaller --clean --noconfirm (Join-Path $Root "build\windows\AI-Live-Studio.spec")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller launcher build failed" }
+    & $HostPython (Join-Path $PSScriptRoot "package_app.py") $Stage
+    if ($LASTEXITCODE -ne 0) { throw "Application packaging failed" }
+    $profile = Get-Content (Join-Path $PSScriptRoot "runtime-profile.json") -Raw | ConvertFrom-Json
+    foreach ($entry in $profile.files.PSObject.Properties) {
+        $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Stage $entry.Name)).Hash.ToLowerInvariant()
+        if ($actual -ne $entry.Value) { throw "Runtime file differs from accepted GPU baseline: $($entry.Name)" }
+    }
+    $originalBuildPath = $env:PATH
+    try {
+        # Match windows-runtime.py's process-local DLL search path, without
+        # relying on a runner's system FFmpeg/CUDA installation.
+        $env:PATH = "$cosyvoiceBin;$ffmpegDir;$(Join-Path $sitePackages 'torch\lib');$env:SystemRoot\System32;$env:SystemRoot"
+        & (Join-Path $cosyvoiceBin "cosyvoice-server.exe") --help
+        if ($LASTEXITCODE -ne 0) { throw "CosyVoice executable / DLL smoke test failed" }
+        & (Join-Path $ffmpegDir "ffprobe.exe") -version
+        if ($LASTEXITCODE -ne 0) { throw "FFprobe executable / DLL smoke test failed" }
+    } finally {
+        $env:PATH = $originalBuildPath
+    }
 
     $bundledPython = Join-Path $pythonDir "python.exe"
     & $bundledPython -c "import torch, qwen_asr; print(torch.__version__); print(qwen_asr.__name__)"

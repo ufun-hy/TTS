@@ -1,5 +1,7 @@
 # Mac mini 本地 CosyVoice TTS API
 
+Windows 单机测试版的新电脑安装、小补丁更新和回滚说明见 [Windows 分发说明](docs/windows-distribution.md)。
+
 当前链路：`HTTP /speak` → 鉴权 → FIFO → CosyVoice3 → `afplay` 播放。
 
 实现使用 [cosyvoice.cpp](https://github.com/Lourdle/cosyvoice.cpp) v0.1.3 macOS arm64 运行时和 `Fun-CosyVoice3-0.5B-2512` Q8_0 GGUF 模型。模型、音频、日志和运行时文件均不提交 Git。

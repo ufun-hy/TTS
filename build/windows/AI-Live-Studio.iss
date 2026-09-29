@@ -25,7 +25,6 @@ Uninstallable=yes
 UninstallDisplayName={#MyAppName}
 
 [Files]
-Source: "..\..\dist\AI-Live-Studio.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "stage\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -34,8 +33,29 @@ Name: "{group}\AI Live Studio"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Change Model Directory"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--choose-models"
 
 [Run]
-Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\scripts\install-runtime.py"" ""{app}"""; Description: "Installing bundled AI runtimes"; StatusMsg: "Installing bundled AI runtimes..."; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch AI Live Studio"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopAI Live Studio Runtime"
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var Code: Integer;
+begin
+  Result := '';
+  if FileExists(ExpandConstant('{app}\runtime\python\python.exe')) then
+    if (not Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+      '"' + ExpandConstant('{app}\scripts\windows-runtime.py') + '" stop',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then
+      Result := 'Cannot safely stop the existing runtime. Resolve process ownership / active services before upgrading.';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var Code: Integer;
+begin
+  if CurStep = ssPostInstall then
+    if (not Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+      '"' + ExpandConstant('{app}\scripts\install-runtime.py') + '" "' + ExpandConstant('{app}') + '"',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code)) or (Code <> 0) then
+      RaiseException('Bundled runtime extraction or verification failed. Re-run this installer before starting AI Live Studio.');
+end;

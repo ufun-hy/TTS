@@ -1,0 +1,13 @@
+{
+  "description": "Windows x64; Python 3.11.9; torch 2.6.0 cu124; CosyVoice v0.1.3 with llama b10938 Vulkan",
+  "files": {
+    "runtime/bin/cosyvoice/cosyvoice-server.exe": "ef0e314aa56cd4bbb6fdea51ce456f3051e6f129b93eeede4a5e5264b24f38aa",
+    "runtime/bin/cosyvoice/cosyvoice.dll": "2a8fe36bc46b8b725090458580d72ef9d8bb7715420a73dee5a45e91626a2392",
+    "runtime/bin/cosyvoice/ggml-base.dll": "07b73e7a6540a142ff8bdbd223e147c8f5d9acb84f42adb27f77a6af0919e30f",
+    "runtime/bin/cosyvoice/ggml.dll": "3b8490fc85384e7fac24d3670b33beaaf290ac7a8ce3a57cbe7cc10c509e4d83",
+    "runtime/bin/cosyvoice/ggml-vulkan.dll": "5527cb569703cc60bbb07ae074541f74aa051dbbc7ca23cc3b292a49c1d972b5",
+    "runtime/bin/cosyvoice/libomp.dll": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+    "runtime/bin/cosyvoice/onnxruntime.dll": "b95efb2113b603bbbf3f191061c5516a871ed546893c820e4f3b7b6c358dbf2a",
+    "runtime/bin/cosyvoice/onnxruntime_providers_shared.dll": "f2540b89707b47895c2a732bfd04e34a695c580d22301ef44c0f01f09b001673"
+  }
+}

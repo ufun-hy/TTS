@@ -6,6 +6,9 @@ from pathlib import Path
 import sys
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from local_runtime.offline_patch import manifest, verify
+
 
 def extract(archive: Path, destination: Path) -> None:
     if not archive.is_file():
@@ -24,7 +27,12 @@ def main() -> int:
     try:
         extract(root / "runtime" / "packages" / "torch.whl", root / "runtime" / "python" / "Lib" / "site-packages")
         extract(root / "runtime" / "packages" / "ollama.zip", root / "runtime" / "bin" / "ollama")
-    except (OSError, zipfile.BadZipFile) as exc:
+        baseline = manifest(root)
+        verify(root, baseline["files"])
+        verify(root, baseline["runtime_files"], runtime=True)
+        if not (root / "runtime/bin/ollama/ollama.exe").is_file():
+            raise RuntimeError("Bundled Ollama executable missing")
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
         print(f"bundled runtime extraction failed: {exc}", file=sys.stderr)
         return 1
     return 0

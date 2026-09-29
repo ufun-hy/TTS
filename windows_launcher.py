@@ -111,7 +111,7 @@ def _wait_for_runtime(data: Path, parent: tk.Misc) -> bool:
     deadline = time.monotonic() + 180
     last = ""
     while time.monotonic() < deadline:
-        result = _run_runtime("status", data, timeout=10)
+        result = _run_runtime("status", data, timeout=45)
         payload = _json_output(result)
         health = payload.get("health") if isinstance(payload.get("health"), dict) else {}
         if all(health.get(name) is True for name in ("ollama", "tts", "cache", "studio", "asr")):
@@ -130,7 +130,7 @@ def _wait_for_runtime(data: Path, parent: tk.Misc) -> bool:
 
 
 def _start(data: Path, parent: tk.Misc) -> int:
-    current = _json_output(_run_runtime("status", data, timeout=10))
+    current = _json_output(_run_runtime("status", data, timeout=45))
     current_health = current.get("health") if isinstance(current.get("health"), dict) else {}
     current_processes = current.get("processes") if isinstance(current.get("processes"), dict) else {}
     studio_process = current_processes.get("text-studio") if isinstance(current_processes.get("text-studio"), dict) else {}
