@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,10 @@ spec.loader.exec_module(packager)
 
 class OfflinePatchTests(unittest.TestCase):
     def setUp(self):
+        # Match the isolated Windows embedded Python, not Apple's global cache.
+        cache_prefix = mock.patch("sys.pycache_prefix", None)
+        cache_prefix.start()
+        self.addCleanup(cache_prefix.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
@@ -173,6 +178,32 @@ class OfflinePatchTests(unittest.TestCase):
                 mock.patch.object(patch.time, "sleep"), \
                 self.assertRaisesRegex(patch.PatchError, "health/ownership"):
             runtime.start()
+
+    def test_equal_size_same_timestamp_update_does_not_reuse_old_bytecode(self):
+        self.make_app(self.app, "1", {"server/example.py": "VALUE = 1\n"})
+        self.make_app(self.package, "2", {"server/example.py": "VALUE = 2\n"})
+        source = self.app / "server/example.py"
+        timestamp = source.stat().st_mtime
+
+        def load_value():
+            spec = importlib.util.spec_from_file_location("patch_fixture", source)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module.VALUE
+
+        self.assertEqual(load_value(), 1)  # Create an old timestamp-based .pyc.
+        original_replace = patch.replace
+
+        def same_timestamp(inp, out):
+            original_replace(inp, out)
+            if out == source:
+                os.utime(out, (timestamp, timestamp))
+
+        self.runtime.start.side_effect = lambda: self.assertEqual(load_value(), 2)
+        with mock.patch.object(patch, "replace", side_effect=same_timestamp):
+            backup = self.apply()
+            patch.rollback(backup, self.app, self.runtime)
+        self.assertEqual(load_value(), 1)
 
     def test_packager_only_includes_tracked_code_and_all_shared_modules(self):
         launcher = self.app / "AI-Live-Studio.exe"

@@ -7,9 +7,11 @@ cannot change the code performing this transaction. Uses only the stdlib.
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
+import py_compile
 import re
 import shutil
 import stat
@@ -219,6 +221,15 @@ def apply(package, app, data, runtime):
                 retired.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(destination, retired)
         verify(app, new)
+        # Timestamp/size based .pyc files can survive same-second updates and
+        # rollbacks. Checked hashes validate the actual source on every import.
+        for name in incoming["files"]:
+            if name.endswith(".py"):
+                source = target(app, name)
+                cache_name = Path(importlib.util.cache_from_source(str(source))).relative_to(app).as_posix()
+                cache = target(app, cache_name)
+                py_compile.compile(str(source), cfile=str(cache), doraise=True,
+                                   invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)
         runtime.start()
     except Exception as exc:
         try:
