@@ -26,6 +26,7 @@ EXTENSION_PATHS = [
 ]
 if os.environ.get('WINDOWS_SINGLE_MACHINE') == '1':
     EXTENSION_PATHS.append(ROOT / 'web' / 'windows-session.js')
+    EXTENSION_PATHS.append(ROOT / 'web' / 'voice-registration.js')
 _ORIGINAL_READ_BYTES = Path.read_bytes
 
 

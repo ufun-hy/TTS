@@ -1,5 +1,7 @@
 # Mac mini 本地 CosyVoice TTS API
 
+Windows 最近修改、提交范围和验证结果见 [2026-10-02 修改汇总](docs/windows-update-summary-20261002.md)。
+
 Windows 转写进度、暂停/继续、删除及关闭恢复说明见 [转写任务与关闭恢复](docs/windows-transcript-controls.md)。
 
 Windows 单机测试版的新电脑安装、小补丁更新和回滚说明见 [Windows 分发说明](docs/windows-distribution.md)。
@@ -208,6 +210,8 @@ python3 scripts/audio-client.py --config config/audio-client.example.json
 ```
 
 该阶段不接入播放、虚拟声卡、OBS 或直播平台。
+
+Windows 单机版支持在音色选择框旁点击 **添加音色**，上传短录音、填写对应原文后生成并试听新音色。依赖模型与操作步骤见 [Windows 录音创建音色](docs/windows-voice-registration.md)。
 
 ## Windows Legacy Audio Client
 

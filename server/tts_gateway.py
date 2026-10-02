@@ -45,11 +45,12 @@ class VoiceStore:
         self.engine_url = engine_url.rstrip("/")
         self._lock = threading.RLock()
         self._voices: dict[str, Path] = {}
-        self._mtime: int | None = None
+        self._labels: dict[str, str] = {}
+        self._version: tuple[int, int, int] | None = None
         self._initialized = False
 
     def _load_config(self) -> dict[str, Path]:
-        with self.config_path.open(encoding="utf-8") as handle:
+        with self.config_path.open(encoding="utf-8-sig") as handle:
             raw = json.load(handle)
         if not isinstance(raw, dict) or not raw:
             raise ValueError("voices.json must contain at least one voice")
@@ -69,16 +70,24 @@ class VoiceStore:
                 voices[voice_id] = prompt
         if "default" not in voices:
             raise ValueError("default voice is not available")
+        self._labels = {key: entry["label"].strip() for key, entry in raw.items()
+                        if isinstance(entry.get("label"), str) and entry["label"].strip()}
         return voices
+
+    def _config_version(self) -> tuple[int, int, int]:
+        stat = self.config_path.stat()
+        # Atomic replacements can share a timestamp on Windows. File identity
+        # also catches same-sized label edits made within that clock tick.
+        return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
     def load_local(self) -> None:
         """Refresh prompt metadata without waking a sleeping engine."""
         with self._lock:
-            mtime = self.config_path.stat().st_mtime_ns
-            if self._voices and mtime == self._mtime:
+            version = self._config_version()
+            if self._voices and version == self._version:
                 return
             self._voices = self._load_config()
-            self._mtime = mtime
+            self._version = version
             self._initialized = False
 
     def invalidate_registration(self) -> None:
@@ -102,8 +111,8 @@ class VoiceStore:
 
     def sync(self) -> None:
         with self._lock:
-            mtime = self.config_path.stat().st_mtime_ns
-            if self._initialized and mtime == self._mtime:
+            version = self._config_version()
+            if self._initialized and version == self._version:
                 return
             voices = self._load_config()
             old_ids = set(self._voices)
@@ -118,7 +127,7 @@ class VoiceStore:
                 if status not in (200, 409):
                     raise RuntimeError(f"could not register voice {voice_id!r}: HTTP {status}")
             self._voices = voices
-            self._mtime = mtime
+            self._version = version
             self._initialized = True
 
     def ids(self) -> list[str]:
@@ -126,16 +135,23 @@ class VoiceStore:
         with self._lock:
             return sorted(self._voices)
 
+    def public_voices(self) -> list[dict]:
+        self.load_local()
+        with self._lock:
+            return [{"id": voice_id, "available": True,
+                     **({"label": self._labels[voice_id]} if voice_id in self._labels else {})}
+                    for voice_id in sorted(self._voices)]
+
     def cache_fingerprint(self, voice_id: str) -> str:
         """Fingerprint the current prompt so changed voices miss old cache entries."""
         self.load_local()
         with self._lock:
             prompt = self._voices.get(voice_id)
-            config_mtime = self._mtime
+            config_version = self._version
         if prompt is None:
             raise ValueError(f"voice not found: {voice_id}")
         stat = prompt.stat()
-        return f"{voice_id}|{prompt.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config_mtime}"
+        return f"{voice_id}|{prompt.resolve()}|{stat.st_size}|{stat.st_mtime_ns}|{config_version}"
 
 
 @dataclass
@@ -392,7 +408,7 @@ def make_handler(
                     return
                 try:
                     voice_store.load_local()
-                    self._json(200, {"voices": [{"id": voice_id, "available": True} for voice_id in voice_store.ids()]})
+                    self._json(200, {"voices": voice_store.public_voices()})
                 except (OSError, ValueError, RuntimeError) as exc:
                     self._json(503, {"voices": [], "error": str(exc)})
                 return

@@ -163,7 +163,7 @@ try {
     }
 
     Normalize-Component $ollamaBin @("ollama.exe")
-    Normalize-Component $cosyvoiceBin @("cosyvoice-server.exe", "cosyvoice.dll", "onnxruntime.dll")
+    Normalize-Component $cosyvoiceBin @("cosyvoice-cli.exe", "cosyvoice-server.exe", "cosyvoice.dll", "onnxruntime.dll")
     Normalize-Component $ffmpegDir @("ffmpeg.exe", "ffprobe.exe")
 
     $manifest = [ordered]@{
@@ -198,6 +198,8 @@ try {
         $env:PATH = "$cosyvoiceBin;$ffmpegDir;$(Join-Path $sitePackages 'torch\lib');$env:SystemRoot\System32;$env:SystemRoot"
         & (Join-Path $cosyvoiceBin "cosyvoice-server.exe") --help
         if ($LASTEXITCODE -ne 0) { throw "CosyVoice executable / DLL smoke test failed" }
+        & (Join-Path $cosyvoiceBin "cosyvoice-cli.exe") --help
+        if ($LASTEXITCODE -ne 0) { throw "CosyVoice frontend CLI / DLL smoke test failed" }
         & (Join-Path $ffmpegDir "ffprobe.exe") -version
         if ($LASTEXITCODE -ne 0) { throw "FFprobe executable / DLL smoke test failed" }
     } finally {

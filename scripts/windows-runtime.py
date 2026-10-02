@@ -637,6 +637,8 @@ def start(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env.update({
         "AI_LIVE_STUDIO_DATA": str(data),
+        "AI_LIVE_STUDIO_MODELS": str(models),
+        "AI_LIVE_STUDIO_BIN": str(bin_dir),
         "AI_LIVE_STUDIO_VERSION": "1.0.0",
         "AI_LIVE_STUDIO_GPU_LOCK": str(data / "runtime" / "gpu-owner.json"),
         "TTS_API_KEY": api_key,

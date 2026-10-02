@@ -672,7 +672,8 @@ class LiveSessionManager:
             if isinstance(voice_id, str) and VOICE_ID.fullmatch(voice_id):
                 voices.append({
                     "id": voice_id,
-                    "label": VOICE_LABELS.get(voice_id, voice_id),
+                    "label": (item.get("label") if isinstance(item.get("label"), str) and item["label"].strip()
+                              else VOICE_LABELS.get(voice_id, voice_id)),
                     "available": bool(item.get("available", True)),
                 })
         return {"voices": voices or [{"id": "default", "label": VOICE_LABELS["default"], "available": False}]}

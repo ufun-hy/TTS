@@ -705,6 +705,14 @@ def make_handler(
         confirm_tts_release=confirm_tts_release,
     )
 
+    voice_registration = None
+    if single_machine:
+        from voice_datasets.registration import VoiceRegistration
+        from server.voice_registration import handle_voice_request
+        models = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", r"D:\AI-Live-Studio-Models"))
+        bin_dir = Path(os.environ.get("AI_LIVE_STUDIO_BIN", str(root / "runtime" / "bin")))
+        voice_registration = VoiceRegistration(data_root, models, bin_dir)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
 
@@ -727,6 +735,8 @@ def make_handler(
             return body
 
         def do_GET(self) -> None:  # noqa: N802
+            if voice_registration and handle_voice_request(self, voice_registration, runtime, confirm_tts_release):
+                return
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
@@ -847,6 +857,8 @@ def make_handler(
             self._json(404, {"error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if voice_registration and handle_voice_request(self, voice_registration, runtime, confirm_tts_release):
+                return
             path = self.path.split("?", 1)[0]
             try:
                 body = self._read_json()
