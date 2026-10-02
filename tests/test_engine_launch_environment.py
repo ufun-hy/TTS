@@ -3,12 +3,36 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from server.engine_runtime import ManagedEngine
 
 
 class EngineLaunchEnvironmentTests(unittest.TestCase):
+    def test_windows_identity_check_runs_at_every_launch_and_prevents_fallback(self):
+        root = Path(tempfile.mkdtemp(prefix='engine-vulkan-env-'))
+        command = ['/app/cosyvoice-server.exe', '--backend', 'nvidia-vulkan']
+        selected = {'name': 'Vulkan0', 'description': 'NVIDIA RTX 3060', 'type': 1}
+        filtered = {'VK_LOADER_DRIVERS_SELECT': 'nv-vk64.json,nvidia*.json'}
+        fake_os = Mock(wraps=os)
+        fake_os.name = 'nt'
+        for log in (None, root/'engine.log'):
+            runtime = ManagedEngine('http://engine', command=command, log_path=log, idle_seconds=0)
+            with patch('server.engine_runtime.os', fake_os), patch('server.engine_runtime.sys.platform','win32'), \
+                 patch('local_runtime.vulkan_device.prepare_engine', return_value=(command[:-1]+['Vulkan0'], filtered, selected)) as prepare, \
+                 patch('server.engine_runtime.subprocess.Popen') as popen:
+                runtime._launch()
+                runtime._launch()
+                self.assertEqual(prepare.call_count,2)
+                self.assertEqual(popen.call_args.args[0][-1],'Vulkan0')
+                self.assertEqual(popen.call_args.kwargs['env'],filtered)
+            with patch('server.engine_runtime.os', fake_os), \
+                 patch('local_runtime.vulkan_device.prepare_engine', side_effect=RuntimeError('Intel remained visible')), \
+                 patch('server.engine_runtime.subprocess.Popen') as popen:
+                with self.assertRaisesRegex(RuntimeError,'Intel'):
+                    runtime._launch()
+                popen.assert_not_called()
+
     def test_macos_rebuilds_library_path_on_each_launch_with_or_without_logging(self):
         root = Path(tempfile.mkdtemp(prefix='engine-launch-env-'))
         command = [str(root / 'bin/cosyvoice-server'), '--model', '/model.gguf']

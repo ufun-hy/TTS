@@ -83,7 +83,8 @@ def _post_json(url: str, payload: dict[str, Any], timeout: int, api_key: str = "
     return decoded
 
 
-def run_http_provider(provider: str, prompt: str, model: str, root: Path, timeout: int = 240) -> tuple[str, str]:
+def run_http_provider(provider: str, prompt: str, model: str, root: Path, timeout: int = 240,
+                      output_schema: dict | None = None) -> tuple[str, str]:
     config = provider_config(provider, root)
     model = model.strip() or config["model"]
     if not model:
@@ -93,11 +94,13 @@ def run_http_provider(provider: str, prompt: str, model: str, root: Path, timeou
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
-            "format": "json",
+            "format": output_schema or "json",
             "think": False,
             "keep_alive": "5m",
             "options": {"num_ctx": 4096, "num_predict": 4096, "temperature": 0.3},
         }, timeout)
+        if response.get('done_reason') == 'length':
+            raise ValueError('本地模型输出达到长度限制，请减少候选数或缩短段落后重试')
         message = response.get("message")
         content = message.get("content") if isinstance(message, dict) else None
     else:

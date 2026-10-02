@@ -273,11 +273,16 @@ def _inspect_process(name: str, record: dict[str, object]) -> dict[str, object]:
         None,
     )
     identity_matches = running and _identity_matches(name, record, info)
+    # A confirmed different executable cannot be our process. Never signal it.
+    reused = bool(running and info.get('executable') and
+                  _basename(info['executable']).casefold() != _basename(str(record['expected_executable'])).casefold())
     issues: list[str] = []
     if not pid:
         issues.append("not_tracked")
     elif not running:
         issues.append("stale_pid")
+    elif reused:
+        issues.append('reused_pid')
     elif not identity_matches:
         issues.append("ownership_mismatch")
     if listeners and (not identity_matches or pid not in listeners):
@@ -290,6 +295,7 @@ def _inspect_process(name: str, record: dict[str, object]) -> dict[str, object]:
         "running": running,
         "owned": bool(identity_matches),
         "identity_matches": bool(identity_matches),
+        "reused_pid": reused,
         "expected_executable": str(record.get("expected_executable", "")),
         "expected_entrypoint": str(record.get("expected_entrypoint", "")),
         "executable": info.get("executable", ""),
@@ -349,7 +355,13 @@ def _stop_processes(records: dict[str, object], timeout: float = 10.0) -> dict[s
             remaining.pop(name, None)
             print(f"stopped {name} PID={pid} (already exited)")
             continue
-        if not _identity_matches(name, record, _process_info(pid)):
+        info = _process_info(pid)
+        if (info.get('executable') and
+                _basename(info['executable']).casefold() != _basename(str(record['expected_executable'])).casefold()):
+            remaining.pop(name, None)
+            print(f'forgot stale {name} PID={pid} (reused by another executable; not stopped)')
+            continue
+        if not _identity_matches(name, record, info):
             print(f"stop_skipped {name} PID={pid}: ownership_mismatch (process was not stopped)", file=sys.stderr)
             continue
         detail = ""
@@ -565,7 +577,8 @@ def commands(models: Path, data: Path, python: Path, bin_dir: Path) -> dict[str,
     asr_model = models / "asr" / "Qwen3-ASR-1.7B"
     engine = components["cosyvoice"] / ("cosyvoice-server.exe" if os.name == "nt" else "cosyvoice-server")
     ollama = components["ollama"] / ("ollama.exe" if os.name == "nt" else "ollama")
-    engine_backend = "Vulkan0" if os.name == "nt" else "cuda"
+    # Resolve identity at each native-engine wake; obsolete numeric configs are ignored.
+    engine_backend = "nvidia-vulkan" if os.name == "nt" else "cuda"
     return {
         "ollama": ([str(ollama), "serve"], components["ollama"]),
         "tts-gateway": ([str(python), str(ROOT / "server" / "tts_gateway.py"), "--host", "127.0.0.1", "--port", "8765", "--engine-url", "http://127.0.0.1:8766", "--engine-bin", str(engine), "--engine-model", str(tts_model), "--engine-backend", engine_backend, "--engine-log", str(logs / "cosyvoice-server.log"), "--audio-dir", str(data / "audio"), "--tts-cache-dir", str(data / "tts-cache"), "--voices-config", str(voices)], ROOT),
@@ -603,7 +616,7 @@ def start(args: argparse.Namespace) -> int:
         if state["owned"]:
             print("AI Live Studio runtime is already running", file=sys.stderr)
             return 1
-        if state["running"] or state["listener_pids"]:
+        if (state["running"] and not state['reused_pid']) or state["listener_pids"]:
             print(
                 f"无法启动：{name} 存在未归属的运行进程或监听器；"
                 f"请先处理 windows-processes.json / status 中的 ownership mismatch",
@@ -674,12 +687,24 @@ def start(args: argparse.Namespace) -> int:
         print(f"runtime start failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(started, ensure_ascii=False))
+    if os.name == 'nt':
+        from local_runtime.session import launch_guardian
+        launch_guardian(ROOT, data, python)
     return 0
 
 
 def stop(args: argparse.Namespace) -> int:
     path, _ = _paths(Path(args.data).expanduser())
     records = _load_processes(path)
+    # Ask recording jobs to checkpoint and terminate their CUDA child first.
+    try:
+        asr = records.get('recording-transcript')
+        if asr and _inspect_process('recording-transcript', asr)['owned']:
+            opener = request.build_opener(request.ProxyHandler({}))
+            with opener.open(request.Request('http://127.0.0.1:8771/api/session/stop', data=b'', method='POST'), timeout=15):
+                pass
+    except (OSError, error.URLError):
+        pass
     remaining = _stop_processes(records)
     untracked = _untracked_listeners(records) if os.name == "nt" else []
     for listener in untracked:

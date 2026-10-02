@@ -59,10 +59,10 @@ def _load_model(model: Path):
     return load(str(model))
 
 
-def transcribe(audio: Path, model: Path) -> dict[str, Any]:
+def transcribe(audio: Path, model: Path, control=None) -> dict[str, Any]:
     if platform.system() == "Windows" or os.environ.get("RECORDING_TRANSCRIPT_BACKEND") == "cuda":
         from .qwen_asr_windows import transcribe as transcribe_windows
-        return transcribe_windows(audio, model)
+        return transcribe_windows(audio, model, control=control) if control else transcribe_windows(audio, model)
     """Caller serializes GPU jobs; cache only the currently configured model."""
     model = validate_model(model)
     status = readiness(model)

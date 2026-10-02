@@ -80,6 +80,8 @@ def _extract_json(text: str) -> Any:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
+        if stripped.startswith(('{', '[')):
+            raise ValueError('模型返回的 JSON 不完整或格式错误，请重试该段落')
         decoder = json.JSONDecoder()
         for pos, char in enumerate(stripped):
             if char not in "[{":
@@ -171,10 +173,11 @@ def _capture_provider_output(diagnostic: dict[str, Any], stdout: Any, stderr: An
 
 def _run_provider(provider: str, prompt: str, timeout_seconds: int,
                   diagnostic: dict[str, Any] | None = None, model: str = "",
-                  provider_root: Path | None = None) -> Any:
+                  provider_root: Path | None = None, output_schema: dict | None = None) -> Any:
     if provider in {"ollama", "openai_compatible"}:
         content, actual_model = run_http_provider(
             provider, prompt, model, provider_root or Path.cwd(), timeout_seconds,
+            **({'output_schema': output_schema} if output_schema else {}),
         )
         if diagnostic is not None:
             diagnostic["model"] = actual_model
@@ -355,6 +358,14 @@ def generalize_paragraphs(
             log_path.write_text(json.dumps(diagnostic, ensure_ascii=False, indent=2), encoding="utf-8")
         try:
             options = {}
+            if provider == 'ollama':
+                options['output_schema'] = {
+                    'type': 'object', 'required': ['paragraphs'], 'additionalProperties': False,
+                    'properties': {'paragraphs': {'type': 'array', 'minItems': len(batch), 'maxItems': len(batch),
+                        'items': {'type': 'object', 'required': ['id', 'candidates'], 'additionalProperties': False,
+                            'properties': {'id': {'type': 'string', 'enum': [item['id'] for item in batch]},
+                                'candidates': {'type': 'array', 'minItems': candidate_count, 'maxItems': candidate_count,
+                                    'items': {'type': 'string', 'minLength': 1}}}}}}}
             if diagnostic is not None:
                 options["diagnostic"] = diagnostic
             if model:
@@ -363,6 +374,8 @@ def generalize_paragraphs(
                 options["provider_root"] = provider_root
             raw = _run_provider(provider, prompt, timeout_seconds, **options)
             validated = _validate_model_result(raw, [item["id"] for item in batch])
+            if provider == 'ollama' and any(len(item['candidates']) != candidate_count for item in validated):
+                raise ValueError('本地模型返回的候选数量不正确，请重试该段落')
             if diagnostic is not None:
                 diagnostic["status"] = "success"
         except Exception as exc:

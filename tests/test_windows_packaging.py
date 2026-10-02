@@ -89,7 +89,17 @@ class WindowsPackagingTests(unittest.TestCase):
         paths = Path("models"), Path("data"), Path("python"), Path("runtime/bin")
         with mock.patch.object(launcher.os, "name", "nt"):
             command = launcher.commands(*paths)["tts-gateway"][0]
-        self.assertEqual(command[command.index("--engine-backend") + 1], "Vulkan0")
+        self.assertEqual(command[command.index("--engine-backend") + 1], "nvidia-vulkan")
+
+    def test_obsolete_numeric_backend_does_not_select_integrated_gpu(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data=Path(directory)
+            (data/'config').mkdir()
+            (data/'config/tts-backend.json').write_text('{"backend":"Vulkan1"}')
+            paths = Path('models'), data, Path('python'), Path('bin')
+            with mock.patch.object(launcher.os, 'name', 'nt'):
+                command=launcher.commands(*paths)['tts-gateway'][0]
+            self.assertEqual(command[command.index('--engine-backend')+1],'nvidia-vulkan')
 
     def test_single_machine_audio_client_uses_headless_playback_service(self):
         entries = launcher.commands(Path("models"), Path("data"), Path("python"), Path("runtime/bin"))

@@ -34,120 +34,13 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
-@dataclass
-class TranscriptJob:
-    job_id: str
-    filename: str
-    size: int
-    upload_path: Path
-    stage: str = "queued"
-    text: str = ""
-    error: str = ""
-    updated_at: float = 0.0
-
-    def public(self) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "job_id": self.job_id,
-            "filename": self.filename,
-            "size": self.size,
-            "stage": self.stage,
-        }
-        if self.stage == "completed":
-            body["text"] = self.text
-        elif self.stage == "failed":
-            body["error"] = self.error or "录音转文稿失败"
-        return body
+# Preserve the existing import/API surface for callers and diagnostic tests.
+from recording_transcript.jobs import TranscriptJob, TranscriptJobStore as BaseJobStore, _worker_exit_confirmed
 
 
-class TranscriptJobStore:
-    def __init__(self, project_root: Path, model: Path):
-        self.project_root = project_root
-        self.model = model
-        self._jobs: dict[str, TranscriptJob] = {}
-        self._lock = threading.Lock()
-        self._asr_lock = threading.Lock()
-        lock_path = os.environ.get("AI_LIVE_STUDIO_GPU_LOCK", "") if os.environ.get("WINDOWS_SINGLE_MACHINE") == "1" else ""
-        self._gpu_lease = FileGpuLease(lock_path, "asr", "Qwen3-ASR-1.7B", "ASR") if lock_path else None
-
-    def create(self, filename: str, size: int, upload_path: Path) -> TranscriptJob:
-        job = TranscriptJob(uuid.uuid4().hex, filename, size, upload_path, updated_at=time.time())
-        with self._lock:
-            self._jobs[job.job_id] = job
-        threading.Thread(target=self._run, args=(job,), daemon=True, name=f"transcript-{job.job_id[:8]}").start()
-        return job
-
-    def get(self, job_id: str) -> TranscriptJob | None:
-        with self._lock:
-            job = self._jobs.get(job_id)
-        if job is not None:
-            return job
-        try:
-            result = load_result(self.project_root, job_id)
-        except FileNotFoundError:
-            return None
-        return TranscriptJob(job_id, result['filename'], result['size'], Path(),
-                             stage='completed', text=result['text'], updated_at=result['updated_at'])
-
-    def _set_stage(self, job: TranscriptJob, stage: str) -> None:
-        with self._lock:
-            job.stage = stage
-            job.updated_at = time.time()
-
-    def _run(self, job: TranscriptJob) -> None:
-        worker_exit_confirmed = True
-        try:
-            # Serialize local GPU jobs and reuse the loaded Qwen model.
-            with self._asr_lock:
-                if self._gpu_lease and not self._gpu_lease.acquire():
-                    current = FileGpuLease.read(self._gpu_lease.path)
-                    raise TranscriptError(f"GPU 正忙：{current.get('owner', 'unknown')} 正在运行")
-                try:
-                    final_text = transcribe_recording(
-                        job.upload_path,
-                        self.project_root,
-                        self.model,
-                        on_stage=lambda stage: self._set_stage(job, stage),
-                    )
-                except Exception as exc:
-                    worker_exit_confirmed = _worker_exit_confirmed(exc)
-                    raise
-                finally:
-                    if self._gpu_lease and worker_exit_confirmed:
-                        self._gpu_lease.release()
-            save_result(self.project_root, job.job_id, job.filename, job.size, final_text)
-            with self._lock:
-                job.text = final_text
-                job.stage = "completed"
-                job.updated_at = time.time()
-        except TranscriptError as exc:
-            with self._lock:
-                job.error = str(exc)
-                job.stage = "failed"
-                job.updated_at = time.time()
-        except Exception as exc:  # keep a long-running server alive on one failed upload
-            with self._lock:
-                job.error = f"录音转文稿失败：{exc}"
-                job.stage = "failed"
-                job.updated_at = time.time()
-        finally:
-            if worker_exit_confirmed:
-                try:
-                    job.upload_path.unlink(missing_ok=True)
-                    job.upload_path.parent.rmdir()
-                except OSError:
-                    pass
-
-
-def _worker_exit_confirmed(error: BaseException) -> bool:
-    """Do not drop ASR ownership when the CUDA child may still be alive."""
-    current: BaseException | None = error
-    seen: set[int] = set()
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        if isinstance(current, WorkerLifecycleError):
-            return bool(current.worker_exited)
-        current = current.__cause__
-    return True
+class TranscriptJobStore(BaseJobStore):
+    def _transcribe(self, *args, **kwargs):
+        return transcribe_recording(*args, **kwargs)
 
 
 def _safe_filename(raw: str) -> str:
@@ -196,6 +89,10 @@ class RecordingTranscriptServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_close(self):
+        self.RequestHandlerClass.jobs.shutdown()
+        super().server_close()
+
 
 def make_handler(project_root: Path, model: Path):
     html_path = project_root / "web" / "recording-transcript.html"
@@ -218,6 +115,9 @@ def make_handler(project_root: Path, model: Path):
         def _html(self) -> None:
             try:
                 body = html_path.read_bytes()
+                if os.environ.get('WINDOWS_SINGLE_MACHINE') == '1':
+                    script = (project_root / 'web' / 'windows-session.js').read_bytes()
+                    body = body.replace(b'</body>', b'<script>'+script+b'</script></body>')
             except OSError as exc:
                 self._json(500, {"error": str(exc)})
                 return
@@ -239,6 +139,9 @@ def make_handler(project_root: Path, model: Path):
             if path == "/api/transcript/results":
                 self._json(200, {"results": list_results(project_root)})
                 return
+            if path == '/api/transcript/jobs':
+                self._json(200, {'jobs': jobs.list()})
+                return
             prefix = "/api/transcript/jobs/"
             if path.startswith(prefix):
                 job_id = path[len(prefix):]
@@ -259,6 +162,33 @@ def make_handler(project_root: Path, model: Path):
 
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path
+            origin = self.headers.get('Origin')
+            if origin and urllib.parse.urlparse(origin).netloc != self.headers.get('Host'):
+                self._json(403, {'error': '来源不允许'})
+                return
+            view = re.fullmatch(r'/api/session/view/([a-zA-Z0-9-]{8,80})(/close)?', path)
+            if view and os.environ.get('WINDOWS_SINGLE_MACHINE') == '1':
+                from local_runtime.session import view_event
+                view_event(Path(os.environ['AI_LIVE_STUDIO_DATA']), view[1], bool(view[2]))
+                self._json(200, {'ok': True})
+                return
+            if path == '/api/session/stop' and self.client_address[0] in {'127.0.0.1', '::1'}:
+                self._json(200 if jobs.shutdown() else 409, {'stopped': jobs._closing.is_set()})
+                return
+            match = re.fullmatch(r'/api/transcript/jobs/([0-9a-f]{32})/(pause|resume|heartbeat|delete)', path)
+            if match:
+                # Prevent cross-site forms/beacons from controlling localhost jobs.
+                origin = self.headers.get('Origin')
+                if origin and urllib.parse.urlparse(origin).netloc != self.headers.get('Host'):
+                    self._json(403, {'error': '来源不允许'})
+                    return
+                try:
+                    self._json(200, jobs.action(*match.groups()))
+                except KeyError:
+                    self._json(404, {'error': '任务不存在'})
+                except (ValueError, OSError) as exc:
+                    self._json(409, {'error': str(exc)})
+                return
             if path != "/api/transcript/jobs":
                 self._json(404, {"error": "not_found"})
                 return
@@ -274,6 +204,7 @@ def make_handler(project_root: Path, model: Path):
         def log_message(self, fmt: str, *args: Any) -> None:
             print(f"recording-transcript {self.address_string()} - {fmt % args}", flush=True)
 
+    Handler.jobs = jobs
     return Handler
 
 

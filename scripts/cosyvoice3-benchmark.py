@@ -276,7 +276,12 @@ def _write_status(path: Path, state: str, run_id: str, target: int, completed: i
     })
 
 
-def _benchmark_text(iteration: int) -> str:
+def _benchmark_text(iteration: int, profile: str = 'short') -> str:
+    if profile == 'mixed':
+        short = '这款商品收到以后，先检查包装和数量。使用前请阅读说明，遇到问题可以联系客服。'
+        medium = '今天给大家介绍这款日常使用的商品。收到以后，请先检查外包装是否完整，再核对里面的数量和配件。第一次使用前，建议把说明书完整看一遍，按照标注的方法操作。使用完成后放在干燥通风的地方，避免阳光长时间直射。如果发现任何问题，可以先拍照保存，再联系客服说明情况。'
+        long = medium + '选购时也请留意页面上的尺寸和规格，按照自己的实际需要选择，不要只看展示图片判断大小。不同批次的外包装可能略有调整，具体以收到的实物说明为准。平时清洁时，使用柔软的布轻轻擦拭，不要使用尖锐工具刮擦表面。暂时不用的配件要单独收好，方便下次取用。确认商品适合自己的使用场景以后，再决定购买数量。'
+        return (short, medium, long)[(iteration-1) % 3] + f'本次检查编号为{iteration}。'
     return f"这是第 {iteration:06d} 次 CosyVoice3 Windows 持续推理压力测试。"
 
 
@@ -323,7 +328,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
     engine_url = f"http://127.0.0.1:{args.port}"
     engine_command = [
         str(engine_bin), "--model", str(model), "--served-model-name", "cosyvoice-3",
-        "--backend", "Vulkan0", "--host", "127.0.0.1", "--port", str(args.port),
+        "--backend", "nvidia-vulkan", "--host", "127.0.0.1", "--port", str(args.port),
         "--concurrency", "1", "--max-llm-len", "4096", "--llm-kv-cache-type", "f16",
         "--llm-flash-attn", "0", "--flow-flash-attn", "0",
     ]
@@ -360,10 +365,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
     audio_values: list[float] = []
     actual_inferences = 0
     load_seconds = 0.0
+    baseline = {}
+    rows = []
+    wall_started = time.monotonic()
     started_at = _now()
     state = "failed"
     cache_before = _gateway_cache_stats()
     header = [
+        "text_group", "text_chars", "cold_start", "warmup", "load_seconds", "end_to_end_seconds",
         "timestamp", "iteration", "generation_seconds", "audio_seconds", "rtf",
         "gpu_utilization", "gpu_memory_used_mb", "gpu_memory_peak_mb", "gpu_temperature_c",
         "gpu_temperature_peak_c", "system_memory_used_mb", "system_memory_peak_mb",
@@ -376,8 +385,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
         _write_status(status_path, "loading", run_id, args.iterations, 0, 0, 0, None)
         load_started = time.monotonic()
         engine.ensure_ready()
-        load_seconds = time.monotonic() - load_started
         voices.sync()
+        load_seconds = time.monotonic() - load_started
 
         with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
             writer = csv.DictWriter(csv_file, fieldnames=header)
@@ -391,7 +400,17 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     break
                 if monitor.unsafe_reason:
                     raise RuntimeError(monitor.unsafe_reason)
-                text = _benchmark_text(iteration)
+                text = _benchmark_text(iteration, args.text_profile)
+                cold = iteration == 1 or args.cold_each
+                iteration_load = load_seconds if iteration == 1 else 0.0
+                if args.cold_each and iteration > 1:
+                    if not engine.stop_now():
+                        raise RuntimeError('previous cold engine did not exit')
+                    voices.invalidate_registration()
+                    load_started = time.monotonic()
+                    engine.ensure_ready()
+                    voices.sync()
+                    iteration_load = time.monotonic() - load_started
                 monitor.begin_iteration(iteration)
                 started = time.monotonic()
                 try:
@@ -407,9 +426,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     del audio
                     actual_inferences += 1
                     rtf = generation_seconds / audio_seconds
-                    generation_values.append(generation_seconds)
-                    audio_values.append(audio_seconds)
-                    rtf_values.append(rtf)
+                    if iteration > args.warmup:
+                        generation_values.append(generation_seconds)
+                        audio_values.append(audio_seconds)
+                        rtf_values.append(rtf)
                     status = "ok"
                     error = ""
                 except Exception as exc:
@@ -421,7 +441,12 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     errors.append(error)
 
                 metrics = monitor.end_iteration()
-                writer.writerow({
+                row = {
+                    "text_group": ('short', 'medium', 'long')[(iteration-1)%3] if args.text_profile == 'mixed' else 'short',
+                    "text_chars": len(text), "cold_start": int(cold),
+                    "warmup": int(iteration <= args.warmup),
+                    "load_seconds": round(iteration_load,4),
+                    "end_to_end_seconds": round(iteration_load+generation_seconds,4),
                     "timestamp": _now(), "iteration": iteration,
                     "generation_seconds": round(generation_seconds, 4),
                     "audio_seconds": round(audio_seconds, 4), "rtf": round(rtf, 4),
@@ -436,7 +461,9 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     "process_memory_peak_mb": metrics.get("process_memory_peak_mb", ""),
                     "status": status, "error": error, "cache_hit": 0,
                     "cache_mode": "direct_engine_bypass",
-                })
+                }
+                rows.append(row)
+                writer.writerow(row)
                 csv_file.flush()
                 os.fsync(csv_file.fileno())
                 _write_status(status_path, "running" if status == "ok" else "failed", run_id,
@@ -449,7 +476,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     break
                 if iteration % 10 == 0:
                     print(f"completed={iteration}/{args.iterations} rtf={rtf:.3f} gpu={metrics.get('gpu_memory_used_mb')} MiB", flush=True)
-                if iteration == min(10, args.iterations):
+                if iteration == min(10, args.iterations) and args.text_profile == 'short' and not args.cold_each:
                     monitor.enable_growth_guard()
 
         if not errors and actual_inferences == args.iterations and not stop_path.exists():
@@ -496,17 +523,21 @@ def run_benchmark(args: argparse.Namespace) -> int:
         "gpu": "NVIDIA GeForce RTX 3060",
         "gpu_total_mb": baseline.get("gpu_memory_total_mb", 12288),
         "ram_total_mb": samples[0]["system_memory_used_mb"] + samples[0]["system_memory_available_mb"] if samples else 0,
-        "cosyvoice_backend": "Vulkan0",
+        "cosyvoice_backend": "nvidia-vulkan (identity checked each cold start)",
+        "text_profile": args.text_profile,
+        "cold_each": args.cold_each,
         "voice": "default -> speaker_c_reviewed.gguf",
         "iterations_requested": args.iterations,
         "successful_generations": actual_inferences,
+        "warmup_requested": args.warmup,
+        "measured_successful_generations": len(generation_values),
         "engine_log_inference_count": engine_log_count,
         "cache_hit": 0,
         "cache_miss": "not applicable: direct engine endpoint bypassed TTSResultCache",
         "gateway_cache_before": cache_before,
         "gateway_cache_after": cache_after,
         "model_load_seconds": round(load_seconds, 3),
-        "total_seconds": round(sum(generation_values) + load_seconds, 3),
+        "total_seconds": round(time.monotonic()-wall_started,3),
         "average_generation_seconds": round(sum(generation_values) / len(generation_values), 3) if generation_values else None,
         "average_audio_seconds": round(sum(audio_values) / len(audio_values), 3) if audio_values else None,
         "average_rtf": round(sum(rtf_values) / len(rtf_values), 4) if rtf_values else None,
@@ -524,10 +555,33 @@ def run_benchmark(args: argparse.Namespace) -> int:
         "errors": errors,
         "started_at": started_at,
         "finished_at": _now(),
+        "wall_seconds": round(time.monotonic()-wall_started,3),
+        "weighted_rtf": round(sum(generation_values)/sum(audio_values),4) if sum(audio_values) else None,
+        "audio_seconds_total": round(sum(audio_values),3),
+        "generation_seconds_total": round(sum(generation_values),3),
+        "audio_seconds_per_generation_second": round(sum(audio_values)/sum(generation_values),3) if sum(generation_values) else None,
+        "rows": rows,
         "csv_path": str(csv_path),
         "engine_log_path": str(log_path),
         "status_path": str(status_path),
     }
+    report['groups'] = {}
+    for name in ('short','medium','long'):
+        group=[row for row in rows if row['text_group']==name and row['status']=='ok' and not row['warmup']]
+        if not group:
+            continue
+        duration=sum(row['audio_seconds'] for row in group)
+        generation=sum(row['generation_seconds'] for row in group)
+        report['groups'][name] = {
+            'count':len(group), 'chars_min':min(row['text_chars'] for row in group), 'chars_max':max(row['text_chars'] for row in group),
+            'audio_mean':round(duration/len(group),3), 'generation_mean':round(generation/len(group),3),
+            'generation_p50':_percentile([row['generation_seconds'] for row in group],.5),
+            'generation_p95':_percentile([row['generation_seconds'] for row in group],.95),
+            'rtf_weighted':round(generation/duration,4),
+            'rtf_p95':_percentile([row['rtf'] for row in group],.95),
+            'cold_end_to_end_mean':round(sum(row['end_to_end_seconds'] for row in group)/len(group),3),
+        }
+    _write_json(output_dir / 'telemetry.json', {'samples': samples})
     _write_json(output_dir / "report.json", report)
     lines = [
         f"RESULT: {report['result']}",
@@ -572,12 +626,17 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument('--text-profile', choices=('short','mixed'), default='short')
+    parser.add_argument('--cold-each', action='store_true', help='Unload and reload before every request')
+    parser.add_argument('--warmup', type=int, default=0, help='Initial iterations excluded from speed statistics')
     args = parser.parse_args()
     if args.self_test:
         self_test()
         return 0
     if not 1 <= args.iterations <= 1000:
         parser.error("iterations must be between 1 and 1000")
+    if not 0 <= args.warmup < args.iterations:
+        parser.error('--warmup must be nonnegative and less than --iterations')
     if args.output_dir is None:
         parser.error("--output-dir is required")
     return run_benchmark(args)

@@ -260,6 +260,11 @@ class ManagedEngine:
             if not self.command:
                 raise EngineRuntimeError("managed engine command is missing")
             env = os.environ.copy()
+            command = self.command
+            selected = None
+            if os.name == 'nt' and '--backend' in command and command[command.index('--backend')+1] == 'nvidia-vulkan':
+                from local_runtime.vulkan_device import prepare_engine
+                command, env, selected = prepare_engine(command, env)
             if sys.platform == "darwin":
                 # macOS can strip DYLD_* when the gateway starts via system Python.
                 # Set it at the final native-process boundary, on every cold wake.
@@ -271,8 +276,10 @@ class ManagedEngine:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)
                 log_handle = self.log_path.open("ab", buffering=0)
                 try:
+                    if selected:
+                        log_handle.write(('NVIDIA_VULKAN_SELECTED '+json.dumps(selected)+'\n').encode('utf-8'))
                     return subprocess.Popen(
-                        self.command,
+                        command,
                         stdout=log_handle,
                         stderr=subprocess.STDOUT,
                         stdin=subprocess.DEVNULL,
@@ -282,7 +289,7 @@ class ManagedEngine:
                 finally:
                     log_handle.close()
             return subprocess.Popen(
-                self.command,
+                command,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,

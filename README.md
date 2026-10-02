@@ -1,5 +1,7 @@
 # Mac mini 本地 CosyVoice TTS API
 
+Windows 转写进度、暂停/继续、删除及关闭恢复说明见 [转写任务与关闭恢复](docs/windows-transcript-controls.md)。
+
 Windows 单机测试版的新电脑安装、小补丁更新和回滚说明见 [Windows 分发说明](docs/windows-distribution.md)。
 
 当前链路：`HTTP /speak` → 鉴权 → FIFO → CosyVoice3 → `afplay` 播放。

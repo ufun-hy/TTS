@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
+from contextlib import nullcontext
 from typing import Any, Callable
 
 from .audio import AudioDecodeError, SUPPORTED_EXTENSIONS, decode_audio
 from .cleaner import clean_transcript
 from .qwen_asr import transcribe as transcribe_qwen, validate_model
+from .control import TaskInterrupted
 
 
 class TranscriptError(RuntimeError):
@@ -42,6 +44,7 @@ def transcribe_recording(
     project_root: Path,
     model: Path,
     on_stage: Callable[[str], None] | None = None,
+    control=None,
 ) -> str:
     """Decode input and run the local Qwen3-ASR-1.7B MLX model."""
     del project_root  # Kept in the public signature for existing callers.
@@ -56,11 +59,23 @@ def transcribe_recording(
         raise TranscriptError(str(exc)) from exc
 
     try:
+        if control:
+            control.check()
         if on_stage:
-            on_stage("recognizing")
-        with tempfile.TemporaryDirectory(prefix="recording-transcript-") as workdir:
-            audio = decode_audio(source, Path(workdir))
-            result = transcribe_qwen(audio, model)
+            on_stage("decoding")
+        workspace = nullcontext(control.directory) if control else tempfile.TemporaryDirectory(prefix="recording-transcript-")
+        with workspace as workdir:
+            audio = Path(workdir) / 'audio.wav'
+            marker = Path(workdir) / 'decoded.ok'
+            if not (control and marker.exists() and audio.exists()):
+                audio = decode_audio(source, Path(workdir), control=control) if control else decode_audio(source, Path(workdir))
+                if control:
+                    marker.touch()
+            if on_stage:
+                on_stage("recognizing")
+            result = transcribe_qwen(audio, model, control=control) if control else transcribe_qwen(audio, model)
+    except TaskInterrupted:
+        raise
     except ImportError as exc:
         raise TranscriptError("当前 Python 环境缺少 Qwen MLX 依赖，请使用 Qwen ASR 环境启动") from exc
     except AudioDecodeError as exc:
@@ -71,6 +86,8 @@ def transcribe_recording(
         raise TranscriptError(f"本地 ASR 处理失败：{exc}") from exc
 
     segments = _segment_texts(result)
+    if control:
+        control.check()
     if on_stage:
         on_stage("cleaning")
     final_text = clean_transcript("".join(item["text"] for item in segments), segments)

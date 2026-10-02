@@ -40,7 +40,7 @@ class QwenASRTests(unittest.TestCase):
              patch.object(pipeline, 'transcribe_qwen', return_value=output) as qwen:
             result = pipeline.transcribe_recording(self.source, self.root, self.model, stages.append)
         self.assertEqual(result, '今天9.9元到手。')
-        self.assertEqual(stages, ['recognizing', 'cleaning'])
+        self.assertEqual(stages, ['decoding', 'recognizing', 'cleaning'])
         decode.assert_called_once()
         qwen.assert_called_once_with(decoded, self.model)
 

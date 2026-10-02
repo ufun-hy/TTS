@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 import sys
 from typing import Any
@@ -22,6 +24,8 @@ EXTENSION_PATHS = [
     ROOT / "web" / "text-studio-restore.js",
     ROOT / "web" / "text-studio-recording-link.js",
 ]
+if os.environ.get('WINDOWS_SINGLE_MACHINE') == '1':
+    EXTENSION_PATHS.append(ROOT / 'web' / 'windows-session.js')
 _ORIGINAL_READ_BYTES = Path.read_bytes
 
 
@@ -71,6 +75,17 @@ def _extended_make_handler(*args: Any, **kwargs: Any):
     class ExtendedHandler(BaseHandler):
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
+            view = re.fullmatch(r'/api/session/view/([a-zA-Z0-9-]{8,80})(/close)?', path)
+            if view and os.environ.get('WINDOWS_SINGLE_MACHINE') == '1':
+                from urllib.parse import urlparse
+                origin = self.headers.get('Origin')
+                if origin and urlparse(origin).netloc != self.headers.get('Host'):
+                    self._json(403, {'error': '来源不允许'})
+                    return
+                from local_runtime.session import view_event
+                view_event(Path(os.environ['AI_LIVE_STUDIO_DATA']), view[1], bool(view[2]))
+                self._json(200, {'ok': True})
+                return
             if path != "/api/restore/analyze":
                 return super().do_POST()
             try:

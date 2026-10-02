@@ -110,7 +110,12 @@ class WinMMPreparationTests(unittest.TestCase):
             player.play(source, threading.Event(), threading.Event())
             messages = [call.args[0] for call in logger.info.call_args_list]
             self.assertTrue(any("input_format=%s" in message and "cache=%s" in message and "conversion_ms=%d" in message for message in messages))
-            rendered = " ".join(str(value) for call in logger.info.call_args_list for value in call.args)
+            # Timing records may legitimately contain 0.5 milliseconds; only
+            # the format-conversion record is expected to omit audio samples.
+            compatibility = [call for call in logger.info.call_args_list
+                             if call.args[0].startswith("wav compatibility ")]
+            self.assertEqual(len(compatibility), 1)
+            rendered = " ".join(str(value) for value in compatibility[0].args)
             self.assertIn("float32", rendered)
             self.assertIn("pcm16", rendered)
             self.assertNotIn("0.5", rendered)

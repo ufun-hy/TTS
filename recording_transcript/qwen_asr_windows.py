@@ -13,6 +13,7 @@ import wave
 from functools import lru_cache
 
 from .windows_chunks import split_wav
+from .control import read_json, write_json
 
 MODEL_DIRECTORY = "Qwen3-ASR-1.7B"
 BACKEND = "qwen3-asr-1.7b-cuda"
@@ -78,16 +79,33 @@ def _transcribe_one(audio: Path, model: Path) -> dict[str, Any]:
     return {"text": text, "segments": segments}
 
 
-def _transcribe_in_process(audio: Path, model: Path) -> dict[str, Any]:
+def _transcribe_in_process(audio: Path, model: Path, checkpoint: Path | None = None) -> dict[str, Any]:
     """Chunk a decoded WAV, run one CUDA model process, and restore offsets."""
     model = validate_model(model)
     status = readiness(model)
     if not status["asr_ready"]:
         raise ValueError(status["asr_error"])
     chunks = split_wav(audio, audio.parent / "asr-chunks")
-    all_segments: list[dict[str, Any]] = []
-    texts: list[str] = []
-    for chunk in chunks:
+    saved = read_json(checkpoint) if checkpoint else {}
+    signature = [audio.stat().st_size, audio.stat().st_mtime_ns, str(model)]
+    if saved.get('source') != signature or saved.get('total_chunks') != len(chunks):
+        saved = {}
+    completed = min(len(chunks), max(0, int(saved.get('completed_chunks', 0))))
+    all_segments: list[dict[str, Any]] = saved.get('segments', [])
+    texts: list[str] = saved.get('texts', [])
+
+    def progress(stage, done):
+        if checkpoint:
+            write_json(checkpoint, {'source': signature, 'stage': stage,
+                'completed_chunks': done, 'total_chunks': len(chunks),
+                'processed_seconds': chunks[done-1].end if done else 0,
+                'total_seconds': chunks[-1].end, 'segments': all_segments, 'texts': texts})
+
+    progress('loading', completed)
+    if completed < len(chunks):
+        _load_model(model)
+    for index, chunk in enumerate(chunks[completed:], completed):
+        progress('recognizing', index)
         result = _transcribe_one(chunk.path, model)
         texts.append(result["text"])
         for segment in result["segments"]:
@@ -99,15 +117,20 @@ def _transcribe_in_process(audio: Path, model: Path) -> dict[str, Any]:
             except (TypeError, ValueError):
                 start, end = chunk.start, chunk.end
             all_segments.append({"text": str(segment.get("text") or "").strip(), "start": start, "end": end})
+        progress('recognizing', index + 1)
     return {"text": "".join(texts), "segments": [item for item in all_segments if item["text"]]}
 
 
-def transcribe(audio: Path, model: Path) -> dict[str, Any]:
+def transcribe(audio: Path, model: Path, control=None) -> dict[str, Any]:
     """Run the CUDA worker out-of-process so its model is released on exit."""
     if os.environ.get("QWEN_ASR_WORKER") == "1":
         return _transcribe_in_process(audio, model)
     env = os.environ.copy()
     env["QWEN_ASR_WORKER"] = "1"
+    env['PYTHONIOENCODING'] = 'utf-8'
+    env['AI_ASR_PARENT_PID'] = str(os.getpid())
+    if control:
+        env['AI_ASR_CHECKPOINT'] = str(control.checkpoint)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
     process = None
     try:
@@ -116,9 +139,10 @@ def transcribe(audio: Path, model: Path) -> dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
             env=env,
         )
-        stdout, stderr = process.communicate(timeout=3600)
+        stdout, stderr = control.communicate(process) if control else process.communicate(timeout=3600)
     except subprocess.TimeoutExpired as exc:
         if process is not None:
             try:
