@@ -42,6 +42,8 @@ from local_runtime.settings import SecretStoreError, load_settings, save_setting
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
+# Whole-project checkpoints must not share the per-request generation cap.
+MAX_PROJECT_PARAGRAPHS = 20_000
 MAX_PARAGRAPH_CHARS = 4000
 DEFAULT_BATCH_SIZE = 8
 DEFAULT_TIMEOUT_SECONDS = 240
@@ -455,8 +457,10 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     paragraphs = payload.get("paragraphs")
     if not isinstance(paragraphs, list):
         raise ValueError("project paragraphs must be an array")
-    if len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
-        raise ValueError(f"project exceeds {MAX_PARAGRAPHS_PER_REQUEST} paragraphs")
+    if len(paragraphs) > MAX_PROJECT_PARAGRAPHS:
+        raise ValueError(
+            f"项目包含 {len(paragraphs)} 个话术单元，超过单个项目 {MAX_PROJECT_PARAGRAPHS} 个的上限，请分为多个项目保存"
+        )
 
     name = payload.get("name", "未命名项目")
     if not isinstance(name, str) or not name.strip():

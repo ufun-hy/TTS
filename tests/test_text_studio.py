@@ -237,6 +237,36 @@ class TextStudioTest(unittest.TestCase):
             self.assertEqual(summaries[0]["paragraph_count"], 2)
             self.assertEqual(summaries[0]["generated_count"], 1)
 
+    def test_large_project_checkpoints_do_not_use_generation_request_limit(self):
+        paragraphs = [{"id": f"p{i}", "original_text": "原稿", "candidates": []}
+                      for i in range(5001)]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            text_studio, "MAX_PARAGRAPHS_PER_REQUEST", 5000
+        ):
+            root = Path(directory)
+            project = text_studio.save_project(root, {"paragraphs": paragraphs})
+            # Both the first batch and the next batch checkpoint the entire project.
+            for start in (0, 8):
+                for paragraph in paragraphs[start:start + 8]:
+                    paragraph["candidates"] = ["改写"]
+                text_studio.save_project(root, {**project, "paragraphs": paragraphs})
+                loaded = text_studio.load_project(root, project["project_id"])
+                self.assertEqual(len(loaded["paragraphs"]), 5001)
+                self.assertEqual(sum(bool(p["candidates"]) for p in loaded["paragraphs"]), start + 8)
+            with mock.patch.object(text_studio, "_run_provider") as provider:
+                with self.assertRaisesRegex(ValueError, "1 to 5000"):
+                    text_studio.generalize_paragraphs(paragraphs, "codex", 1, "")
+                provider.assert_not_called()
+
+    def test_project_limit_accepts_boundary_and_rejects_without_overwriting(self):
+        paragraphs = [{"id": f"p{i}", "original_text": "原稿"} for i in range(20000)]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = text_studio.save_project(root, {"paragraphs": paragraphs})
+            with self.assertRaisesRegex(ValueError, "20000"):
+                text_studio.save_project(root, {**project, "paragraphs": paragraphs + [paragraphs[0]]})
+            self.assertEqual(len(text_studio.load_project(root, project["project_id"])["paragraphs"]), 20000)
+
     def test_project_update_reuses_id(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
