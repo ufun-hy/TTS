@@ -128,7 +128,7 @@ class OnlineUpdater:
                 name = PurePosixPath(item.filename)
                 key = str(name).casefold()
                 size += item.file_size
-                if (name.is_absolute() or '..' in name.parts or '\\' in item.filename or ':' in item.filename
+                if (name.is_absolute() or '..' in name.parts or '\\' in item.orig_filename or ':' in item.orig_filename
                     or any(part.endswith((' ', '.')) or part.split('.')[0].upper() in
                            {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
                            for part in name.parts)
