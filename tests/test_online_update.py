@@ -102,14 +102,18 @@ class OnlineUpdateTests(unittest.TestCase):
     def archive(self, entries):
         archive=self.root/'test.zip'
         with zipfile.ZipFile(archive,'w') as bundle:
-            for name,content in entries.items(): bundle.writestr(name,content)
+            for name,content in entries.items():
+                entry = zipfile.ZipInfo(name)
+                # ZipInfo normalizes os.sep on Windows; preserve the adversarial bytes.
+                entry.filename = name
+                bundle.writestr(entry, content)
         self.updater.release=self.release
         self.updater.package={**self.release['packages'][0], 'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()}
         return archive
 
     def test_zip_traversal_and_case_collisions_rejected(self):
         for entries in ({'../escape':'x'}, {'a':'x','A':'y'}, {'C:/evil':'x'}, {'a\\b':'x'}):
-            with self.subTest(entries=entries), self.assertRaises(UpdateError):
+            with self.subTest(entries=entries), self.assertRaisesRegex(UpdateError, '不安全路径'):
                 self.updater.unpack(self.archive(entries))
         self.assertFalse((self.root/'escape').exists())
 
