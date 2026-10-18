@@ -2,9 +2,17 @@ param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles "AI Live Studio"),
     [string]$DataDir = $(if ($env:AI_LIVE_STUDIO_DATA) { $env:AI_LIVE_STUDIO_DATA } else { Join-Path $env:LOCALAPPDATA "AI-Live-Studio" }),
     [string]$Backup = "",
-    [string]$ExpectedUserSid = ""
+    [string]$ExpectedUserSid = "",
+    [int]$WaitForProcessId = 0
 )
 $ErrorActionPreference = "Stop"
+# The launcher must exit before its executable can be replaced.
+if ($WaitForProcessId -gt 0) {
+    $launcher = Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
+    if ($launcher) {
+        Wait-Process -Id $WaitForProcessId -Timeout 30 -ErrorAction Stop
+    }
+}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($ExpectedUserSid -and $ExpectedUserSid -ne $identity.User.Value) {
     throw "Use the same Windows account as AI Live Studio (DPAPI/user data cannot be moved to another account)."

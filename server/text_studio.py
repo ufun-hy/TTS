@@ -912,7 +912,7 @@ def make_handler(
                     return
 
                 if path == "/api/update/apply":
-                    self._json(200, updater.apply())
+                    self._json(409, {"error": "请在 AI Live Studio 启动器中使用签名更新入口"})
                     return
 
                 if path == "/api/generalize":

@@ -45,6 +45,8 @@ def package(destination, launcher):
     selected.append("AI-Live-Studio.exe")
     manifest = {
         "schema": 1,
+        "version": json.loads((ROOT / "config/app-version.json").read_text())["version"],
+        "release_sequence": json.loads((ROOT / "config/app-version.json").read_text())["sequence"],
         "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip(),
         "runtime_id": compatibility(),
         "runtime_files": json.loads((ROOT / "build/windows/runtime-profile.json").read_text())["files"],

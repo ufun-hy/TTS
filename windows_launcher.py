@@ -155,6 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     root = tk.Tk()
     root.withdraw()
     try:
+        if argv == ["--updates"]:
+            from local_runtime.update_window import show_updates
+            show_updates(root, install_root(), data)
+            root.mainloop()
+            return 0
         if argv == ["--choose-models"]:
             return 0 if _choose_models(data, root) else 1
         if argv == ["--stop"]:
@@ -172,9 +177,51 @@ def main(argv: list[str] | None = None) -> int:
         if argv:
             _show_error("AI Live Studio", "不支持的启动参数。", root)
             return 2
-        return _start(data, root)
+        result = _start(data, root)
+        if result:
+            return result
+        root.deiconify()
+        root.title("AI Live Studio")
+        root.geometry("420x300")
+        try:
+            installed = json.loads((install_root() / "app-manifest.json").read_text(encoding="utf-8"))
+            version = installed.get("version", installed["commit"][:7])
+            version += " · " + installed["commit"][:7]
+        except (OSError, ValueError, KeyError):
+            version = "开发版本"
+        tk.Label(root, text="AI Live Studio · " + version).pack(pady=20)
+        tk.Button(root, text="打开工作台", command=lambda: webbrowser.open(STUDIO_URL)).pack(pady=8)
+        from local_runtime.update_window import show_updates
+        tk.Button(root, text="检查更新", command=lambda: show_updates(root, install_root(), data)).pack(pady=8)
+        tk.Label(root, text="关闭此窗口不停止后台服务。").pack(pady=12)
+        # An unconfigured or unreachable source must not interrupt startup.
+        import queue
+        import threading
+        updates = queue.Queue()
+        def check_startup_update():
+            try:
+                from local_runtime.online_update import OnlineUpdater
+                available = OnlineUpdater(install_root(), data).check()
+                updates.put(available)
+            except Exception:
+                updates.put(None)
+        def notify_update():
+            try:
+                available = updates.get_nowait()
+            except queue.Empty:
+                root.after(200, notify_update)
+                return
+            if available:
+                tk.Label(root, text="有新版本：" + available['version']).pack()
+        threading.Thread(target=check_startup_update, daemon=True).start()
+        root.after(200, notify_update)
+        root.mainloop()
+        return 0
     finally:
-        root.destroy()
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
 
 
 if __name__ == "__main__":

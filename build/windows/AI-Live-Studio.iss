@@ -32,6 +32,10 @@ Name: "{autodesktop}\AI Live Studio"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\AI Live Studio"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Change Model Directory"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--choose-models"
 
+Name: "{group}\Check for Updates"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--updates"
+
+Name: "{group}\Stop Background Services"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--stop"
+
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch AI Live Studio"; Flags: nowait postinstall skipifsilent
 

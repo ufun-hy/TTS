@@ -1,0 +1,75 @@
+name: Prepare signed Windows release
+on:
+  workflow_dispatch:
+    inputs:
+      patch_run:
+        description: Successful patch Actions run ID
+        required: true
+      installer_run:
+        description: Successful full installer run ID (optional)
+        required: false
+      patch_url:
+        description: Immutable HTTPS URL for the patch ZIP
+        required: true
+      installer_url:
+        description: Immutable HTTPS URL for the full installer ZIP
+        required: false
+      notes:
+        description: User-visible release notes
+        required: true
+permissions:
+  actions: read
+  contents: read
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: windows-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install cryptography==50.0.2
+      - name: Verify build identity and download artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PATCH_RUN: ${{ inputs.patch_run }}
+          INSTALLER_RUN: ${{ inputs.installer_run }}
+          PATCH_URL: ${{ inputs.patch_url }}
+          INSTALLER_URL: ${{ inputs.installer_url }}
+          RELEASE_NOTES: ${{ inputs.notes }}
+          SIGNING_KEY: ${{ secrets.WINDOWS_UPDATE_SIGNING_KEY }}
+        run: |
+          python - <<'PY'
+          import json, os, pathlib, subprocess, zipfile
+          def run(*args):
+              return subprocess.check_output(args, text=True)
+          expected=os.environ['GITHUB_SHA']
+          for kind, run_id, artifact, workflow in [
+              ('patch',os.environ['PATCH_RUN'],'AI-Live-Studio-Windows-Patch','Build AI Live Studio Windows Patch'),
+              ('installer',os.environ['INSTALLER_RUN'],'AI-Live-Studio-Windows-Test-Setup','Build AI Live Studio Windows Test Installer')]:
+              if not run_id: continue
+              if not run_id.isdigit(): raise ValueError('Invalid run ID')
+              info=json.loads(run('gh','run','view',run_id,'--json','headSha,conclusion,name'))
+              if info['headSha']!=expected or info['conclusion']!='success' or info['name']!=workflow:
+                  raise ValueError('Build must succeed at this exact release commit')
+              run('gh','run','download',run_id,'--name',artifact,'--dir',kind)
+          output=pathlib.Path('release');output.mkdir()
+          key=pathlib.Path(os.environ['RUNNER_TEMP'])/'release-signing-key.pem'
+          key.write_text(os.environ['SIGNING_KEY']);key.chmod(0o600)
+          notes=pathlib.Path(os.environ['RUNNER_TEMP'])/'notes.txt';notes.write_text(os.environ['RELEASE_NOTES'])
+          args=['python','build/windows/sign_release.py','--key',str(key),'--patch','patch/AI-Live-Studio-Windows-Patch.zip',
+                '--patch-url',os.environ['PATCH_URL'],'--notes',str(notes),'--output','release/latest.json']
+          if os.environ['INSTALLER_RUN']:
+              with zipfile.ZipFile('release/AI-Live-Studio-Windows-Test-Setup.zip','w',zipfile.ZIP_STORED) as bundle:
+                  for path in pathlib.Path('installer').rglob('*'):
+                      if path.is_file():bundle.write(path,path.relative_to('installer'))
+              args += ['--installer','release/AI-Live-Studio-Windows-Test-Setup.zip','--installer-url',os.environ['INSTALLER_URL']]
+          subprocess.run(args,check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-windows-release
+          path: release/*
+          retention-days: 30
