@@ -157,6 +157,11 @@ def main(argv: list[str] | None = None) -> int:
             show_updates(root, install_root(), data)
             root.mainloop()
             return 0
+        if argv == ["--models"]:
+            from local_runtime.model_update_window import show_models
+            show_models(root, install_root(), data)
+            root.mainloop()
+            return 0
         if argv == ["--choose-models"]:
             return 0 if _choose_models(data, root) else 1
         if argv == ["--stop"]:

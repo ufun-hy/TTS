@@ -52,6 +52,14 @@ HEALTH_ENDPOINTS = {
 HEALTH_TIMEOUTS = {"tts": 4.0}
 
 
+def _app_version() -> str:
+    try:
+        version = json.loads((ROOT / "app-manifest.json").read_text(encoding="utf-8")).get("version", "")
+    except (OSError, ValueError):
+        version = ""
+    return version if isinstance(version, str) and version else "1.0.0"
+
+
 def _configured_models(data: Path, explicit: str = "") -> Path:
     if explicit:
         return Path(explicit).expanduser()
@@ -639,7 +647,7 @@ def start(args: argparse.Namespace) -> int:
         "AI_LIVE_STUDIO_DATA": str(data),
         "AI_LIVE_STUDIO_MODELS": str(models),
         "AI_LIVE_STUDIO_BIN": str(bin_dir),
-        "AI_LIVE_STUDIO_VERSION": "1.0.0",
+        "AI_LIVE_STUDIO_VERSION": _app_version(),
         "AI_LIVE_STUDIO_GPU_LOCK": str(data / "runtime" / "gpu-owner.json"),
         "TTS_API_KEY": api_key,
         "WINDOWS_SINGLE_MACHINE": "1",

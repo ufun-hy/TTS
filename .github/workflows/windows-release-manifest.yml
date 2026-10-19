@@ -14,6 +14,9 @@ on:
       installer_url:
         description: Immutable HTTPS URL for the full installer ZIP
         required: false
+      bootstrap_url:
+        description: Immutable HTTPS URL for the small Bootstrap executable
+        required: false
       notes:
         description: User-visible release notes
         required: true
@@ -38,6 +41,7 @@ jobs:
           INSTALLER_RUN: ${{ inputs.installer_run }}
           PATCH_URL: ${{ inputs.patch_url }}
           INSTALLER_URL: ${{ inputs.installer_url }}
+          BOOTSTRAP_URL: ${{ inputs.bootstrap_url }}
           RELEASE_NOTES: ${{ inputs.notes }}
           SIGNING_KEY: ${{ secrets.WINDOWS_UPDATE_SIGNING_KEY }}
         run: |
@@ -64,8 +68,20 @@ jobs:
           if os.environ['INSTALLER_RUN']:
               with zipfile.ZipFile('release/AI-Live-Studio-Windows-Test-Setup.zip','w',zipfile.ZIP_STORED) as bundle:
                   for path in pathlib.Path('installer').rglob('*'):
-                      if path.is_file():bundle.write(path,path.relative_to('installer'))
+                      if (path.is_file() and 'bootstrap' not in path.relative_to('installer').parts
+                              and path.name!='SHA256SUMS.txt'):
+                          bundle.write(path,path.relative_to('installer'))
               args += ['--installer','release/AI-Live-Studio-Windows-Test-Setup.zip','--installer-url',os.environ['INSTALLER_URL']]
+              bootstrap=pathlib.Path('installer/bootstrap/AI-Live-Studio-Bootstrap.exe')
+              if not bootstrap.is_file():
+                  raise FileNotFoundError('Installer run has no bootstrap executable')
+              if not os.environ['BOOTSTRAP_URL']:
+                  raise ValueError('BOOTSTRAP_URL is required')
+              if bootstrap.is_file():
+                  args += ['--bootstrap',str(bootstrap),'--bootstrap-url',os.environ['BOOTSTRAP_URL']]
+                  subprocess.run(['cp',str(bootstrap),'release/AI-Live-Studio-Bootstrap.exe'],check=True)
+          elif os.environ['BOOTSTRAP_URL']:
+              raise ValueError('A bootstrap URL requires an installer build run')
           subprocess.run(args,check=True)
           PY
       - uses: actions/upload-artifact@v4

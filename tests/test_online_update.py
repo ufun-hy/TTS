@@ -79,6 +79,17 @@ class OnlineUpdateTests(unittest.TestCase):
         self.check()
         self.assertEqual(self.updater.package['kind'], 'installer')
 
+    def test_clean_bootstrap_selects_full_bundle_and_validates_its_own_metadata(self):
+        self.release['packages'].append({**self.release['packages'][0], 'kind': 'installer'})
+        self.release['bootstrap'] = dict(version=self.release['version'], url='https://example.test/bootstrap.exe', size=4,
+                                        sha256=hashlib.sha256(b'boot').hexdigest())
+        bootstrap = OnlineUpdater(self.root, self.root / 'bootstrap-data', current={})
+        with patch('local_runtime.online_update._open_https', return_value=Response(json.dumps(self.envelope()).encode())):
+            checked = bootstrap.check()
+        self.assertEqual(checked['version'], '1.2.0')
+        self.assertEqual(bootstrap.package['kind'], 'installer')
+        self.assertEqual(verify_release(self.envelope(), self.public)['bootstrap']['size'], 4)
+
     def test_partial_download_resumes_and_verified_cache_reused(self):
         self.check()
         directory = self.updater.data / 'updates/downloads'
@@ -154,12 +165,29 @@ class OnlineUpdateTests(unittest.TestCase):
         active = dict(processes={'studio': dict(running=True, owned=True)})
         with patch('subprocess.run', return_value=SimpleNamespace(stdout=json.dumps(active))), patch('urllib.request.build_opener') as opener:
             opener.return_value.open.side_effect = [Response(json.dumps(v).encode()) for v in (
-                {'status':'running'}, {'state':'IDLE','model_released':True}, {'jobs':[]})]
+                {'status':'running'}, {'state':'IDLE','model_released':True}, {'jobs':[]},
+                {'status':'idle'}, {'status':'stopped','client_state':{'playback_status':'idle'}})]
             with self.assertRaisesRegex(UpdateError, '仍有'):
                 ensure_idle(self.root, self.root/'data')
         active['processes']['studio']['owned']=False
         with patch('subprocess.run', return_value=SimpleNamespace(stdout=json.dumps(active))):
             with self.assertRaisesRegex(UpdateError, '归属'):
+                ensure_idle(self.root, self.root/'data')
+        unknown = dict(processes={'studio': {}})
+        with patch('subprocess.run', return_value=SimpleNamespace(stdout=json.dumps(unknown))):
+            with self.assertRaisesRegex(UpdateError, '无法确认运行状态'):
+                ensure_idle(self.root, self.root/'data')
+
+    def test_idle_check_refuses_separate_playback(self):
+        from local_runtime.online_update import ensure_idle
+        from types import SimpleNamespace
+        active = dict(processes={'studio': dict(running=True, owned=True)})
+        with patch('subprocess.run', return_value=SimpleNamespace(stdout=json.dumps(active))), patch('urllib.request.build_opener') as opener:
+            opener.return_value.open.side_effect = [Response(json.dumps(v).encode()) for v in (
+                {'status':'stopped','client_buffered_segments':0,'client_buffered_seconds':0},
+                {'state':'IDLE','model_released':True}, {'jobs':[]}, {'status':'idle'},
+                {'status':'running','client_state':{'playback_status':'playing'}})]
+            with self.assertRaisesRegex(UpdateError, '播放'):
                 ensure_idle(self.root, self.root/'data')
 
     def test_missing_source_is_actionable(self):

@@ -61,9 +61,13 @@ class WindowsPackagingTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/windows-client-build.yml").read_text(encoding="utf-8")
         installer = (ROOT / "build/windows/AI-Live-Studio.iss").read_text(encoding="utf-8")
         build = (ROOT / "build/windows/build.ps1").read_text(encoding="utf-8")
+        bootstrap = (ROOT / "build/windows/AI-Live-Studio-Bootstrap.spec").read_text(encoding="utf-8")
         self.assertIn("AI-Live-Studio-Windows-Test-Setup.exe", workflow)
         self.assertIn("AI-Live-Studio-Windows-Test-Setup", installer)
         self.assertIn("AI-Live-Studio-Windows-Test-Setup.exe", build)
+        self.assertIn("AI-Live-Studio-Bootstrap.spec", build)
+        self.assertIn("model-source.json", bootstrap)
+        self.assertIn("Check for Model Updates", installer)
         self.assertNotIn("AI-Audio-Client-Setup.exe", workflow)
 
     def test_patch_archive_contains_audio_cache_control_service(self):

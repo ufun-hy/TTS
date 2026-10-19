@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.1"
+    [string]$Version = "1.2.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -254,6 +254,16 @@ try {
     if ($null -eq $iscc) { throw "Inno Setup is required to create AI-Live-Studio-Windows-Test-Setup.exe" }
     & $iscc "/DMyAppVersion=$Version" (Join-Path $Root "build\windows\AI-Live-Studio.iss")
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
+    $bootstrapDist = Join-Path $DownloadRoot "bootstrap"
+    $bootstrapWork = Join-Path $DownloadRoot "bootstrap-work"
+    & $HostPython -m PyInstaller --clean --noconfirm --distpath $bootstrapDist --workpath $bootstrapWork `
+        (Join-Path $PSScriptRoot "AI-Live-Studio-Bootstrap.spec")
+    if ($LASTEXITCODE -ne 0) { throw "Bootstrap build failed" }
+    $bootstrapExe = Join-Path $bootstrapDist "AI-Live-Studio-Bootstrap.exe"
+    if (-not (Test-Path -LiteralPath $bootstrapExe -PathType Leaf)) { throw "Bootstrap executable was not generated" }
+    $bootstrapOutput = Join-Path $Root "build\windows\output\bootstrap"
+    New-Item -ItemType Directory -Force -Path $bootstrapOutput | Out-Null
+    Copy-Item -LiteralPath $bootstrapExe -Destination (Join-Path $bootstrapOutput "AI-Live-Studio-Bootstrap.exe") -Force
     Write-Host "Installer created in build\windows\output\AI-Live-Studio-Windows-Test-Setup.exe"
 }
 finally {
