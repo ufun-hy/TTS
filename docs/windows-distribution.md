@@ -82,6 +82,11 @@
 `.github/workflows/windows-patch-build.yml`（小补丁）。本文件描述操作及边界，
 实际构建是否成功请以对应提交的 Actions 结果为准。
 
+完整包的 FFmpeg 固定为上游月末构建 `autobuild-2026-09-30-13-08`（8.1.3，LGPL shared），
+下载后校验 SHA256。BtbN 只保留最近 14 个日构建，月末构建保留两年；因此不能固定普通
+日构建或改成浮动 `latest` 来绕过 404。到期前需更新月末版本与校验值，并重新验证原生 DLL。
+安装器与 runtime 清单版本统一读取 `config/app-version.json`，CI 检查应用和 runtime 版本一致。
+
 ## 泛化大项目保存上限
 
 项目保存独立支持最多 20000 个话术单元，不再共用单次泛化请求的 5000 条上限。

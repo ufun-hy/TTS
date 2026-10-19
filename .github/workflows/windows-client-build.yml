@@ -69,6 +69,9 @@ jobs:
           $installer = "build/windows/output/AI-Live-Studio-Windows-Test-Setup.exe"
           if (-not (Test-Path $installer)) { throw "Installer was not generated: $installer" }
           $output = Split-Path $installer
+          $app = Get-Content build/windows/stage/app-manifest.json -Raw | ConvertFrom-Json
+          $runtime = Get-Content build/windows/stage/runtime/runtime-manifest.json -Raw | ConvertFrom-Json
+          if ($app.version -ne $runtime.version) { throw "Installer/runtime version differs from application version" }
           Copy-Item build/windows/stage/app-manifest.json, build/windows/stage/runtime/runtime-manifest.json, build/windows/stage/runtime/python-lock.txt $output
           Copy-Item docs/windows-distribution.md (Join-Path $output "README.md")
           Get-ChildItem $output -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } | ForEach-Object {

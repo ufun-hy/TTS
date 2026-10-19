@@ -1,8 +1,10 @@
 """Checks for the user-facing Windows package and startup preflight."""
 
+import calendar
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +21,16 @@ spec.loader.exec_module(launcher)
 
 
 class WindowsPackagingTests(unittest.TestCase):
+    def test_ffmpeg_build_uses_retained_month_end_release(self):
+        build = (ROOT / "build/windows/build.ps1").read_text(encoding="utf-8")
+        url = re.search(r'^\$FfmpegUrl = "([^"]+)"', build, re.M).group(1)
+        date = re.search(r'/autobuild-(\d{4})-(\d{2})-(\d{2})-', url)
+        self.assertIsNotNone(date, "Pin a retained month-end release, not the floating latest tag")
+        year, month, day = map(int, date.groups())
+        self.assertEqual(day, calendar.monthrange(year, month)[1], "Daily FFmpeg builds expire after 14 days")
+        self.assertIn("win64-lgpl-shared-8.1.zip", url)
+        self.assertRegex(build, r'\$FfmpegSha256 = "[0-9a-f]{64}"')
+
     def test_models_directory_can_be_changed_without_touching_models(self):
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
