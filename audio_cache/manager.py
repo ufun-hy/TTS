@@ -127,6 +127,33 @@ class AudioCacheManager:
             self._mark_failed(item.id, str(exc), current_state="processing")
             raise
 
+    def stage_library_audio(self, library_id: str, replay_session: str, sequence: int) -> AudioItem:
+        """Queue an archived WAV without reprocessing audio or touching the original."""
+        original = self.library.file(library_id)
+        if original is None:
+            raise AudioCacheError(f"library audio not found: {library_id}")
+        with self._lock:
+            unique_id = f"replay_{uuid.uuid4().hex}"
+            archived = next(
+                (info for info in self.library.list(limit=500)
+                 if info.get("id") == library_id), None
+            )
+            if archived is None:
+                raise AudioCacheError(f"library metadata not found: {library_id}")
+            metadata = {
+                **archived, "source": "library_replay", "library_id": library_id,
+                "session_id": replay_session, "sequence": sequence,
+            }
+            item = self.create_pending(metadata, unique_id)
+            try:
+                temporary = item.directory / ".audio.wav.tmp"
+                shutil.copyfile(original, temporary)
+                os.replace(temporary, item.audio_path)
+                return self._move_state(item, "ready")
+            except Exception as exc:
+                self._mark_failed(item.id, str(exc))
+                raise
+
     def claim_next(self, session_id: Optional[str] = None) -> Optional[AudioItem]:
         with self._lock:
             items = sorted(
