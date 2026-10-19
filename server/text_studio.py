@@ -780,6 +780,13 @@ def make_handler(
                 self._json(200, {"status": "ok", **_dependency_status(root, gateway_url)})
                 return
 
+            if path == "/api/playback/status":
+                try:
+                    self._json(200, live.playback_status())
+                except LiveSessionError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+
             if path == "/api/live/status":
                 self._json(200, live.status())
                 return
@@ -1036,6 +1043,33 @@ def make_handler(
                         self._json(409, {"error": str(exc), "runtime": runtime.snapshot()})
                         return
                     self._json(200 if recovered else 409, {"recovered": recovered, "runtime": runtime.snapshot()})
+                    return
+
+                if path == "/api/generation/start":
+                    result = live.start(
+                        body.get("voice", "default"),
+                        body.get("segments"),
+                        body.get("playback_speed", 1.0),
+                        body.get("volume", 100.0),
+                        autoplay=False,
+                    )
+                    self._json(202, result)
+                    return
+
+                if path == "/api/generation/pause":
+                    self._json(200, live.pause())
+                    return
+
+                if path == "/api/generation/resume":
+                    self._json(200, live.resume())
+                    return
+
+                if path == "/api/generation/stop":
+                    self._json(200, live.stop())
+                    return
+
+                if path in ("/api/playback/start", "/api/playback/pause", "/api/playback/stop"):
+                    self._json(200, live.playback_control(path.rsplit("/", 1)[-1]))
                     return
 
                 if path == "/api/live/start":
