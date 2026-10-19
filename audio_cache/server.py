@@ -244,6 +244,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             if path == "/audio/replay/status":
                 self._json(200, self.server.replay_status(manager))  # type: ignore[attr-defined]
                 return
+            if path == "/audio/library/capacity":
+                try:
+                    self._json(200, manager.library.capacity())
+                except (ValueError, OSError) as exc:
+                    self._json(503, {"error": str(exc)})
+                return
             if path == "/audio/library":
                 query = parse_qs(split.query, keep_blank_values=True)
                 session_id = (query.get("session_id") or [""])[0]
@@ -335,6 +341,21 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             path = urlsplit(self.path).path
             try:
                 body = self._body()
+                if path == "/audio/library/delete":
+                    item_ids = body.get("item_ids")
+                    # Protect selected inventory even if playback has only staged
+                    # some of the WAVs, plus all active cache-backed references.
+                    replay = self.server.replay_status(manager)  # type: ignore[attr-defined]
+                    protected = set()
+                    if replay.get("status") in ("running", "paused"):
+                        protected.update(replay.get("item_ids", []))
+                    for entry in manager.list_items():
+                        if entry.status in ("ready", "pending", "processing"):
+                            original = entry.metadata.get("library_id")
+                            if isinstance(original, str):
+                                protected.add(original)
+                    self._json(200, manager.library.delete(item_ids, protected))
+                    return
                 if path == "/audio/replay/start":
                     self._json(202, self.server.replay_start(manager, body.get("item_ids")))  # type: ignore[attr-defined]
                     return
