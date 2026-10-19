@@ -527,8 +527,9 @@ class LiveSessionManager:
         self._confirm_tts_release = confirm_tts_release
         self._runtime_lease: RuntimeLease | None = None
         self._runtime_release_lock = threading.Lock()
+        self._decoupled_session_ids: set[str] = set()
 
-    def start(self, voice: str, segments: Any, playback_speed: Any = 1.0, volume: Any = 100.0) -> dict[str, Any]:
+    def start(self, voice: str, segments: Any, playback_speed: Any = 1.0, volume: Any = 100.0, autoplay: bool = True) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
@@ -571,16 +572,20 @@ class LiveSessionManager:
             )
             self._session = session
             self._runtime_lease = runtime_lease
-            self._cache_control(session.session_id, "starting")
+            if not autoplay:
+                self._decoupled_session_ids.add(session.session_id)
+            self._cache_control(session.session_id, "starting" if autoplay else "paused")
             session.start()
-            self._cache_control(session.session_id, "running")
+            if autoplay:
+                self._cache_control(session.session_id, "running")
             if runtime_lease:
                 threading.Thread(target=self._release_runtime_after_session, args=(session, runtime_lease), daemon=True, name="live-runtime-release").start()
             return {"session_id": session.session_id, "status": "starting", "looping": session.looping}
 
     def _release_runtime_after_session(self, session: LiveSession, lease: RuntimeLease) -> None:
         session._thread.join()
-        self._cache_control(session.session_id, "stopped")
+        if session.session_id not in self._decoupled_session_ids:
+            self._cache_control(session.session_id, "stopped")
         released = self._release_runtime_lease(lease)
         if released:
             with self._lock:
@@ -612,19 +617,22 @@ class LiveSessionManager:
     def pause(self) -> dict[str, Any]:
         session = self._require_session()
         session.pause()
-        self._cache_control(session.session_id, "paused")
+        if session.session_id not in self._decoupled_session_ids:
+            self._cache_control(session.session_id, "paused")
         return self.status()
 
     def resume(self) -> dict[str, Any]:
         session = self._require_session()
         session.resume()
-        self._cache_control(session.session_id, "running")
+        if session.session_id not in self._decoupled_session_ids:
+            self._cache_control(session.session_id, "running")
         return self.status()
 
     def stop(self) -> dict[str, Any]:
         session = self._require_session()
         session.stop()
-        self._cache_control(session.session_id, "stopping")
+        if session.session_id not in self._decoupled_session_ids:
+            self._cache_control(session.session_id, "stopping")
         with self._lock:
             lease = self._runtime_lease
         if lease and self.runtime:
@@ -645,6 +653,10 @@ class LiveSessionManager:
             if session._thread.is_alive():
                 raise LiveSessionError("live session is still stopping; retry reset shortly")
         if session:
+            if session.session_id in self._decoupled_session_ids:
+                status = self.playback_status()
+                if status.get("status") == "running":
+                    raise LiveSessionError("stop playback before resetting the generation session", 409)
             self._cache_cleanup(session.session_id)
         with self._lock:
             lease = self._runtime_lease
@@ -658,7 +670,42 @@ class LiveSessionManager:
             self._session = None
         if session:
             self._cache_control(session.session_id, "stopped")
+            self._decoupled_session_ids.discard(session.session_id)
         return self.status()
+
+    def playback_status(self) -> dict[str, Any]:
+        session = self._require_session()
+        if session.session_id not in self._decoupled_session_ids:
+            raise LiveSessionError("independent playback requires a generation-only session", 409)
+        try:
+            control = self._request_json(
+                "GET", f"/audio/session-control/{session.session_id}", cache=True
+            )
+            cache = self._cache_status(session.session_id)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"playback service unavailable: {exc}", 502) from exc
+        return {
+            "session_id": session.session_id,
+            "status": control.get("status", "paused"),
+            "ready_segments": cache.get("ready", 0),
+            "client_connected": cache.get("client_connected", False),
+            "client_state": cache.get("client_state", {}),
+        }
+
+    def playback_control(self, action: str) -> dict[str, Any]:
+        if action not in ("start", "pause", "stop"):
+            raise LiveSessionError("invalid playback action", 400)
+        session = self._require_session()
+        if session.session_id not in self._decoupled_session_ids:
+            raise LiveSessionError("independent playback requires a generation-only session", 409)
+        status = {"start": "running", "pause": "paused", "stop": "stopped"}[action]
+        try:
+            self._request_json("POST", "/audio/session-control", {
+                "session_id": session.session_id, "status": status,
+            }, cache=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"playback control failed: {exc}", 502) from exc
+        return self.playback_status()
 
     def voices(self) -> dict[str, Any]:
         try:
