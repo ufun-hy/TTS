@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import os
 from pathlib import Path
 import re
-import shutil
 import threading
 import uuid
 
@@ -18,6 +18,49 @@ class AudioLibrary:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
+    def capacity(self) -> dict:
+        """Exact disk usage of archived assets, including metadata."""
+        with self._lock:
+            count = 0
+            used = 0
+            for entry in self.root.iterdir():
+                if not entry.is_dir() or not ID.fullmatch(entry.name):
+                    continue
+                audio = entry / "audio.wav"
+                meta = entry / "metadata.json"
+                if not audio.is_file() or not meta.is_file():
+                    continue
+                count += 1
+                used += audio.stat().st_size + meta.stat().st_size
+            try:
+                cap_gib = float(os.environ.get("AI_LIVE_STUDIO_LIBRARY_MAX_GIB", "20"))
+            except ValueError as exc:
+                raise ValueError("invalid AI_LIVE_STUDIO_LIBRARY_MAX_GIB") from exc
+            if not 0.01 <= cap_gib <= 100000:
+                raise ValueError("library capacity must be between 0.01 and 100000 GiB")
+            max_bytes = int(cap_gib * (1024 ** 3))
+            return {
+                "item_count": count, "used_bytes": used,
+                "limit_bytes": max_bytes, "remaining_bytes": max(0, max_bytes - used),
+            }
+
+    def delete(self, item_ids: list[str], protected_ids: set[str]) -> dict:
+        """Explicit archive deletion only; reject the entire request on conflict."""
+        if not isinstance(item_ids, list) or not item_ids or len(item_ids) > 100:
+            raise ValueError("item_ids must contain 1 to 100 ids")
+        if any(not isinstance(x, str) or not ID.fullmatch(x) for x in item_ids):
+            raise ValueError("invalid inventory id")
+        if len(set(item_ids)) != len(item_ids):
+            raise ValueError("duplicate inventory ids")
+        with self._lock:
+            if any(x in protected_ids for x in item_ids):
+                raise ValueError("inventory is referenced by an active playback task")
+            if any(self.get(x) is None for x in item_ids):
+                raise ValueError("one or more inventory items do not exist")
+            for item_id in item_ids:
+                shutil.rmtree(self.root / item_id)
+            return {"deleted": len(item_ids), "capacity": self.capacity()}
+
     def store(self, item_id: str, audio_path: Path, metadata: dict) -> dict:
         if not ID.fullmatch(item_id):
             raise ValueError("invalid library item id")
@@ -28,6 +71,14 @@ class AudioLibrary:
             if target.exists():
                 # Immutable entries cannot silently be overwritten.
                 raise ValueError("library item already exists")
+            usage = self.capacity()
+            size = audio_path.stat().st_size
+            # Reserve extra room for metadata before starting a durable copy.
+            if usage["used_bytes"] + size + 16384 > usage["limit_bytes"]:
+                raise ValueError("audio library capacity reached; delete old inventory explicitly")
+            free_space = shutil.disk_usage(self.root).free
+            if free_space < size + 16 * 1024 * 1024:
+                raise OSError("not enough disk space for archived audio")
             temporary = self.root / ("." + item_id + "." + uuid.uuid4().hex + ".tmp")
             temporary.mkdir()
             try:
