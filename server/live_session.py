@@ -673,6 +673,24 @@ class LiveSessionManager:
             self._decoupled_session_ids.discard(session.session_id)
         return self.status()
 
+    def library_capacity(self) -> dict[str, Any]:
+        try:
+            return self._request_json("GET", "/audio/library/capacity", cache=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"library capacity unavailable: {exc}", 502) from exc
+
+    def library_delete(self, ids: Any) -> dict[str, Any]:
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or not all(
+            isinstance(item, str) and item for item in ids
+        ):
+            raise LiveSessionError("select 1 to 100 audio items for deletion", 400)
+        try:
+            return self._request_json(
+                "POST", "/audio/library/delete", {"item_ids": ids}, cache=True
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"library deletion rejected: {exc}", 409) from exc
+
     def library_items(self, session_id: str = "", limit: int = 100) -> dict[str, Any]:
         from urllib.parse import urlencode
         query = urlencode({"session_id": session_id, "limit": min(500, max(1, limit))})
