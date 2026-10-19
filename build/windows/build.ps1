@@ -182,7 +182,7 @@ try {
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Stage "runtime\runtime-manifest.json") -Encoding UTF8
     & $HostPython -m pip freeze --path $sitePackages | Set-Content -LiteralPath (Join-Path $Stage "runtime\python-lock.txt") -Encoding UTF8
 
-    & $HostPython -m PyInstaller --clean --noconfirm (Join-Path $Root "build\windows\AI-Live-Studio.spec")
+    # Desktop shell requires a bundled WebView2 host and Windows tray support.\n    & $HostPython -m pip install "pywebview>=5,<7" "pystray>=0.19,<1" "Pillow>=11,<13"\n    if ($LASTEXITCODE -ne 0) { throw "Desktop shell dependencies could not be installed" }\n\n    & $HostPython -m PyInstaller --clean --noconfirm (Join-Path $Root "build\windows\AI-Live-Studio.spec")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller launcher build failed" }
     & $HostPython (Join-Path $PSScriptRoot "package_app.py") $Stage
     if ($LASTEXITCODE -ne 0) { throw "Application packaging failed" }
