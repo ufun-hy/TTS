@@ -134,10 +134,7 @@ class AudioCacheManager:
             raise AudioCacheError(f"library audio not found: {library_id}")
         with self._lock:
             unique_id = f"replay_{uuid.uuid4().hex}"
-            archived = next(
-                (info for info in self.library.list(limit=500)
-                 if info.get("id") == library_id), None
-            )
+            archived = self.library.get(library_id)
             if archived is None:
                 raise AudioCacheError(f"library metadata not found: {library_id}")
             metadata = {
