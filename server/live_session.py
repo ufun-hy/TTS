@@ -673,6 +673,14 @@ class LiveSessionManager:
             self._decoupled_session_ids.discard(session.session_id)
         return self.status()
 
+    def library_items(self, session_id: str = "", limit: int = 100) -> dict[str, Any]:
+        from urllib.parse import urlencode
+        query = urlencode({"session_id": session_id, "limit": min(500, max(1, limit))})
+        try:
+            return self._request_json("GET", f"/audio/library?{query}", cache=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"audio inventory unavailable: {exc}", 502) from exc
+
     def playback_status(self) -> dict[str, Any]:
         session = self._require_session()
         if session.session_id not in self._decoupled_session_ids:
