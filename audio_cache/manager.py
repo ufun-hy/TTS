@@ -14,6 +14,7 @@ import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .processing import AudioProcessor, ProcessingResult
+from .library import AudioLibrary
 
 
 STATES = ("pending", "ready", "processing", "completed", "failed")
@@ -53,6 +54,7 @@ class AudioCacheManager:
         self.root = Path(root)
         self._lock = threading.RLock()
         self._processor = processor or AudioProcessor().process
+        self.library = AudioLibrary(self.root / "library")
         self._items: Dict[str, AudioItem] = {}
         self._state_counts: Dict[str, int] = {state: 0 for state in STATES}
         self._session_counts: Dict[str, Dict[str, int]] = {}
@@ -116,6 +118,10 @@ class AudioCacheManager:
             os.replace(temporary, item.audio_path)
             with self._lock:
                 item.metadata.update(processing_metadata)
+                # Store an independent, durable copy before exposing the item to
+                # the downloader. ACK and session cleanup must never remove it.
+                if item.metadata.get("source") == "live_session":
+                    self.library.store(item.id, item.audio_path, item.metadata)
                 return self._move_state(item, "ready")
         except Exception as exc:
             self._mark_failed(item.id, str(exc), current_state="processing")
