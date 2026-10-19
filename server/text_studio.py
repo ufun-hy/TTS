@@ -780,6 +780,18 @@ def make_handler(
                 self._json(200, {"status": "ok", **_dependency_status(root, gateway_url)})
                 return
 
+            if path == "/api/audio/library":
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try:
+                    limit = int((query.get("limit") or ["100"])[0])
+                    if not 1 <= limit <= 500:
+                        raise ValueError("limit must be between 1 and 500")
+                    result = live.library_items((query.get("session_id") or [""])[0], limit)
+                    self._json(200, result)
+                except (LiveSessionError, ValueError) as exc:
+                    self._json(exc.status if isinstance(exc, LiveSessionError) else 400, {"error": str(exc)})
+                return
+
             if path == "/api/playback/status":
                 try:
                     self._json(200, live.playback_status())
