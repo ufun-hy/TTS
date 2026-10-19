@@ -112,7 +112,7 @@ try {
     & $HostPython -m pip install --disable-pip-version-check --no-cache-dir --upgrade --target $sitePackages `
         --index-url https://pypi.org/simple --extra-index-url $TorchIndex `
         -c (Join-Path $PSScriptRoot "python-constraints.txt") `
-        -r (Join-Path $Root "scripts\requirements-qwen-asr-windows.txt")
+        -r (Join-Path $Root "scripts\requirements-qwen-asr-windows.txt") cryptography
     if ($LASTEXITCODE -ne 0) { throw "Windows ASR dependency installation failed" }
 
     # The wheel ships C++ headers/import libraries for extension development;
@@ -182,9 +182,16 @@ try {
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Stage "runtime\runtime-manifest.json") -Encoding UTF8
     & $HostPython -m pip freeze --path $sitePackages | Set-Content -LiteralPath (Join-Path $Stage "runtime\python-lock.txt") -Encoding UTF8
 
-    # Desktop shell requires a bundled WebView2 host and Windows tray support.\n    & $HostPython -m pip install "pywebview>=5,<7" "pystray>=0.19,<1" "Pillow>=11,<13"\n    if ($LASTEXITCODE -ne 0) { throw "Desktop shell dependencies could not be installed" }\n\n    & $HostPython -m PyInstaller --clean --noconfirm (Join-Path $Root "build\windows\AI-Live-Studio.spec")
+    # Desktop shell requires a bundled WebView2 host and Windows tray support.
+    & $HostPython -m pip install "pywebview>=5,<7" "pystray>=0.19,<1" "Pillow>=11,<13" cryptography -c (Join-Path $PSScriptRoot "python-constraints.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Desktop shell dependencies could not be installed" }
+
+    $launcherOutput = Join-Path $DownloadRoot "launcher"
+    & $HostPython -m PyInstaller --clean --noconfirm --distpath $launcherOutput (Join-Path $Root "build\windows\AI-Live-Studio.spec")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller launcher build failed" }
-    & $HostPython (Join-Path $PSScriptRoot "package_app.py") $Stage
+    $launcherExe = Join-Path $launcherOutput "AI-Live-Studio.exe"
+    if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf)) { throw "PyInstaller did not produce the launcher executable" }
+    & $HostPython (Join-Path $PSScriptRoot "package_app.py") $Stage --launcher $launcherExe
     if ($LASTEXITCODE -ne 0) { throw "Application packaging failed" }
     $profile = Get-Content (Join-Path $PSScriptRoot "runtime-profile.json") -Raw | ConvertFrom-Json
     foreach ($entry in $profile.files.PSObject.Properties) {
@@ -209,6 +216,8 @@ try {
     $bundledPython = Join-Path $pythonDir "python.exe"
     & $bundledPython -c "import torch, torchaudio, qwen_asr, funasr; print(torch.__version__); print(qwen_asr.__name__); print(funasr.__version__)"
     if ($LASTEXITCODE -ne 0) { throw "Bundled Python import smoke test failed" }
+    & $bundledPython -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey; key = Ed25519PrivateKey.generate(); key.public_key().verify(key.sign(b'build-smoke'), b'build-smoke')"
+    if ($LASTEXITCODE -ne 0) { throw "Bundled Python update signature smoke test failed" }
     Remove-DevelopmentFiles $sitePackages
 
     $torchWheelDownload = Join-Path $DownloadRoot "torch-wheel"

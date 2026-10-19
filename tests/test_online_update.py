@@ -49,6 +49,25 @@ class OnlineUpdateTests(unittest.TestCase):
         with self.assertRaises(UpdateError):
             verify_release(self.envelope(), base64.b64encode(b'x'*32).decode())
 
+    def test_missing_crypto_has_actionable_error(self):
+        import builtins
+        original = builtins.__import__
+        def import_without_crypto(name, *args, **kwargs):
+            if name.startswith('cryptography'):
+                raise ImportError('missing dependency')
+            return original(name, *args, **kwargs)
+        with patch('builtins.__import__', side_effect=import_without_crypto):
+            with self.assertRaisesRegex(UpdateError, 'cryptography.*缺失'):
+                verify_release(self.envelope(), self.public)
+
+    def test_malformed_release_is_rejected_but_internal_errors_propagate(self):
+        for envelope in [{}, {'payload': '!', 'signature': '!'}, None]:
+            with self.subTest(envelope=envelope), self.assertRaises(UpdateError):
+                verify_release(envelope, self.public)
+        with patch('local_runtime.online_update.json.loads', side_effect=RuntimeError('internal failure')):
+            with self.assertRaisesRegex(RuntimeError, 'internal failure'):
+                verify_release(self.envelope(), self.public)
+
     def test_no_downgrade_and_incompatible_patch_uses_full_bundle(self):
         self.release['sequence'] = 1
         self.assertIsNone(self.check())

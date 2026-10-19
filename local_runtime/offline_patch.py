@@ -24,7 +24,7 @@ import uuid
 APP_DIRS = {"audio_cache", "audio_client", "local_runtime", "recording_transcript",
             "server", "timeline", "voice_datasets", "web", "config", "scripts"}
 APP_FILES = {"windows_client.py", "windows_launcher.py", "windows_playback_service.py",
-             "AI-Live-Studio.exe", "app-manifest.json"}
+             "desktop_shell.py", "AI-Live-Studio.exe", "app-manifest.json"}
 
 
 class PatchError(RuntimeError):

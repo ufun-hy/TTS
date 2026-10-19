@@ -195,12 +195,11 @@ class LauncherOwnershipTests(unittest.TestCase):
             "processes": {"text-studio": {"owned": False, "running": False}},
         }
         completed = subprocess.CompletedProcess([], 0, json.dumps(status), "")
-        with mock.patch.object(windows_launcher, "_run_runtime", return_value=completed), \
-                mock.patch.object(windows_launcher, "_check_and_maybe_choose", return_value=False) as check, \
-                mock.patch.object(windows_launcher.webbrowser, "open") as open_browser:
+        with mock.patch.object(windows_launcher, "_run_runtime", return_value=completed) as run_runtime, \
+                mock.patch.object(windows_launcher, "_check_and_maybe_choose", return_value=False) as check:
             self.assertEqual(windows_launcher._start(Path("data"), mock.Mock()), 1)
         check.assert_called_once()
-        open_browser.assert_not_called()
+        run_runtime.assert_called_once_with("status", Path("data"), timeout=45)
 
 
 class StartupPersistenceTests(unittest.TestCase):

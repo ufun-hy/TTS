@@ -56,8 +56,21 @@ class DesktopShellContractTests(unittest.TestCase):
         build = (ROOT / "build/windows/build.ps1").read_text(encoding="utf-8")
         spec = (ROOT / "build/windows/AI-Live-Studio.spec").read_text(encoding="utf-8")
         package = (ROOT / "build/windows/package_app.py").read_text(encoding="utf-8")
-        for name in ("pywebview", "pystray", "Pillow"):
-            self.assertIn(name, build)
+        # Require standalone executable commands, not names inside comments.
+        lines = [line.strip() for line in build.splitlines()]
+        install = next(line for line in lines if line.startswith('& $HostPython -m pip install "pywebview'))
+        for name in ("pywebview", "pystray", "Pillow", "cryptography"):
+            self.assertIn(name, install)
+        compile_line = next(line for line in lines if line.startswith('& $HostPython -m PyInstaller '))
+        self.assertIn('--distpath $launcherOutput', compile_line)
+        self.assertIn('if ($LASTEXITCODE -ne 0) { throw "PyInstaller launcher build failed" }', lines)
+        self.assertIn('if (-not (Test-Path -LiteralPath $launcherExe -PathType Leaf)) { throw "PyInstaller did not produce the launcher executable" }', lines)
+        package_line = next(line for line in lines if line.startswith('& $HostPython (Join-Path $PSScriptRoot "package_app.py")'))
+        self.assertIn('--launcher $launcherExe', package_line)
+        runtime_install = next(line for line in lines if line.startswith('-r (Join-Path $Root "scripts'))
+        self.assertTrue(runtime_install.endswith(' cryptography'))
+        smoke = next(line for line in lines if line.startswith('& $bundledPython -c "from cryptography'))
+        self.assertIn('.verify(key.sign(', smoke)
         self.assertIn("webview.platforms.edgechromium", spec)
         self.assertIn("desktop_shell.py", package)
 

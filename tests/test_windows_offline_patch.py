@@ -210,7 +210,7 @@ class OfflinePatchTests(unittest.TestCase):
         destination = self.app.parent / "staged"
         manifest = packager.package(destination, launcher)
         for name in ("local_runtime/manager.py", "server/text_studio_entry.py", "recording_transcript/__init__.py",
-                     "audio_cache/server.py", "AI-Live-Studio.exe", "windows_launcher.py"):
+                     "audio_cache/server.py", "AI-Live-Studio.exe", "windows_launcher.py", "desktop_shell.py", "local_runtime/online_update.py", "local_runtime/update_window.py"):
             self.assertIn(name, manifest["files"])
         self.assertNotIn("voices.json", manifest["files"])
         self.assertFalse(any(n.startswith("runtime/") for n in manifest["files"]))

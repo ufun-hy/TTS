@@ -101,3 +101,14 @@ Invoke-RestMethod http://127.0.0.1:8770/api/runtime/recover `
 ### CI
 
 Windows workflow 同时运行 Runtime 回归、WinMM 测试、完整运行时组装、PyInstaller、Inno Setup 和 artifact upload。由于完整 CUDA PyTorch + Ollama payload 超过 Windows 单个 Setup.exe 的 4.2GB 限制，artifact 名称为 `AI-Live-Studio-Windows-Test-Setup`，包含可双击的 EXE、Inno 数据分片和 SHA256 文件；分发时须保持它们在同一目录。只有 GitHub Actions 对相应提交实际运行完成，才可报告 Windows CI 通过；本机回归和 dry-run 不替代该状态。
+
+### 桌面与更新组件构建检查
+
+`build.ps1` 显式安装 pywebview、pystray、Pillow 和启动器验签依赖 cryptography；
+嵌入式 Python 也直接安装 cryptography，版本由 `python-constraints.txt` 锁定。
+PyInstaller 输出写入本次构建的独立临时目录，退出码和 exe 存在性均检查通过后才打包，
+不复用旧的 dist 产物。运行时 smoke test 使用实际嵌入式 Python 完成 Ed25519 签名和验签。
+
+补丁清单允许根目录 `desktop_shell.py`；`local_runtime/online_update.py` 和
+`local_runtime/update_window.py` 由现有 local_runtime 目录规则覆盖，并通过打包清单测试校验。
+构建配方改变会更新 runtime_id，此修复需重新构建完整安装包。

@@ -27,7 +27,11 @@ def require(condition):
 
 
 def verify_release(envelope, public_key):
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise UpdateError('更新验签组件 cryptography 缺失或无法加载，请重新安装完整客户端。') from exc
     try:
         payload = base64.b64decode(envelope['payload'], validate=True)
         signature = base64.b64decode(envelope['signature'], validate=True)
@@ -46,7 +50,7 @@ def verify_release(envelope, public_key):
             require(re.fullmatch(r'[0-9a-f]{64}', package['runtime_id']))
             _require_https(package['url'])
         return release
-    except Exception as exc:
+    except (InvalidSignature, ValueError, TypeError, KeyError, UpdateError) as exc:
         raise UpdateError('更新清单签名或内容无效') from exc
 
 
