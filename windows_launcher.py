@@ -29,16 +29,17 @@ def data_root() -> Path:
     return Path(local_app_data) / "AI-Live-Studio"
 
 
-def _runtime_command(command: str, data: Path) -> list[str]:
+def _runtime_command(command: str, data: Path, extra_args: tuple[str, ...] = ()) -> list[str]:
     root = install_root()
     python = root / "runtime" / "python" / "python.exe"
     script = root / "scripts" / "windows-runtime.py"
-    return [str(python), str(script), command, "--data", str(data)]
+    return [str(python), str(script), command, "--data", str(data), *extra_args]
 
 
-def _run_runtime(command: str, data: Path, timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _run_runtime(command: str, data: Path, timeout: float = 30.0,
+                 extra_args: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    args = _runtime_command(command, data)
+    args = _runtime_command(command, data, extra_args)
     try:
         return subprocess.run(
             args,
@@ -87,18 +88,11 @@ def _show_error(title: str, detail: str, parent: tk.Misc | None = None) -> None:
 
 
 def _check_and_maybe_choose(data: Path, parent: tk.Misc) -> bool:
-    result = _run_runtime("check", data)
+    result = _run_runtime("check", data, extra_args=("--allow-missing-models", "--skip-hardware"))
     if result.returncode == 0:
         return True
     payload = _json_output(result)
     errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
-    has_model_error = any("模型" in str(item) or "voices.json" in str(item) for item in errors)
-    if has_model_error and _choose_models(data, parent):
-        result = _run_runtime("check", data)
-        if result.returncode == 0:
-            return True
-        payload = _json_output(result)
-        errors = payload.get("errors") if isinstance(payload.get("errors"), list) else []
     detail = "\n\n".join(str(item) for item in errors)
     if not detail:
         detail = (result.stderr or result.stdout or "启动检查失败").strip()
@@ -113,10 +107,11 @@ def _wait_for_runtime(data: Path, parent: tk.Misc) -> bool:
         result = _run_runtime("status", data, timeout=45)
         payload = _json_output(result)
         health = payload.get("health") if isinstance(payload.get("health"), dict) else {}
-        if all(health.get(name) is True for name in ("ollama", "tts", "cache", "studio", "asr")):
+        processes = payload.get("processes") if isinstance(payload.get("processes"), dict) else {}
+        studio = processes.get("text-studio") if isinstance(processes.get("text-studio"), dict) else {}
+        if health.get("studio") is True and studio.get("owned") is True:
             return True
         last = result.stdout.strip() or result.stderr.strip()
-        processes = payload.get("processes") if isinstance(payload.get("processes"), dict) else {}
         if processes and not any(item.get("running") for item in processes.values() if isinstance(item, dict)):
             break
         time.sleep(0.5)

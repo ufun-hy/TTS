@@ -105,6 +105,58 @@ class OnlineUpdateTests(unittest.TestCase):
             self.assertEqual(self.updater.download(), target)
             opener.assert_not_called()
 
+    def test_complete_verified_partial_is_promoted_without_network(self):
+        self.check()
+        directory = self.updater.data / 'updates/downloads'
+        directory.mkdir(parents=True)
+        partial = directory / (self.updater.package['sha256'] + '.partial')
+        partial.write_bytes(b'abc')
+        with patch('urllib.request.build_opener') as opener:
+            target = self.updater.download()
+        opener.assert_not_called()
+        self.assertEqual(target.read_bytes(), b'abc')
+        self.assertFalse(partial.exists())
+
+    def test_oversized_partial_restarts_from_zero(self):
+        self.check()
+        directory = self.updater.data / 'updates/downloads'
+        directory.mkdir(parents=True)
+        partial = directory / (self.updater.package['sha256'] + '.partial')
+        partial.write_bytes(b'oversized')
+        with patch('urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = Response(b'abc')
+            target = self.updater.download()
+        request = opener.return_value.open.call_args.args[0]
+        self.assertIsNone(request.get_header('Range'))
+        self.assertEqual(target.read_bytes(), b'abc')
+
+    def test_bad_response_does_not_modify_verified_target(self):
+        self.check()
+        directory = self.updater.data / 'updates/downloads'
+        directory.mkdir(parents=True)
+        target = directory / (self.updater.package['sha256'] + '.zip')
+        target.write_bytes(b'abc')
+        (directory / (self.updater.package['sha256'] + '.partial')).write_bytes(b'oversized')
+        with patch('urllib.request.build_opener') as opener:
+            self.assertEqual(self.updater.download(), target)
+        opener.assert_not_called()
+        self.assertEqual(target.read_bytes(), b'abc')
+
+    def test_range_response_cannot_extend_past_manifest_size(self):
+        self.check()
+        directory = self.updater.data / 'updates/downloads'
+        directory.mkdir(parents=True)
+        partial = directory / (self.updater.package['sha256'] + '.partial')
+        partial.write_bytes(b'a')
+        response = Response(b'bcd')
+        response.status = 206
+        response.headers = {'Content-Range': 'bytes 1-2/3'}
+        with patch('urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = response
+            with self.assertRaisesRegex(UpdateError, '超过清单大小'):
+                self.updater.download()
+        self.assertEqual(partial.read_bytes(), b'a')
+
     def test_server_ignores_range_restarts_instead_of_appending(self):
         self.check()
         directory=self.updater.data/'updates/downloads'; directory.mkdir(parents=True)

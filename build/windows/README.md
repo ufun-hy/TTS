@@ -108,9 +108,9 @@ Windows workflow 同时运行 Runtime 回归、WinMM 测试、完整运行时组
 嵌入式 Python 也直接安装 cryptography，版本由 `python-constraints.txt` 锁定。
 PyInstaller 输出写入本次构建的独立临时目录，退出码和 exe 存在性均检查通过后才打包，
 不复用旧的 dist 产物。运行时 smoke test 使用实际嵌入式 Python 完成 Ed25519 签名和验签。
-完整安装构建还生成独立的单文件 Bootstrap；它只带更新公钥和 HTTPS 清单地址，不包含 COS
-密钥。`build/windows/prepare_cos_release.py` 将同提交的补丁、完整安装器、Bootstrap 和独立
-模型文件签名并组装成本地上传目录，不执行 COS 上传。
+完整安装构建还生成独立的单文件 Bootstrap；它只带程序更新公钥和 HTTPS 清单地址，不包含 COS
+密钥，也不读取模型下载源。`build/windows/prepare_cos_release.py` 可把完整安装器、Bootstrap
+和签名清单组装成本地上传目录；补丁和未来模型清单可选，不执行 COS 上传。
 
 补丁清单允许根目录 `desktop_shell.py`；`local_runtime/online_update.py` 和
 `local_runtime/update_window.py` 由现有 local_runtime 目录规则覆盖，并通过打包清单测试校验。

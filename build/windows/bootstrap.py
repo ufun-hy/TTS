@@ -11,6 +11,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import time
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[2]))
 LOCAL = Path(os.environ.get('LOCALAPPDATA') or Path.home() / 'AppData/Local')
@@ -19,7 +20,7 @@ DOWNLOADS = LOCAL / 'AI-Live-Studio-Setup'
 DEFAULT_MODELS = Path(os.environ.get('AI_LIVE_STUDIO_MODELS') or LOCAL / 'AI-Live-Studio-Models')
 
 sys.path.insert(0, str(ROOT))
-from local_runtime.model_install import ModelInstaller, set_models_directory
+from local_runtime.model_install import inspect_local_models, set_models_directory
 from local_runtime.online_update import OnlineUpdater, ensure_idle, file_hash
 
 
@@ -40,6 +41,10 @@ def default_models():
     return DEFAULT_MODELS.expanduser()
 
 
+def installed_app():
+    return Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'AI Live Studio'
+
+
 class Bootstrap:
     def __init__(self, root):
         self.root = root
@@ -49,11 +54,13 @@ class Bootstrap:
         self.events = queue.Queue()
         self.busy = False
         self.updater = None
-        self.models = None
+        self.model_status = None
+        self.checked_model_dir = None
+        self.program_installed = False
         self.stage = None
 
         ttk.Label(root, text='AI Live Studio', font=('', 18, 'bold')).pack(padx=20, pady=(18, 4), anchor='w')
-        self.status = tk.StringVar(value='检查签名安装清单后下载程序与默认模型。')
+        self.status = tk.StringVar(value='检查签名程序清单。模型由用户自行复制。')
         ttk.Label(root, textvariable=self.status, wraplength=550).pack(padx=20, pady=8, anchor='w')
         row = ttk.Frame(root)
         row.pack(fill='x', padx=20, pady=4)
@@ -111,30 +118,28 @@ class Bootstrap:
                 self.bootstrap_url = signed_bootstrap.get('url', '') if signed_bootstrap else ''
             else:
                 self.bootstrap_matches, self.bootstrap_url = True, ''
-            self.models = ModelInstaller(model_dir, DOWNLOADS,
-                                         ROOT / 'config/model-source.json')
-            model_manifest = self.models.check()
-            state = self.models.status()
+            self.model_status = inspect_local_models(model_dir, installed_app())
+            self.checked_model_dir = Path(model_dir).expanduser().resolve()
             _log(f'CHECK app={release["version"]} commit={release["commit"]} '
                  f'installer_sha256={self.updater.package["sha256"]} '
-                 f'model={model_manifest["version"]} model_sequence={model_manifest["sequence"]}')
-            return release, state
+                 f'local_tts_ready={self.model_status["tts"]["ready"]}')
+            return release, self.model_status
         self.run(action, 'checked')
 
     def install(self):
         model_dir = Path(self.model_path.get()).expanduser().resolve()
-        if not self.models or self.models.models_dir.resolve() != model_dir:
-            messagebox.showinfo('重新检查模型目录', '模型目录已更改，请先重新检查版本。', parent=self.root)
+        if self.checked_model_dir != model_dir:
+            messagebox.showinfo('重新检查安装包', '模型目录已更改，请先重新检查。', parent=self.root)
             self.check()
             return
         if not messagebox.askokcancel('安装 AI Live Studio',
-                '安装程序会请求 Windows 管理员权限。请先结束其他 AI Live Studio 任务。\n\n'
-                '下载会校验签名清单、文件大小和 SHA256。', parent=self.root):
+                '此步骤只安装程序和运行环境，不下载模型。\n\n'
+                '安装程序会请求 Windows 管理员权限，并校验签名清单、大小和 SHA256。', parent=self.root):
             return
         def action():
-            installed_app = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'AI Live Studio'
-            if (installed_app / 'scripts/windows-runtime.py').is_file():
-                ensure_idle(installed_app, DATA)
+            app_dir = installed_app()
+            if (app_dir / 'scripts/windows-runtime.py').is_file():
+                ensure_idle(app_dir, DATA)
             package = self.updater.package
             archive = self.updater.download(lambda done, total: self.events.put(('progress', done * 100 / total)))
             self.stage = self.updater.unpack(archive)
@@ -148,13 +153,43 @@ class Bootstrap:
             code = process.wait()
             if code != 0:
                 raise RuntimeError(f'完整安装器退出码为 {code}；可重新运行引导程序继续。')
-            result = self.models.install(
-                lambda done, total: self.events.put(('progress', done * 100 / total)))
+            self.program_installed = True
             set_models_directory(DATA, model_dir)
-            _log(f'INSTALLED model={result["version"]} files={result["installed"]} '
-                 f'reused={result["reused"]} manifest_sha256={result["manifest_sha256"]}')
-            return result
+            self.model_status = inspect_local_models(model_dir, app_dir)
+            _log(f'PROGRAM_INSTALLED app={self.updater.release["version"]} '
+                 f'local_tts_ready={self.model_status["tts"]["ready"]}')
+            return {'app_dir': app_dir, 'model_status': self.model_status}
         self.run(action, 'installed')
+
+    def open_workspace(self):
+        app_exe = installed_app() / 'AI-Live-Studio.exe'
+        if not app_exe.is_file():
+            messagebox.showerror('程序未安装', f'找不到客户端：{app_exe}', parent=self.root)
+            return
+        def action():
+            subprocess.Popen([str(app_exe)], cwd=str(app_exe.parent))
+            python = app_exe.parent / 'runtime/python/python.exe'
+            status_script = app_exe.parent / 'scripts/windows-runtime.py'
+            deadline = time.monotonic() + 180
+            last_error = ''
+            while time.monotonic() < deadline:
+                try:
+                    result = subprocess.run(
+                        [str(python), str(status_script), 'status', '--data', str(DATA)],
+                        capture_output=True, text=True, timeout=15,
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    payload = json.loads(result.stdout)
+                    health = payload.get('health') if isinstance(payload.get('health'), dict) else {}
+                    processes = payload.get('processes') if isinstance(payload.get('processes'), dict) else {}
+                    studio = processes.get('text-studio') if isinstance(processes.get('text-studio'), dict) else {}
+                    if result.returncode == 0 and health.get('studio') is True and studio.get('owned') is True:
+                        return True
+                    last_error = '基础工作台尚未由 AI Live Studio Runtime 提供'
+                except Exception as exc:
+                    last_error = str(exc)
+                time.sleep(0.5)
+            raise RuntimeError(f'程序已安装，但基础工作台未能启动：{last_error}')
+        self.run(action, 'workbench')
 
     def _details(self, value):
         self.details.configure(state='normal')
@@ -173,25 +208,41 @@ class Bootstrap:
                 elif kind == 'checked':
                     release, model = value
                     package = self.updater.package
-                    self.status.set(f'可安装版本 {release["version"]} · 模型 {model["version"]}')
+                    self.status.set(f'可安装程序版本 {release["version"]}')
                     self._details(
                         f'提交：{release["commit"]}\n'
                         f'安装包：{package["size"] / 1024**3:.2f} GiB · SHA256 {package["sha256"]}\n'
-                        f'模型文件：{len(self.models.manifest["files"])} 项，'
-                        f'复用 {len(model["reused"])} 项，需下载/更新 {len(model["missing"])+len(model["changed"])} 项。\n'
-                        f'模型清单 SHA256：{self.models.envelope_hash}\n'
+                        f'程序安装：待安装\n基础工作台：安装后启动检查\n'
+                        f'本地 CosyVoice3：{"就绪" if model["tts"]["ready"] else "未就绪"}\n'
+                        f'本地 ASR：{"就绪" if model["asr"]["ready"] else "未就绪"}；'
+                        f'本地 Ollama 模型：{"就绪" if model["llm"]["ready"] else "未就绪"}\n'
                         f'Bootstrap 与当前清单匹配：{"是" if self.bootstrap_matches else "否；当前版本下载地址：" + self.bootstrap_url}')
-                    self.button.configure(text='下载并安装', command=self.install, state='normal')
+                    self.button.configure(text='安装程序', command=self.install, state='normal')
                 elif kind == 'installed':
-                    self.status.set('安装完成，已创建桌面快捷方式。')
-                    self._details(f'默认模型已就绪。模型目录：{self.model_path.get()}\n\n日志：{DOWNLOADS / "bootstrap.log"}')
-                    self.button.configure(text='关闭', command=self.close, state='normal')
-                    messagebox.showinfo('安装完成', 'AI Live Studio 与默认模型已安装。\n请从桌面快捷方式启动。', parent=self.root)
+                    model = value['model_status']
+                    self.status.set('程序安装：完成；基础工作台：尚未启动。')
+                    self._details(
+                        f'程序安装：完成，桌面快捷方式已创建。\n基础工作台：点击下方按钮启动并检查。\n'
+                        f'本地 CosyVoice3：{"就绪" if model["tts"]["ready"] else "未就绪"}\n'
+                        f'本地 ASR：{"就绪" if model["asr"]["ready"] else "未就绪"}\n'
+                        f'本地 Ollama 模型：{"就绪" if model["llm"]["ready"] else "未就绪"}\n'
+                        f'模型目录：{self.model_path.get()}\n日志：{DOWNLOADS / "bootstrap.log"}')
+                    self.button.configure(text='打开基础工作台', command=self.open_workspace, state='normal')
+                elif kind == 'workbench':
+                    self.status.set('程序安装：完成；基础工作台：可用。')
+                    self._details(self.details.get('1.0', 'end').rstrip() + '\n基础工作台：可用')
+                    self.button.configure(text='重新打开工作台', command=self.open_workspace, state='normal')
+                    messagebox.showinfo('基础工作台已启动',
+                                        '程序安装完成，基础工作台可用。本地模型状态见窗口详情。', parent=self.root)
                 elif kind == 'error':
-                    self.status.set('操作未完成；可查看日志并重新运行。')
-                    self.button.configure(text='重试检查', command=self.check, state='normal')
+                    if self.program_installed:
+                        self.status.set('程序安装：完成；基础工作台：未启动。')
+                        self.button.configure(text='重试打开工作台', command=self.open_workspace, state='normal')
+                    else:
+                        self.status.set('程序安装：未完成；可查看日志并重试。')
+                        self.button.configure(text='重试检查', command=self.check, state='normal')
                     self._details(f'{value}\n\n日志：{DOWNLOADS / "bootstrap.log"}')
-                    messagebox.showerror('安装失败', value, parent=self.root)
+                    messagebox.showerror('操作未完成', value, parent=self.root)
         except queue.Empty:
             pass
         self.root.after(100, self.poll)

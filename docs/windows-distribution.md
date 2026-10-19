@@ -2,10 +2,11 @@
 
 ## 新电脑：轻量引导安装
 
-发布者配置 HTTPS 下载域名、公钥、签名清单和默认模型目录后，可从该域名下载
-`AI-Live-Studio-Bootstrap.exe`。运行后检查版本，选择模型目录并点击 **下载并安装**；引导程序
-会下载完整应用包及模型，完成校验和安装，并创建 AI Live Studio 桌面快捷方式。当前仓库尚未
-配置真实发布源或模型文件，因此此入口的代码可构建，但还不能用于正式新机安装。
+发布者配置 HTTPS 下载域名、公钥和签名程序清单后，可从该域名下载
+`AI-Live-Studio-Bootstrap.exe`。运行后检查版本、安装程序和固定 Runtime，并创建 AI Live Studio
+桌面快捷方式。Bootstrap 不检查模型清单，也不下载模型。模型由用户复制到本机，再通过
+**Check Local Models** 检查或选择目录。当前仓库尚未配置真实程序发布源，因此此入口的代码可构建，
+但还不能用于正式新机安装。
 
 ## 备用方式：手动安装完整包
 
@@ -142,19 +143,18 @@ ZIP 解压拒绝越界路径和超限内容。临时文件、备份均保留，�
 本地签名入口 `build/windows/sign_release.py --help`。私钥放仓库外，只由发布者提供；
 工具不会自动生成生产密钥。
 
-## 首次安装引导与独立模型更新（1.2.0 技术实现）
+## 首次安装引导与本地模型（V1）
 
 完整包构建同时生成单文件 `AI-Live-Studio-Bootstrap.exe`。新电脑运行它后，Bootstrap
-读取签名的 `latest.json`，只选择完整安装包；程序 ZIP 与模型文件均使用清单中的版本、HTTPS
-地址、大小和 SHA256。Bootstrap 与已安装客户端共用 `local_runtime/online_update.py` 的
-Ed25519、HTTPS 重定向限制、Range 续传、哈希校验及安全解压代码。Bootstrap 不包含 COS 密钥。
+读取签名的 `latest.json` 并选择完整安装包；程序包使用清单中的版本、HTTPS 地址、大小和 SHA256。
+Bootstrap 与已安装客户端共用 `local_runtime/online_update.py` 的 Ed25519、HTTPS 重定向限制、
+Range 续传、哈希校验及安全解压代码。首次安装不要求模型清单或模型下载域名，Bootstrap 不包含
+COS 密钥。
 
-模型使用独立签名清单和单调递增序号，模型发布不要求应用代码升级。安装器会校验每个文件，
-哈希相同的文件直接复用；文件与已保存的上个受管版本不一致时拒绝覆盖。模型状态文件位于
-模型目录的 `.ai-live-studio-models.json`；断点下载保留在模型目录的 `.downloads/`，校验后移动到
-目标位置，避免在系统盘额外保存一份大模型。安装结束后，Bootstrap 将所选目录写入用户配置，
-并由 Inno Setup 创建桌面和开始菜单快捷方式。开始菜单另有 **Check for Model Updates**；
-它与程序更新分开运行。
+Bootstrap 可记住用户选择的模型目录，并仅在本机检查文件是否齐备。CosyVoice3、ASR 和 Ollama
+模型均由用户手动复制；目录切换后重启 Runtime 才会加载新路径。无模型时仍可启动基础工作台，
+Text Studio、ASR 与 TTS 的状态会按实际服务和本地模型情况报告不可用。程序安装、基础工作台可用、
+本地模型就绪分别显示。
 
 模型源目录必须具有以下布局：
 
@@ -168,51 +168,48 @@ llm/ollama-store/blobs/
 llm/ollama-store/manifests/
 ```
 
-`build/windows/sign_models.py` 只签发上述必需模型内容，不把目录中的其他文件带入发布包；
-不会发布历史缓存、日志、PID、用户项目、机器绑定的 DPAPI 密钥或其他配置。清单内每个模型
-路径都拒绝越界、Windows 保留名和重复路径。
+`build/windows/sign_models.py` 与签名模型清单模块保留为后续扩展接口，V1 不运行它们、不下载模型。
+手动模型检查不会改写、搬迁或删除模型、缓存、日志、PID、用户项目、自定义音色或机器绑定的 DPAPI
+密钥。
 
 ### 准备 COS 上传目录
 
 先将 `config/update-source.json` 的 `manifest_url` 设为
-`https://<下载域名>/ai-live-studio/windows/latest.json`；将 `config/model-source.json` 的
-`manifest_url` 设为同前缀下的 `models/default/latest.json`。两个文件的 Ed25519 Base64 公钥
-必须相同。然后构建同一提交的补丁、完整安装包和 Bootstrap，并准备完整模型目录。用发布私钥在
-本地运行：
+`https://<下载域名>/ai-live-studio/windows/latest.json`，并填写 Ed25519 Base64 公钥。然后构建
+同一提交的完整安装包和 Bootstrap。用发布私钥在本地运行：
 
 ```powershell
 python build/windows/prepare_cos_release.py `
   --key D:\release-secrets\windows-ed25519.pem `
-  --patch D:\artifacts\AI-Live-Studio-Windows-Patch.zip `
   --installer-dir D:\artifacts\AI-Live-Studio-Windows-Test-Setup `
-  --models-dir D:\release-models\AI-Live-Studio-Models `
-  --model-version 2026.10.1 --model-sequence 1 `
   --base-url https://<下载域名>/ai-live-studio/windows `
   --notes D:\release\notes.txt --output D:\release\cos-stage
 ```
 
-输出 `cos-stage/windows/` 的固定结构为：
+如需同时发布兼容小补丁，可额外传入 `--patch D:\artifacts\AI-Live-Studio-Windows-Patch.zip`。
+
+V1 输出 `cos-stage/windows/` 只包含程序包和更新清单：
 
 ```text
 latest.json
 AI-Live-Studio-Bootstrap.exe
 releases/<app-version>/<commit>/<sha256>-<artifact>
-models/default/latest.json
-models/default/<model-version>/<model-relative-path>
 ```
 
 命令只准备本地文件并签名，不连接 COS、不上传、不清理输出目录；`--output` 必须是尚不存在的
 目录。将 `windows/` 上传到与 `--base-url` 对应的 COS 前缀，先上传带哈希的不可变文件，最后
-更新两个 `latest.json`。私钥始终留在发布机/密钥保管服务；COS 对象可公开读取，不需要把长期
-密钥放进 Bootstrap、应用、模型清单或更新 URL。
+更新 `latest.json`。`--models-dir`、`--model-version` 和 `--model-sequence` 是可选的未来扩展参数；
+V1 不应提供它们。私钥始终留在发布机/密钥保管服务；COS 对象可公开读取，不需要把长期密钥放进
+Bootstrap、应用、模型清单或更新 URL。
 
-程序和模型更新均在写入前通过本机状态检查；直播、生成、播放（含独立播放队列）、录音或模型
-仍活动/状态不明时会拒绝继续，不会强制杀进程。版本、提交、包大小、SHA256、检查结果及错误
-会记录在 `%LOCALAPPDATA%\AI-Live-Studio\updates\update-history.jsonl`；首次 Bootstrap 另记在
+程序更新在写入前通过本机状态检查；直播、生成、播放（含独立播放队列）或录音任务仍活动或状态不明
+时会拒绝继续，不会强制杀进程。模型目录切换只保存用户选择，Runtime 重启后加载，不搬动模型文件。
+版本、提交、包大小、SHA256、检查结果及错误会记录在
+`%LOCALAPPDATA%\AI-Live-Studio\updates\update-history.jsonl`；首次 Bootstrap 另记在
 `%LOCALAPPDATA%\AI-Live-Studio-Setup\bootstrap.log` 和
 `%LOCALAPPDATA%\AI-Live-Studio-Setup\updates\update-history.jsonl`。
 
-**尚未具备正式发布条件：**仓库尚无真实下载域名、公钥/发布私钥或可发布的默认模型目录；本轮
-没有上传 COS，也没有 Windows 新机、显卡、声卡端到端测试。取得下载域名和模型资产后，需配置
-两份 source JSON、构建清单指定的版本、执行 Windows 新机验收，再发布给用户。这里的代码和
+**尚未具备正式发布条件：**仓库尚无真实下载域名、公钥或已配置的发布私钥；本轮
+没有上传 COS，也没有 Windows 新机、显卡、声卡端到端测试。取得下载域名和发布公钥后，需配置
+程序 source JSON、构建清单指定的版本、执行 Windows 新机验收，再发布给用户。这里的代码和
 发布目录生成器不代表安装器已正式发布。

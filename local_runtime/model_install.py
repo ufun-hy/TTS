@@ -11,6 +11,67 @@ from .online_update import append_history, download_artifact, file_hash, verify_
 from .update import UpdateError, _open_https, _require_https
 
 
+def inspect_local_models(models_dir, app_dir=None):
+    """Report local model readiness without requiring a network manifest."""
+    models = Path(models_dir).expanduser()
+    app = Path(app_dir) if app_dir else models
+    result = {}
+
+    asr = models / 'asr' / 'Qwen3-ASR-1.7B'
+    asr_errors = []
+    if not asr.is_dir():
+        asr_errors.append(f'Qwen3-ASR-1.7B 未找到：{asr}')
+    else:
+        try:
+            config = json.loads((asr / 'config.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            config = {}
+        if (config.get('model_type') != 'qwen3_asr'
+                or any(not (asr / name).is_file() for name in
+                       ('config.json', 'preprocessor_config.json', 'tokenizer_config.json'))
+                or not any(asr.glob('*.safetensors'))):
+            asr_errors.append(f'Qwen3-ASR-1.7B 文件不完整：{asr}')
+    result['asr'] = {'ready': not asr_errors, 'errors': asr_errors}
+
+    tts = models / 'tts'
+    tts_errors = []
+    if not (tts / 'CosyVoice3-2512_Q8_0.gguf').is_file():
+        tts_errors.append(f'CosyVoice3 Q8 模型未找到：{tts / "CosyVoice3-2512_Q8_0.gguf"}')
+    voices_path = tts / 'voices.json'
+    try:
+        voices = json.loads(voices_path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        voices = None
+        tts_errors.append(f'voices.json 未找到：{voices_path}')
+    except (OSError, ValueError):
+        voices = None
+        tts_errors.append(f'voices.json 无法读取：{voices_path}')
+    if voices is not None:
+        if not isinstance(voices, dict) or 'default' not in voices:
+            tts_errors.append('voices.json 缺少 default 音色')
+        elif isinstance(voices, dict):
+            for voice_id, entry in voices.items():
+                prompt = entry.get('prompt_speech') if isinstance(entry, dict) else ''
+                if (not isinstance(voice_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', voice_id)
+                        or not isinstance(prompt, str) or not prompt):
+                    tts_errors.append(f'音色配置无效：{voice_id}')
+                    continue
+                prompt_path = Path(prompt).expanduser()
+                candidates = ([prompt_path] if prompt_path.is_absolute()
+                              else [app / prompt_path, voices_path.parent / prompt_path])
+                if not any(path.is_file() for path in candidates):
+                    tts_errors.append(f'音色 {voice_id} 的 prompt_speech 未找到：{candidates[-1]}')
+    result['tts'] = {'ready': not tts_errors, 'errors': tts_errors}
+
+    manifests = models / 'llm' / 'ollama-store' / 'manifests'
+    modelfile = models / 'llm' / 'Modelfile'
+    llm_errors = []
+    if not modelfile.is_file() or not any(path.is_file() for path in manifests.rglob('*')):
+        llm_errors.append(f'Qwen3 8B / Ollama 模型未找到或不完整：{modelfile}、{manifests}')
+    result['llm'] = {'ready': not llm_errors, 'errors': llm_errors}
+    return result
+
+
 def _safe_model_path(value):
     path = PurePosixPath(value) if isinstance(value, str) else PurePosixPath('/')
     reserved = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)),

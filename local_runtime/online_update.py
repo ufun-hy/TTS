@@ -95,12 +95,22 @@ def download_artifact(package, directory, progress=lambda done, total: None, suf
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / (digest + suffix)
-    if target.exists() and file_hash(target) == digest:
+    if target.is_symlink():
+        raise UpdateError('下载目标不能是符号链接。')
+    if target.is_file() and file_hash(target) == digest:
         progress(size, size)
         return target
     partial = target.with_suffix('.partial')
-    offset = partial.stat().st_size if partial.exists() else 0
+    if partial.is_symlink():
+        raise UpdateError('临时下载文件不能是符号链接。')
+    offset = partial.stat().st_size if partial.is_file() else 0
+    if offset == size and file_hash(partial) == digest:
+        partial.replace(target)
+        progress(size, size)
+        return target
     if offset >= size:
+        with partial.open('wb'):
+            pass
         offset = 0
     from urllib.request import Request, build_opener
     from .update import _HTTPSRedirectHandler
@@ -116,10 +126,10 @@ def download_artifact(package, directory, progress=lambda done, total: None, suf
             raise UpdateError(f'下载失败：HTTP {response.status}')
         with partial.open('ab' if offset else 'wb') as output:
             for block in iter(lambda: response.read(1024 * 1024), b''):
-                offset += len(block)
-                if offset > size:
+                if len(block) > size - offset:
                     raise UpdateError('下载内容超过清单大小')
                 output.write(block)
+                offset += len(block)
                 progress(offset, size)
     if offset != size or file_hash(partial) != digest:
         raise UpdateError('下载不完整或 SHA256 不匹配；可重试下载')

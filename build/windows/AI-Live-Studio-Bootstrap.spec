@@ -8,7 +8,6 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(ROOT / 'config/update-source.json'), 'config'),
-        (str(ROOT / 'config/model-source.json'), 'config'),
     ],
     hiddenimports=['cryptography.hazmat.primitives.asymmetric.ed25519'],
     hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[], noarchive=False,

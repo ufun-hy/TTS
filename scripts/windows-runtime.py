@@ -23,6 +23,7 @@ from urllib import error, request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from local_runtime.file_lease import _pid_alive
+from local_runtime.model_install import inspect_local_models
 
 DEFAULT_DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "AI-Live-Studio"
 DEFAULT_MODELS = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", "D:/AI-Live-Studio-Models"))
@@ -437,11 +438,22 @@ def _health_probe(service: str, url: str, timeout: float = 1.5) -> dict[str, obj
     try:
         opener = request.build_opener(request.ProxyHandler({}))
         with opener.open(request.Request(url, headers={"Cache-Control": "no-cache"}), timeout=timeout) as response:
-            detail.update({"ok": response.status == 200, "status": response.status})
+            if response.status != 200:
+                detail["status"] = response.status
+                return detail
+            body = json.load(response)
+            ready = True
+            if service == "recording-transcript":
+                ready = ready and body.get("asr_ready") is True
+                if not body.get("asr_ready"):
+                    detail["error"] = body.get("asr_error", "ASR 模型不可用")
+            elif service == "tts-gateway":
+                ready = ready and body.get("status") == "ok"
+            detail.update({"ok": ready, "status": response.status})
             return detail
     except error.HTTPError as exc:
         detail.update({"status": exc.code, "exception_class": type(exc).__name__, "error": str(exc)})
-    except (OSError, error.URLError, TimeoutError) as exc:
+    except (OSError, ValueError, error.URLError, TimeoutError) as exc:
         detail.update({"exception_class": type(exc).__name__, "error": str(exc) or repr(exc)})
     return detail
 
@@ -464,13 +476,13 @@ def _port_available(port: int) -> bool:
         sock.close()
 
 
-def _model_errors(models: Path, bin_dir: Path) -> list[str]:
+def _model_errors(models: Path, bin_dir: Path, check_models: bool = True) -> list[str]:
     errors: list[str] = []
     asr = models / "asr" / "Qwen3-ASR-1.7B"
     asr_config = asr / "config.json"
-    if not asr.is_dir():
+    if check_models and not asr.is_dir():
         errors.append(f"Qwen3-ASR-1.7B 未找到\n请将模型放到：{asr}")
-    else:
+    elif check_models:
         try:
             config = json.loads(asr_config.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, ValueError):
@@ -484,11 +496,11 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
     tts = models / "tts"
     tts_model = tts / "CosyVoice3-2512_Q8_0.gguf"
     voices = tts / "voices.json"
-    if not tts_model.is_file():
+    if check_models and not tts_model.is_file():
         errors.append(f"CosyVoice3 Q8 模型未找到\n请将模型放到：{tts_model}")
-    if not voices.is_file():
+    if check_models and not voices.is_file():
         errors.append(f"voices.json 未找到\n请将音色配置放到：{voices}")
-    else:
+    elif check_models:
         try:
             voice_config = json.loads(voices.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -507,7 +519,7 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
     modelfile = models / "llm" / "Modelfile"
     ollama_store = models / "llm" / "ollama-store"
     manifests = ollama_store / "manifests"
-    if not modelfile.is_file() or not any(path.is_file() for path in manifests.rglob("*")):
+    if check_models and (not modelfile.is_file() or not any(path.is_file() for path in manifests.rglob("*"))):
         errors.append(
             "Qwen3 8B / Ollama 模型未找到或不完整\n"
             f"请确认存在：{modelfile}\n并先执行 Ollama import 生成：{ollama_store}"
@@ -537,8 +549,9 @@ def _model_errors(models: Path, bin_dir: Path) -> list[str]:
     return errors
 
 
-def startup_errors(models: Path, data: Path, python: Path, bin_dir: Path, check_hardware: bool = True) -> list[str]:
-    errors = _model_errors(models, bin_dir)
+def startup_errors(models: Path, data: Path, python: Path, bin_dir: Path, check_hardware: bool = True,
+                   check_models: bool = True) -> list[str]:
+    errors = _model_errors(models, bin_dir, check_models=check_models)
     if check_hardware and os.name == "nt":
         nvidia_smi = shutil.which("nvidia-smi")
         if not nvidia_smi:
@@ -607,7 +620,7 @@ def start(args: argparse.Namespace) -> int:
     bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
     entries = commands(models, data, python, bin_dir)
     if not args.dry_run:
-        errors = startup_errors(models, data, python, bin_dir)
+        errors = startup_errors(models, data, python, bin_dir, check_hardware=False, check_models=False)
         if errors:
             print("无法启动 AI Live Studio：\n\n" + "\n\n".join(errors), file=sys.stderr)
             return 1
@@ -769,6 +782,7 @@ def status(args: argparse.Namespace) -> int:
         "processes": processes,
         "health": {name: bool(detail["ok"]) for name, detail in health_details.items()},
         "health_details": health_details,
+        "models": inspect_local_models(_configured_models(data), ROOT),
         "listeners": listeners,
         "issues": issues,
     }, ensure_ascii=False, indent=2))
@@ -780,10 +794,17 @@ def check(args: argparse.Namespace) -> int:
     models = _configured_models(data, args.models)
     python = Path(args.python or sys.executable).expanduser()
     bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
-    errors = startup_errors(models, data, python, bin_dir, check_hardware=not args.dry_run)
+    check_hardware = not args.dry_run and not args.skip_hardware
+    errors = startup_errors(models, data, python, bin_dir, check_hardware=check_hardware,
+                            check_models=not args.allow_missing_models)
+    full_errors = _model_errors(models, bin_dir, check_models=True)
+    app_errors = _model_errors(models, bin_dir, check_models=False)
+    model_errors = [error for error in full_errors if error not in app_errors]
     print(json.dumps({
         "ok": not errors,
         "models": str(models),
+        "model_status": inspect_local_models(models, ROOT),
+        "model_errors": model_errors,
         "data": str(data),
         "errors": errors,
         "ports": list(RUNTIME_PORTS),
@@ -795,7 +816,7 @@ def import_llm(args: argparse.Namespace) -> int:
     if os.name != "nt" and not args.dry_run:
         print("windows-runtime.py must run on Windows; use --dry-run here", file=sys.stderr)
         return 2
-    models = Path(args.models).expanduser()
+    models = _configured_models(Path(getattr(args, "data", DEFAULT_DATA)).expanduser(), args.models)
     bin_dir = Path(args.bin_dir or ROOT / "runtime" / "bin").expanduser()
     ollama_dir = _component_dirs(bin_dir)["ollama"]
     ollama = ollama_dir / ("ollama.exe" if os.name == "nt" else "ollama")
@@ -817,10 +838,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("check", "start", "stop", "status", "import-llm"))
     parser.add_argument("--data", default=str(DEFAULT_DATA))
-    parser.add_argument("--models", default=str(DEFAULT_MODELS))
+    parser.add_argument("--models", default="")
     parser.add_argument("--python", default="")
     parser.add_argument("--bin-dir", default="")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--allow-missing-models", action="store_true")
+    parser.add_argument("--skip-hardware", action="store_true")
     args = parser.parse_args()
     return {"check": check, "start": start, "stop": stop, "status": status, "import-llm": import_llm}[args.command](args)
 

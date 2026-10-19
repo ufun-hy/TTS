@@ -38,6 +38,7 @@ try:
 except ImportError:
     from text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 from local_runtime import RuntimeBusyError, RuntimeManager, RuntimeStage, UpdateError, UpdateManager
+from local_runtime.model_install import inspect_local_models
 from local_runtime.settings import SecretStoreError, load_settings, save_settings, secret_store
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -123,11 +124,15 @@ def _validate_model_result(raw: Any, expected_ids: list[str]) -> list[dict[str, 
 def provider_available(provider: str, root: Path | None = None) -> bool:
     root = root or Path.cwd()
     if provider == "ollama":
-        try:
-            with urllib.request.urlopen(provider_config("ollama", root)["base_url"].rstrip("/") + "/api/tags", timeout=1) as response:
-                return response.status == 200
-        except (OSError, ValueError, urllib.error.URLError):
-            return False
+        config = provider_config("ollama", root)
+        if os.environ.get("WINDOWS_SINGLE_MACHINE") != "1":
+            try:
+                with urllib.request.urlopen(config["base_url"].rstrip("/") + "/api/tags", timeout=1) as response:
+                    return response.status == 200
+            except (OSError, ValueError, urllib.error.URLError):
+                return False
+        status = list_ollama_models(root, timeout=1)
+        return bool(config["model"] and status.get("default_model"))
     if provider == "openai_compatible":
         config = provider_config(provider, root)
         return bool(config["base_url"] and config["model"] and config["api_key"])
@@ -602,6 +607,16 @@ def _tts_health(gateway_url: str) -> bool:
         return False
 
 
+def _asr_health() -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8771/api/health", timeout=1) as response:
+            body = json.load(response)
+        ready = response.status == 200 and body.get("asr_ready") is True
+        return {"ready": ready, "error": body.get("asr_error", "")}
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        return {"ready": False, "error": str(exc)}
+
+
 def _tts_preview(text: str, voice: str, gateway_url: str) -> bytes:
     key = _read_keychain_api_key()
     if not key:
@@ -661,6 +676,8 @@ def _tts_runtime_status(gateway_url: str) -> dict[str, Any]:
 
 
 def _dependency_status(root: Path, gateway_url: str) -> dict[str, Any]:
+    single_machine = os.environ.get("WINDOWS_SINGLE_MACHINE") == "1"
+    models_dir = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", r"D:\AI-Live-Studio-Models"))
     return {
         "default_provider": "ollama" if sys.platform == "win32" else "codex",
         "providers": {
@@ -675,6 +692,8 @@ def _dependency_status(root: Path, gateway_url: str) -> dict[str, Any]:
             "ready": _tts_health(gateway_url),
             "gateway_url": gateway_url,
         },
+        "asr": _asr_health() if single_machine else None,
+        "local_models": inspect_local_models(models_dir, root) if single_machine else {},
     }
 
 

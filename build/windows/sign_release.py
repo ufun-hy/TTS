@@ -31,8 +31,8 @@ def archive_files(bundle):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--key', type=Path, required=True, help='External Ed25519 PEM private key')
-    parser.add_argument('--patch', type=Path, required=True)
-    parser.add_argument('--patch-url', required=True)
+    parser.add_argument('--patch', type=Path)
+    parser.add_argument('--patch-url')
     parser.add_argument('--installer', type=Path)
     parser.add_argument('--installer-url')
     parser.add_argument('--bootstrap', type=Path)
@@ -40,18 +40,22 @@ def main():
     parser.add_argument('--notes', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
+    if bool(args.patch) != bool(args.patch_url):
+        raise ValueError('Patch ZIP and immutable HTTPS URL must be supplied together')
+    if bool(args.installer) != bool(args.installer_url):
+        raise ValueError('Installer ZIP and immutable HTTPS URL must be supplied together')
+    if not args.patch and not args.installer:
+        raise ValueError('At least one application package is required')
     key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
     if not isinstance(key, Ed25519PrivateKey):
         raise ValueError('An Ed25519 signing key is required')
     packages, manifest = [], None
-    for kind, archive, url, member in [
-        ('patch', args.patch, args.patch_url, 'payload/app-manifest.json'),
-        ('installer', args.installer, args.installer_url, 'app-manifest.json'),
-    ]:
-        if archive is None:
-            continue
-        if not url:
-            raise ValueError('Package download URL is required')
+    artifacts = []
+    if args.patch:
+        artifacts.append(('patch', args.patch, args.patch_url, 'payload/app-manifest.json'))
+    if args.installer:
+        artifacts.append(('installer', args.installer, args.installer_url, 'app-manifest.json'))
+    for kind, archive, url, member in artifacts:
         with zipfile.ZipFile(archive) as bundle:
             current = json.loads(bundle.read(member))
             if kind == 'patch':
@@ -73,9 +77,9 @@ def main():
                     'runtime/runtime-manifest.json', 'runtime/python-lock.txt',
                 }
                 actual = archive_files(bundle)
-                unexpected = actual - allowed
                 binaries = {name for name in actual if re.fullmatch(
                     r'AI-Live-Studio-Windows-Test-Setup-[0-9]+\.bin', name)}
+                unexpected = actual - allowed - binaries
                 if unexpected or not binaries or not allowed.issubset(actual):
                     raise ValueError('Installer archive contains missing or unexpected files')
         if manifest and any(current.get(k) != manifest.get(k) for k in ('commit', 'version', 'release_sequence', 'runtime_id')):

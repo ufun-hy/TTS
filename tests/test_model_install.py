@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from local_runtime.model_install import ModelInstaller, verify_model_manifest
+from local_runtime.model_install import ModelInstaller, inspect_local_models, verify_model_manifest
 from local_runtime.update import UpdateError
 
 _signer_spec = importlib.util.spec_from_file_location(
@@ -58,6 +58,22 @@ class ModelInstallTests(unittest.TestCase):
             self.manifest['files'][0]['path'] = unsafe
             with self.subTest(path=unsafe), self.assertRaises(UpdateError):
                 verify_model_manifest(self.envelope(), self.public)
+
+    def test_local_readiness_is_independent_of_signed_model_source(self):
+        status = inspect_local_models(self.models)
+        self.assertFalse(status['tts']['ready'])
+        self.assertFalse(status['asr']['ready'])
+        self.assertFalse(status['llm']['ready'])
+
+        tts = self.models / 'tts'
+        (tts / 'voices').mkdir(parents=True)
+        (tts / 'CosyVoice3-2512_Q8_0.gguf').write_bytes(b'local tts model')
+        (tts / 'voices/default.gguf').write_bytes(b'local voice prompt')
+        (tts / 'voices.json').write_text(
+            json.dumps({'default': {'prompt_speech': 'voices/default.gguf'}}), encoding='utf-8')
+        status = inspect_local_models(self.models)
+        self.assertTrue(status['tts']['ready'])
+        self.assertFalse(status['asr']['ready'])
 
     def test_verified_existing_model_is_reused_without_download(self):
         target = self.models / 'tts/voices/default.gguf'

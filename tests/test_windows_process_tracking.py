@@ -167,6 +167,20 @@ class HealthProbeTests(unittest.TestCase):
         self.assertEqual(detail["timeout_seconds"], 0.25)
         self.assertIn("timed out", detail["error"])
 
+    def test_asr_http_health_reports_missing_model_as_unavailable(self):
+        response = mock.MagicMock(status=200)
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        response.read.return_value = json.dumps({
+            "asr_ready": False, "asr_error": "Qwen3 model missing",
+        }).encode()
+        with mock.patch.object(launcher.request, "build_opener") as build:
+            build.return_value.open.return_value = response
+            detail = launcher._health_probe(
+                "recording-transcript", "http://127.0.0.1:8771/api/health")
+        self.assertFalse(detail["ok"])
+        self.assertEqual(detail["error"], "Qwen3 model missing")
+
 
 class TextStudioLivenessTests(unittest.TestCase):
     def test_health_is_liveness_only_and_dependencies_are_separate(self):
