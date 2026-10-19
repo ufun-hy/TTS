@@ -130,7 +130,9 @@ class AudioCacheServer(ThreadingHTTPServer):
 
     def session_control(self, session_id: str) -> Dict[str, str]:
         with self._client_state_lock:
-            return {"session_id": session_id, "status": self._session_controls.get(session_id, "running")}
+            # Unknown archived replay sessions must never auto-play after restart.
+            default_status = "stopped" if session_id.startswith("replay_") else "running"
+            return {"session_id": session_id, "status": self._session_controls.get(session_id, default_status)}
 
     def claim_next(self, manager: AudioCacheManager, requested_session: str = "") -> Optional[AudioItem]:
         """Claim only from an active session, or discover the newest one."""
