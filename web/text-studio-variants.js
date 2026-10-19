@@ -59,14 +59,15 @@ const TextStudioVariants = (() => {
     finally { state.generalizing = false; render(); }
   }
 
-  async function generate(group) {
+  async function generate(group, settings = null) {
     const paragraphs = members(group);
     const project = state.paragraphs, before = snapshot(group);
     const start = project.indexOf(paragraphs[0]), end = start + paragraphs.length;
     const request = {
       paragraphs: paragraphs.map(p => ({id: p.id, original_text: p.original_text})),
-      group_id: group.id, revision: group.revision, candidate_count: Number($('candidateCount').value),
-      provider: $('provider').value, model: state.selectedModel, instruction: $('instruction').value,
+      group_id: group.id, revision: group.revision,
+      ...(settings || {candidate_count: Number($('candidateCount').value),
+        provider: $('provider').value, model: state.selectedModel, instruction: $('instruction').value}),
       before: project[start - 1]?.original_text || '', after: project[end]?.original_text || '',
     };
     const result = await api('/api/context/generalize', request);
@@ -92,20 +93,23 @@ const TextStudioVariants = (() => {
 
   async function generateAll() {
     if (state.generalizing) return;
+    const groups = state.contextGroups, project = state.paragraphs;
+    const settings = {candidate_count: Number($('candidateCount').value),
+      provider: $('provider').value, model: state.selectedModel, instruction: $('instruction').value};
     state.generalizing = true;
     render();
     try {
       await TextStudioPreparation.beforeGeneralize();
-      const groups = state.contextGroups;
-      for (const group of groups.filter(g => !g.variants?.length)) {
-        if (state.contextGroups !== groups) break;
-        showMessage(`正在生成上下文组 ${group.id}，每个版本覆盖 ${group.paragraph_ids.length} 个编辑单元…`, 'info');
-        apply(await generate(group));
+      await TextStudioGeneration.run(groups.filter(g => !g.variants?.length), async group => {
+        if (state.contextGroups !== groups || state.paragraphs !== project)
+          throw new Error('项目已切换，已停止派发剩余组。');
+        showMessage(`两组并行泛化：正在生成上下文组 ${group.id}，每个版本覆盖 ${group.paragraph_ids.length} 个编辑单元…`, 'info');
+        apply(await generate(group, settings));
         render();
         await queueSave(true);
-      }
+      });
       showMessage('整组泛化完成。请检查不同版本的连贯性与风险，再开始智播。', 'ok');
-    } catch (e) { showMessage('整组泛化失败：' + e.message + ' 已完成组已保存，可继续。', 'err'); }
+    } catch (e) { showMessage('整组泛化失败：' + e.message + ' 已返回结果保留在当前页面，可继续；保存状态请见页面提示。', 'err'); }
     finally { state.generalizing = false; render(); }
   }
 

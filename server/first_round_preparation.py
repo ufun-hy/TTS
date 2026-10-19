@@ -8,7 +8,8 @@ import re
 import threading
 import time
 
-from server.first_round_plan import build_plan, source_signature
+from server.first_round_plan import build_plan, source_signature, project_inputs, normalized_source
+from server.live_session import LiveSessionError
 from timeline.tts_client import RetryableTTSClientError
 
 
@@ -23,6 +24,8 @@ class FirstRoundPreparation:
         self._working = None
         self._thread = None
         self._closed = False
+        self._projects = {}
+        self._stream = None
 
     def _path(self, project_id):
         if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", project_id):
@@ -58,11 +61,18 @@ class FirstRoundPreparation:
     def update(self, project, activate=False):
         identifier = project["project_id"]
         with self._condition:
+            if activate and self._stream:
+                raise LiveSessionError("直播正在使用音频准备，请使用直播暂停/继续，停止后可切换项目。")
+            self._projects[identifier] = copy.deepcopy(project)
             old = self._load(identifier)
             if old is None and not activate:
                 return self.status(identifier)
             try:
+                if self._stream and self._stream.project_id == identifier:
+                    project = self._stream.project_for_plan(project)
                 plan = build_plan(project, self.fingerprint(project.get("voice", "default")), old)
+                if self._stream and self._stream.project_id == identifier:
+                    self._stream.validate_prefix(plan)
                 plan["error"] = ""
             except (ValueError, OSError, TypeError, KeyError) as exc:
                 # Saving text must still succeed; suppress stale audio on errors.
@@ -85,8 +95,10 @@ class FirstRoundPreparation:
             self._condition.notify_all()
             return self.status(identifier)
 
-    def pause(self, project_id):
+    def pause(self, project_id, *, from_live=False):
         with self._condition:
+            if self._stream and not from_live and self._stream.project_id == project_id:
+                raise LiveSessionError("请使用直播暂停/继续控制音频准备。")
             plan = self._load(project_id)
             if plan:
                 plan["enabled"] = False
@@ -117,13 +129,32 @@ class FirstRoundPreparation:
             else:
                 state = "waiting_text"
             return {"project_id": project_id, "status": state, "prepared_segments": count,
+                    "streaming": bool(self._stream and self._stream.project_id == project_id),
+                    "can_stream": bool(blocks and self._ready(blocks[0]) and not plan.get("error") and not plan.get("issue")),
+                    "voice": plan.get("voice"),
                     "total_segments": len(blocks), "complete": plan.get("complete", False),
                     "generated_units": plan.get("generated_units", 0), "total_units": plan.get("total_units", 0),
                     "error": plan.get("error") or plan.get("issue", ""), "enabled": plan.get("enabled", False)}
 
+    def open_stream(self, project_id, voice):
+        with self._condition:
+            if self._stream:
+                raise LiveSessionError("已有直播正在使用音频准备。")
+            plan = self._load(project_id)
+            if not plan or not self.status(project_id).get("can_stream"):
+                raise LiveSessionError("请等待首个完整音频块准备好后开启语音传输。")
+            if voice != plan["voice"] or self.fingerprint(voice) != plan["voice_fingerprint"]:
+                raise LiveSessionError("音色已变化，请重新准备音频。")
+            # Resume the same producer; Live only consumes its ready prefix.
+            self.update(self._projects[project_id], activate=True)
+            self._stream = PreparationStream(self, project_id)
+            return self._stream
+
     def handoff(self, project_id, source, voice):
         """Accept only a complete plan matching the exact, revalidated Live request."""
         with self._condition:
+            if self._stream:
+                raise LiveSessionError("已有直播正在使用音频准备。")
             plan = self._load(project_id)
             if not plan or not plan.get("complete") or plan.get("error") or plan.get("issue"):
                 return None
@@ -188,3 +219,109 @@ class FirstRoundPreparation:
         with self._condition:
             self._closed = True
             self._condition.notify_all()
+
+
+class PreparationStream:
+    """One live consumer of a preparation plan, with an immutable sent prefix."""
+
+    def __init__(self, preparation, project_id):
+        self.preparation = preparation
+        self.project_id = project_id
+        self.sent = []
+        self.frozen_paragraphs = []
+        self.frozen_groups = []
+        self.closed = False
+        self.voice = preparation._plans[project_id]["voice"]
+        self.fingerprint = preparation._plans[project_id]["voice_fingerprint"]
+
+    def project_for_plan(self, project):
+        project = copy.deepcopy(project)
+        if project.get("voice", "default") != self.voice:
+            raise ValueError("直播音色已固定，请停止直播后更换音色。")
+        count = len(self.frozen_paragraphs)
+        if [p["id"] for p in project["paragraphs"][:count]] != [p["id"] for p in self.frozen_paragraphs]:
+            raise ValueError("已发送的话术顺序已变化，请停止后重新开启传输。")
+        project["paragraphs"][:count] = copy.deepcopy(self.frozen_paragraphs)
+        if self.frozen_groups:
+            groups = project.get("context_groups") or []
+            if [g["id"] for g in groups[:len(self.frozen_groups)]] != [g["id"] for g in self.frozen_groups]:
+                raise ValueError("已发送的上下文组已变化，请停止后重新开启传输。")
+            groups[:len(self.frozen_groups)] = copy.deepcopy(self.frozen_groups)
+        return project
+
+    def validate_prefix(self, plan):
+        if plan["voice_fingerprint"] != self.fingerprint:
+            raise ValueError("直播期间音色资源已变化，请停止后重新准备。")
+        keys = [b["audio_key"] for b in plan["blocks"][:len(self.sent)]]
+        if keys != [b["audio_key"] for b in self.sent]:
+            raise ValueError("已发送的音频前缀发生变化，请停止后重新开启传输。")
+
+    def take(self):
+        """Reserve the next ready block atomically with freezing its source units."""
+        owner = self.preparation
+        with owner._condition:
+            plan = owner._plans[self.project_id]
+            if owner._closed:
+                raise RuntimeError("音频准备服务已关闭")
+            if plan.get("error") or plan.get("issue"):
+                raise RuntimeError(plan.get("error") or plan["issue"])
+            self.validate_prefix(plan)
+            progress = {"total": len(plan["blocks"]),
+                        "ready": sum(owner._ready(b) for b in plan["blocks"])}
+            if self.closed or not plan.get("enabled"):
+                return None, False, progress
+            if len(self.sent) == len(plan["blocks"]):
+                return None, bool(plan["complete"]), progress
+            block = plan["blocks"][len(self.sent)]
+            if not owner._ready(block):
+                return None, False, progress
+            if owner.fingerprint(self.voice) != self.fingerprint:
+                raise RuntimeError("直播期间音色资源已变化，请停止后重新准备。")
+            project = self.project_for_plan(owner._projects[self.project_id])
+            ids = {s["paragraph_id"] for s in block["sources"]}
+            paragraphs = project["paragraphs"]
+            end = max(i + 1 for i, p in enumerate(paragraphs) if p["id"] in ids)
+            groups = project.get("context_groups")
+            if groups is not None:
+                group_end = max(i + 1 for i, g in enumerate(groups) if ids.intersection(g["paragraph_ids"]))
+                self.frozen_groups = copy.deepcopy(groups[:group_end])
+                group_ids = {i for g in self.frozen_groups for i in g["paragraph_ids"]}
+                end = max(i + 1 for i, p in enumerate(paragraphs) if p["id"] in group_ids)
+            self.frozen_paragraphs = copy.deepcopy(paragraphs[:end])
+            self.sent.append(copy.deepcopy(block))
+            return {**block, "path": owner.audio_path(block)}, False, progress
+
+    def final_source(self):
+        owner = self.preparation
+        with owner._condition:
+            plan = owner._plans[self.project_id]
+            units, groups, complete, _ = project_inputs(owner._projects[self.project_id])
+            if not complete or not plan["complete"] or len(self.sent) != len(plan["blocks"]):
+                return None
+            self.validate_prefix(plan)
+            source = normalized_source(units, groups)
+            self.close()
+            return source, copy.deepcopy(plan)
+
+    def pause(self):
+        if not self.closed:
+            self.preparation.pause(self.project_id, from_live=True)
+
+    def resume(self):
+        owner = self.preparation
+        with owner._condition:
+            if not self.closed:
+                owner._plans[self.project_id]["enabled"] = True
+                owner._save(owner._plans[self.project_id])
+                owner._condition.notify_all()
+
+    def close(self):
+        owner = self.preparation
+        with owner._condition:
+            if self.closed:
+                return
+            self.pause()
+            self.closed = True
+            if owner._stream is self:
+                owner._stream = None
+            owner._condition.notify_all()

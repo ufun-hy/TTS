@@ -2,6 +2,7 @@
 const TextStudioReviews = (() => {
   const codepoints = text => [...text].length;
   function value(p, ci) {
+    if (ci === -1) return String(p.original_text || '');
     return ci === (p.selectedIndex || 0) ? selectedText(p) : String(p.candidates?.[ci] || '').trim();
   }
   function reviews(p, ci, text = value(p, ci)) {
@@ -43,9 +44,9 @@ const TextStudioReviews = (() => {
   }
   function findings(selectedParagraph = null) {
     const out = [];
-    const scopes = selectedParagraph ? [[selectedParagraph, selectedParagraph.selectedIndex || 0]] : state.contextGroups ? state.contextGroups.flatMap(g => g.variants.map(v =>
+    const scopes = selectedParagraph ? [[selectedParagraph, selectedParagraph.candidates?.length ? selectedParagraph.selectedIndex || 0 : -1]] : state.contextGroups ? state.contextGroups.flatMap(g => [{candidate_index: -1}, ...g.variants].map(v =>
       [state.paragraphs.find(p => p.id === g.paragraph_ids[0]), v.candidate_index])) :
-      state.paragraphs.map(p => [p, p.selectedIndex || 0]);
+      state.paragraphs.flatMap(p => [[p, -1], ...(p.candidates || []).map((_, ci) => [p, ci])]);
     for (const [p, ci] of scopes) {
       const scope = entries(p, ci);
       for (const hit of scope.hits) for (const span of scope.spans) {
@@ -89,6 +90,7 @@ const TextStudioReviews = (() => {
     } catch (e) { showMessage('处理已更新，但保存失败：' + e.message, 'err'); }
   }
   function controls(f) {
+    if (f.candidate_index === -1) return ''; // Source findings are edited, never playback approvals.
     return `<button class="btn ghost small" onclick="TextStudioReviews.decide('${escapeHtml(f.paragraph_id)}',${f.position},${f.candidate_index},${!f.approved})">${f.approved ? '恢复屏蔽' : '确认可播报'}</button>`;
   }
   function sentenceCards(p) {

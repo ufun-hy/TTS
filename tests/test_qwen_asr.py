@@ -1,6 +1,9 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
+import threading
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +22,58 @@ class QwenASRTests(unittest.TestCase):
             (self.model/name).write_text('fixture')
         self.source = self.root/'real.mp3'
         self.source.write_bytes(b'test')
+
+    def test_different_callers_share_model_and_gpu_thread_even_after_error(self):
+        loads, generations = [], []
+        mlx = ModuleType('mlx')
+        core = ModuleType('mlx.core')
+        core.gpu = object()
+        core.default_device = lambda: core.gpu
+        mlx.core = core
+        stt = ModuleType('mlx_audio.stt')
+        output = SimpleNamespace(text='测试语音。', segments=[{'text': '测试语音。', 'start': 0, 'end': 1}])
+
+        def generate(audio, **kwargs):
+            generations.append(threading.current_thread())
+            if audio == 'bad.wav':
+                raise RuntimeError('bad audio')
+            return output
+
+        def load(_path):
+            loads.append(threading.current_thread())
+            return SimpleNamespace(generate=generate)
+
+        stt.load = load
+        callers, results, errors = [], [], []
+
+        def call(path):
+            callers.append(threading.current_thread())
+            try:
+                results.append(qwen_asr.transcribe(Path(path), self.model))
+            except Exception as exc:
+                errors.append(exc)
+
+        qwen_asr._load_model.cache_clear()
+        try:
+            with patch.dict('sys.modules', {'mlx': mlx, 'mlx.core': core, 'mlx_audio.stt': stt}), \
+                 patch.object(qwen_asr, 'readiness', return_value={'asr_ready': True}):
+                # Upload-style short-lived threads, including a failed request.
+                for index, path in enumerate(('first.wav', 'bad.wav', 'next.wav')):
+                    caller = threading.Thread(target=call, args=(path,), name=f'upload-{index}')
+                    caller.start()
+                    caller.join(3)
+                    self.assertFalse(caller.is_alive())
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    list(pool.map(call, ('parallel-a.wav', 'parallel-b.wav')))
+            self.assertEqual(len(loads), 1)
+            self.assertEqual(len(generations), 5)
+            self.assertTrue(all(thread is loads[0] for thread in generations))
+            self.assertNotIn(loads[0], callers)
+            self.assertEqual(len(results), 4)
+            self.assertTrue(all(result['text'] == output.text for result in results))
+            self.assertEqual([str(exc) for exc in errors], ['bad audio'])
+        finally:
+            qwen_asr._load_model.cache_clear()
 
     def test_rejects_non_qwen_missing_and_smaller_models(self):
         self.assertEqual(qwen_asr.validate_model(self.model), self.model)

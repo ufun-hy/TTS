@@ -209,19 +209,21 @@ python3 scripts/audio-client.py --config config/audio-client.example.json
 
 Windows 图形客户端入口为 `windows_client.py`，使用 Tkinter，不需要额外运行时依赖。Windows 构建机上运行 `build/windows/build.ps1`，先生成 PyInstaller 程序，再由 Inno Setup 生成 `AI-Audio-Client-Setup.exe`。安装后用户只需打开客户端、填写 AI Server 地址并点击“启动”。
 
+局域网 Windows 电脑的 SSH 远程登录安装说明见 [docs/windows-ssh-install.md](docs/windows-ssh-install.md)。
+
 Windows 连续播放层见 [docs/windows-playback-v1.md](docs/windows-playback-v1.md)：传输完成状态和本地 `cached/playing/played` 状态分离，下载与播放线程独立，支持顺序播放、暂停、继续和停止；语速、音量在 Mac 入缓存前完成。
 
 ## Live Session V1
 
-泛化可与首轮音频准备同时进行：文本准备页勾选“泛化时同步准备首轮音频”，每批保存后就开始合成稳定的完整块。页面显示准备进度并可暂停；点击开播时沿用相同的随机候选选择与已准备音频，避免重复合成。修改文案、审核状态或音色后重新校验对应块。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。
+泛化可与首轮音频准备同时进行：文本准备页勾选“泛化时同步准备首轮音频”，每批保存后就开始合成稳定的完整块。首个完整块就绪即可开启语音传输，后续完整块按原顺序追加到同一个会话，全文首轮发完后进入随机循环。已发送单元本轮固定，未发送内容编辑后重新准备。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。
 
-循环智播先准备一轮启动库存，随后持续从每个话术单元的完整可播候选池独立随机选择，保持原稿顺序合块、合成并发送。Mac 不按未 ACK 数量、Windows 水位或在线状态等待；不自动重复固定一轮，不加入兜底音频。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。更新后需重启 Text Studio，Windows 的短音频恢复修改需更新客户端。
+循环智播支持首轮边准备边发送，随后持续从每个话术单元的完整可播候选池独立随机选择，保持原稿顺序合块、合成并发送。Mac 不按未 ACK 数量、Windows 水位或在线状态等待；不自动重复固定一轮，不加入兜底音频。详见 [首轮准备与持续随机智播](docs/prepared-live.md)。提前传输更新需重启 Text Studio 并刷新页面，Windows 无需重装。
 
 规则命中的话术默认整句屏蔽，现在可对具体句子“确认可播报”或“恢复屏蔽”。确认记录随项目保存，试听和普通/整组直播均识别，原规则提示继续保留。详见 [禁止播报检测与人工处理](docs/text-studio-prohibited-speech.md)。
 
 Text Studio 新增可选的“复制为整组试验项目”：保留原项目，以相邻编辑单元共同生成多套完整 Variant，直播每轮按组选择版本，再按自然标点生成连续 TTS 块。单句编辑、风险定位及项目保存继续保留。实现、A/B/C 音频记录与使用方式见 [上下文整组泛化与连续合成](docs/context-variant-synthesis.md)。当前听感验收待人工确认，旧项目不自动迁移；后端更新需重启 Text Studio 并刷新页面才生效。
 
-Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，在原稿完成泛化并确认/编辑候选后准备开播。循环会话先调用 TTS Gateway 准备一轮音频，发送首轮后持续合成新随机轮次。Mac Audio Processor 处理播放参数并写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
+Text Studio 页面内置 AI 直播控制区：选择可用声音、播放速度和音量，首个完整音频块准备好后即可开播。循环会话边泛化边准备、发送首轮，全文首轮发送完后持续合成新随机轮次。Mac Audio Processor 处理播放参数并写入 Audio Cache，Windows 客户端自动拉取。启动 Text Studio 时可用 `AUDIO_CACHE_URL` 和 `AUDIO_CACHE_API_KEY` 指定缓存服务。
 
 CosyVoice 默认输出的 Float32 WAV 会在 Windows MCI 播放前按需转换为 PCM16，原始文件保留，兼容缓存与失败片段恢复说明见 [Windows WAV 格式兼容](docs/windows-wav-compatibility.md)。
 
@@ -251,3 +253,6 @@ Mac 运行链路的核查证据、已知环境冲突与可靠性修复任务见
 
 2026-09-27 本地整理的提交清单、验证结果和 Windows 待办见
 [分支整理执行记录](docs/branch-consolidation-results.md)。
+
+Windows 单机下一阶段的暂停领取修复、补丁包完整性和真机调试／打包步骤见
+[Windows 调试与打包验收任务](docs/windows-debug-packaging-task.md)。

@@ -36,18 +36,19 @@ from recording_transcript.results import list_results, load_result
 from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments, validate_reviews, candidate_reviews
 from server.semantic_tts_blocks import safe_continuous_text
 from server.first_round_preparation import FirstRoundPreparation
-from server.first_round_plan import normalized_source
+from server.first_round_plan import normalized_source, project_inputs
 from server.tts_gateway import VoiceStore
 from timeline.tts_client import TTSClient, load_api_key
 from server.context_variants import (
     build_context_groups, build_variant_prompt, normalize_units,
     validate_context_project, validate_variant_result, ID as CONTEXT_ID,
+    MAX_UNITS as MAX_PROJECT_PARAGRAPHS,
 )
 
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_PARAGRAPHS_PER_REQUEST = 2000
 MAX_PARAGRAPH_CHARS = 4000
-DEFAULT_BATCH_SIZE = 8
+DEFAULT_BATCH_SIZE = 16
 DEFAULT_TIMEOUT_SECONDS = 240
 PROJECT_SCHEMA_VERSION = 1
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
@@ -443,8 +444,10 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
     paragraphs = payload.get("paragraphs")
     if not isinstance(paragraphs, list):
         raise ValueError("project paragraphs must be an array")
-    if len(paragraphs) > MAX_PARAGRAPHS_PER_REQUEST:
-        raise ValueError(f"project exceeds {MAX_PARAGRAPHS_PER_REQUEST} paragraphs")
+    if len(paragraphs) > MAX_PROJECT_PARAGRAPHS:
+        raise ValueError(
+            f"项目包含 {len(paragraphs)} 个话术单元，超过单个项目 {MAX_PROJECT_PARAGRAPHS} 个的上限，请分为多个项目保存"
+        )
     for paragraph in paragraphs:
         if isinstance(paragraph, dict) and 'prohibited_reviews' in paragraph:
             validate_reviews(paragraph['prohibited_reviews'])
@@ -691,7 +694,7 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js", "/text-studio-variants.js", "/text-studio-reviews.js", "/text-studio-preparation.js"}:
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js", "/text-studio-generation.js", "/text-studio-variants.js", "/text-studio-reviews.js", "/text-studio-preparation.js"}:
                 is_risk_script = path.endswith('.js')
                 try:
                     if path == '/text-studio-prohibited-rules.js':
@@ -903,29 +906,47 @@ def make_handler(
                 if path == "/api/live/start":
                     segments = body.get("segments")
                     options = {}
+                    stream = None
+                    groups = body.get("context_groups")
                     if body.get("project_id"):
                         identifier = _validate_project_id(body["project_id"])
                         # Rebuild the saved plan after voice/review/text edits;
                         # adoption still requires an exact request match below.
-                        preparation.update(load_project(root, identifier))
-                        source = normalized_source(segments, body.get("context_groups"))
-                        first_round = preparation.handoff(identifier, source, body.get("voice", "default"))
-                        if first_round:
-                            options["first_round"] = first_round
-                    if "context_groups" in body:
-                        validate_context_project(segments, body["context_groups"], complete=True)
-                        segments = {"paragraphs": segments, "context_groups": body["context_groups"]}
+                        project = load_project(root, identifier)
+                        preparation.update(project)
+                        if body.get("stream_preparation"):
+                            segments, groups, _, _ = project_inputs(project)
+                        else:
+                            source = normalized_source(segments, groups)
+                            first_round = preparation.handoff(identifier, source, body.get("voice", "default"))
+                            if first_round:
+                                options["first_round"] = first_round
+                    elif body.get("stream_preparation"):
+                        raise LiveSessionError("提前传输需要已保存项目", 400)
+                    if groups is not None:
+                        validate_context_project(segments, groups, complete=True)
+                        segments = {"paragraphs": segments, "context_groups": groups}
                     else:
                         segments = filter_segments(segments)
-                    result = live.start(
-                        body.get("voice", "default"),
-                        segments,
-                        body.get("playback_speed", 1.0),
-                        body.get("volume", 100.0),
-                        **options,
-                    )
+                    if body.get("stream_preparation"):
+                        stream = preparation.open_stream(identifier, body.get("voice", "default"))
+                        options["preparation_stream"] = stream
+                    try:
+                        result = live.start(
+                            body.get("voice", "default"),
+                            segments,
+                            body.get("playback_speed", 1.0),
+                            body.get("volume", 100.0),
+                            **options,
+                        )
+                    except Exception:
+                        if stream:
+                            stream.close()
+                        raise
                     result["preparation_reused"] = bool(options)
-                    preparation.pause_active()
+                    result["streaming_preparation"] = stream is not None
+                    if stream is None:
+                        preparation.pause_active()
                     self._json(202, result)
                     return
 

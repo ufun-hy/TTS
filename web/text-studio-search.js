@@ -59,9 +59,45 @@ const TextStudioSearch = (() => {
     return replaced;
   }
 
+  function writeOriginal(paragraph, text) {
+    paragraph.original_text = text;
+    paragraph.sentences = text.match(/[^。！？!?]+[。！？!?]?/g) || [];
+  }
+
+  function syncOriginalSource() {
+    for (const [i, paragraph] of state.paragraphs.entries()) {
+      paragraph.source_start = 0;
+      paragraph.source_end = paragraph.original_text.length;
+      paragraph.source_paragraph_index = i + 1;
+    }
+    $('sourceText').value = state.paragraphs.map(p => p.original_text).join('\n\n');
+    state.parsedSourceText = $('sourceText').value;
+  }
+
+  function replaceAllTexts(paragraphs, query, replacement) {
+    const needle = String(query ?? '').trim();
+    if (!needle) return 0;
+    let count = replaceAllCandidates(paragraphs, needle, replacement);
+    for (const p of paragraphs) {
+      const parts = String(p.original_text || '').split(needle);
+      if (parts.length > 1) {
+        writeOriginal(p, parts.join(String(replacement ?? '')));
+        count += parts.length - 1;
+      }
+    }
+    return count;
+  }
+
   function replacementForHit(paragraph, hit, query, replacement) {
     const needle = String(query ?? '').trim();
     if (!needle) return {ok: false, reason: 'empty_query'};
+    if (hit?.kind === 'original') {
+      const text = paragraph.original_text || '', start = hit.start;
+      if (!Number.isInteger(start) || start < 0 || text.slice(start, start + needle.length) !== needle)
+        return {ok: false, reason: 'stale_match'};
+      return {ok: true, candidateIndex: -1, start,
+        text: text.slice(0, start) + String(replacement ?? '') + text.slice(start + needle.length)};
+    }
     if (!hit || hit.kind !== 'candidate' || !Number.isInteger(hit.candidateIndex)) {
       return {ok: false, reason: 'read_only_source'};
     }
@@ -201,8 +237,13 @@ const TextStudioSearch = (() => {
           return;
         }
 
-        paragraph.candidates[result.candidateIndex] = result.text;
-        paragraph.editedText = result.text;
+        if (result.candidateIndex < 0) {
+          writeOriginal(paragraph, result.text);
+          syncOriginalSource();
+        } else {
+          paragraph.candidates[result.candidateIndex] = result.text;
+          paragraph.editedText = result.text;
+        }
         state.replacementHistory.push({
           from: state.searchQuery,
           to: replacement,
@@ -213,7 +254,7 @@ const TextStudioSearch = (() => {
         refreshSearchMatches(false);
         render();
         scheduleSave(0);
-        showMessage('已替换当前命中的候选文本并自动保存。', 'ok');
+        showMessage('已替换当前命中文本。原稿修改用于后续泛化，已有候选需另行检查；正在自动保存。', 'ok');
       }
 
       function ensureRiskEditor() {
@@ -334,28 +375,29 @@ const TextStudioSearch = (() => {
         return context;
       }
 
-      function openExactRiskEditor(id, pos, candidate = null) {
+      function openExactRiskEditor(id, pos, candidate = null, suppliedFinding = null) {
         const paragraphIndex = state.paragraphs.findIndex(paragraph => paragraph.id === id);
         if (paragraphIndex < 0) return;
         const paragraph = state.paragraphs[paragraphIndex];
-        if (Number.isInteger(candidate) && typeof TextStudioVariants !== 'undefined') {
+        if (Number.isInteger(candidate) && candidate >= 0 && typeof TextStudioVariants !== 'undefined') {
           TextStudioVariants.select(paragraphIndex, candidate);
           scheduleSave();
         }
-        const candidateIndex = selectedCandidateIndex(paragraph);
-        if (!Array.isArray(paragraph.candidates) || !paragraph.candidates.length) {
+        const candidateIndex = candidate === -1 || !paragraph.candidates?.length ? -1 :
+          Number.isInteger(candidate) ? candidate : selectedCandidateIndex(paragraph);
+        if (candidateIndex >= 0 && !paragraph.candidates?.[candidateIndex]) {
           showMessage('当前话术没有可编辑候选。', 'info');
           return;
         }
 
-        const activeText = selectedText(paragraph);
+        const activeText = candidateIndex < 0 ? paragraph.original_text : paragraph.candidates[candidateIndex].trim();
         const openedProject = state.paragraphs;
-        const openedCandidate = paragraph.candidates[candidateIndex];
+        const openedCandidate = candidateIndex < 0 ? paragraph.original_text : paragraph.candidates[candidateIndex];
         const findings = state.riskFindings.filter(finding => (
           finding.paragraph_id === id && finding.position === pos
           && (candidate === null || finding.candidate_index === candidate)
         ));
-        const finding = findings.find(item => (
+        const finding = suppliedFinding || findings.find(item => (
           activeText.slice(item.position, item.position + String(item.phrase ?? '').length) === item.phrase
         )) || findings[0];
         if (!finding) {
@@ -373,7 +415,7 @@ const TextStudioSearch = (() => {
         const cancel = document.getElementById('exactRiskEditorCancel');
 
         title.textContent = '定位修改';
-        meta.textContent = `${id} · 候选 ${candidateIndex + 1} · ${finding.label || finding.type || '风险项'}`;
+        meta.textContent = `${id} · ${candidateIndex < 0 ? '原稿' : '候选 ' + (candidateIndex + 1)} · ${finding.label || finding.type || '文本编辑'}`;
         editor.value = activeText;
         drawer.dataset.paragraphIndex = String(paragraphIndex);
         drawer.dataset.candidateIndex = String(candidateIndex);
@@ -388,17 +430,20 @@ const TextStudioSearch = (() => {
           const currentCandidateIndex = Number(drawer.dataset.candidateIndex);
           const currentParagraph = state.paragraphs[currentParagraphIndex];
           if (state.paragraphs !== openedProject || currentParagraph !== paragraph
-              || currentParagraph.candidates?.[currentCandidateIndex] !== openedCandidate
-              || !currentParagraph || !Array.isArray(currentParagraph.candidates)
-              || currentCandidateIndex < 0 || currentCandidateIndex >= currentParagraph.candidates.length) {
+              || (currentCandidateIndex < 0 ? currentParagraph?.original_text : currentParagraph?.candidates?.[currentCandidateIndex]) !== openedCandidate) {
             showMessage('当前记录已经变化，请重新打开定位修改。', 'info');
             closeExactRiskEditor();
             return;
           }
           const nextText = editor.value;
-          currentParagraph.candidates[currentCandidateIndex] = nextText;
-          if (selectedCandidateIndex(currentParagraph) === currentCandidateIndex) {
-            currentParagraph.editedText = nextText;
+          if (!nextText.trim()) { showMessage('话术不能为空。', 'err'); return; }
+          if (currentCandidateIndex < 0) {
+            writeOriginal(currentParagraph, nextText);
+            syncOriginalSource();
+          } else {
+            currentParagraph.candidates[currentCandidateIndex] = nextText;
+            if (selectedCandidateIndex(currentParagraph) === currentCandidateIndex)
+              currentParagraph.editedText = nextText;
           }
           state.replacementHistory.push({
             from: String(finding.phrase ?? ''),
@@ -434,6 +479,7 @@ const TextStudioSearch = (() => {
       window.jumpToMatch = patchedJumpToMatch;
       window.replaceCurrent = patchedReplaceCurrent;
       window.locateRiskById = openExactRiskEditor;
+      window.openStudioTextEditor = openExactRiskEditor;
       window.closeExactRiskEditor = closeExactRiskEditor;
       prevButton.onclick = () => patchedJumpToMatch(-1);
       nextButton.onclick = () => patchedJumpToMatch(1);
@@ -448,7 +494,8 @@ const TextStudioSearch = (() => {
   }
 
   installUiFixes();
-  return {findMatches, replaceAllCandidates, replacementForHit, findingOffset, riskContext};
+  return {findMatches, replaceAllCandidates, replaceAllTexts, writeOriginal, syncOriginalSource,
+    replacementForHit, findingOffset, riskContext};
 })();
 
 if (typeof module !== 'undefined') module.exports = TextStudioSearch;

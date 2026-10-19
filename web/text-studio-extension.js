@@ -48,7 +48,8 @@
           <div class="field wide"><label for="factShippingTime">发货时间口径</label><input id="factShippingTime" placeholder="例如：48小时内发货 / 以订单页面为准" /></div>
         </div>
         <div class="actions"><button class="btn ghost small" id="factCheckBtn" type="button">检查全篇一致性</button><button class="btn primary small" id="factFixBtn" type="button" disabled>批量修正</button></div>
-        <div class="hint">以这里配置的事实为准。规则负责定位冲突；批量修正后，必要时用当前 Provider / Model 做自然口语润色。</div>
+        <div class="hint">泛化前即可检查和批量修正原稿；已有候选也会一并检查。以这里配置的商品事实为准。</div>
+        <label class="hint"><input type="checkbox" id="factPolish" /> 修正后使用当前模型润色（可选）</label>
       </div>`;
     if (firstSettings) side.insertBefore(details, firstSettings); else side.appendChild(details);
   }
@@ -101,6 +102,14 @@
   projectPayload = function extendedProjectPayload() {
     syncFactMeta();
     return baseProjectPayload();
+  };
+
+  const baseInvalidateReview = invalidateReview;
+  invalidateReview = function invalidateTextReviews() {
+    state.factFindings = [];
+    state.factChecked = false;
+    renderFactDrawer();
+    return baseInvalidateReview();
   };
 
   const baseLoadProject = loadProject;
@@ -272,8 +281,7 @@
   }
 
   function updateSourceIfUngenerated() {
-    if (state.paragraphs.some(p => p.candidates?.length)) return;
-    $('sourceText').value = state.paragraphs.map(p => p.original_text || '').join('\n\n');
+    TextStudioSearch.syncOriginalSource();
   }
 
   function targetText(pi, ci) {
@@ -283,7 +291,7 @@
 
   function writeTarget(pi, ci, text) {
     const p = state.paragraphs[pi];
-    if (ci < 0) { p.original_text = text; p.sentences = sentenceRanges(text).map(x => x.text); }
+    if (ci < 0) TextStudioSearch.writeOriginal(p, text);
     else { p.candidates[ci] = text; if (ci === (p.selectedIndex || 0)) p.editedText = text; }
   }
 
@@ -355,16 +363,19 @@
     state.factChecked = false;
     renderFactDrawer();
     render();
-    showMessage('商品事实已做确定性修正，正在处理必要的自然口语润色…', 'info');
+    showMessage('商品事实已修正，正在保存。', 'info');
     scheduleSave(0);
     let polished = false;
     let polishError = '';
     try {
       const indexes = [...complex].map(key => key.split(':').map(Number));
-      polished = await polishParagraphs(indexes);
+      if ($('factPolish').checked) polished = await polishParagraphs(indexes);
     } catch (e) {
       polishError = e.message;
     }
+    updateSourceIfUngenerated();
+    refreshSearchMatches(false);
+    render();
     detectFactConflicts();
     closeFact();
     scheduleSave(0);
@@ -386,15 +397,11 @@
   }
 
   function locateFact(pi, ci) {
-    if (ci >= 0) selectCandidate(pi, ci);
     if (!state.paragraphs[pi]) return;
-    state.riskFocusParagraph = pi;
-    state.searchFocusParagraph = -1;
-    state.paragraphs[pi].expanded = true;
+    const finding = state.factFindings.find(f => f.paragraph_index === pi && f.candidate_index === ci);
+    if (!finding) return;
     closeFact();
-    switchView('prepare');
-    render();
-    requestAnimationFrame(() => document.getElementById(`para-${pi}`)?.scrollIntoView({behavior: 'smooth', block: 'center'}));
+    openStudioTextEditor(state.paragraphs[pi].id, finding.position, ci, finding);
   }
 
   function openFact() {
@@ -408,7 +415,9 @@
     if (!$('riskDrawer')?.classList.contains('open')) $('drawerBackdrop')?.classList.remove('open');
   }
 
-  $('factCheckBtn')?.addEventListener('click', () => detectFactConflicts());
+  $('factCheckBtn')?.addEventListener('click', async () => {
+    if (await ensureParsedForReview()) detectFactConflicts();
+  });
   $('factFixBtn')?.addEventListener('click', fixFactConflicts);
   $('closeFact')?.addEventListener('click', closeFact);
   $('drawerBackdrop')?.addEventListener('click', closeFact);

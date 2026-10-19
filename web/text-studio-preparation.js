@@ -12,11 +12,16 @@ const TextStudioPreparation = (() => {
       preparing: '正在准备首轮音频', ready: '首轮音频已准备好', paused: '音频准备已暂停', failed: '音频准备需要处理'};
     $('audioPreparationStatus').textContent = current.error ||
       `${labels[current.status] || current.status} · ${current.prepared_segments || 0}/${current.total_segments || 0} 块`;
-    $('audioPreparationHint').textContent = '每批保存后自动合成完整块；尾块等待下一批。准备好后点击开播，不会自动播放。';
-    $('audioPreparationStart').disabled = pending || !state.paragraphs.length ||
+    $('audioPreparationHint').textContent = current.streaming ? '已接入直播，后续完整音频块自动追加；请在直播页暂停或停止。' : '首个完整音频块准备好即可开启语音传输，后续边泛化边合成、追加。';
+    $('audioPreparationStart').disabled = current.streaming || pending || !state.paragraphs.length ||
       (current.enabled === true && current.status !== 'failed');
     $('audioPreparationStart').textContent = current.status === 'paused' || current.status === 'failed' ? '继续准备音频' : '准备首轮音频';
-    $('audioPreparationPause').disabled = pending || current.enabled !== true;
+    $('audioPreparationPause').disabled = current.streaming || pending || current.enabled !== true;
+    if (typeof updateLiveSummary === 'function') {
+      $('goLiveBtn').disabled = !liveViewReady();
+      $('liveTab').disabled = !liveViewReady();
+      updateLiveSummary();
+    }
   }
 
   async function refresh() {
@@ -49,6 +54,7 @@ const TextStudioPreparation = (() => {
 
   async function beforeGeneralize() {
     if (!$('prepareWhileGeneralizing').checked) return;
+    if (current.streaming) return;
     try { await begin(); }
     catch (e) {
       // Text generation remains usable when TTS is unavailable.
@@ -72,5 +78,9 @@ const TextStudioPreparation = (() => {
     observedProject = state.projectId;
     projectChanged();
   }
-  return {begin, pause, beforeGeneralize, render, observeProject};
+  function canStream() {
+    return current.project_id === state.projectId && current.can_stream === true &&
+      !current.error && current.voice === currentVoice();
+  }
+  return {begin, pause, beforeGeneralize, render, observeProject, canStream};
 })();

@@ -32,15 +32,77 @@ class PreparedRound:
 class PreparedLiveSession(SynthesisBlockLiveSession):
     """Prepare the initial inventory, then keep synthesizing new random rounds."""
 
-    def __init__(self, *args, audio_root: Path | None = None, first_round: dict | None = None, **kwargs) -> None:
+    def __init__(self, *args, audio_root: Path | None = None, first_round: dict | None = None,
+                 preparation_stream=None, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.first_round = first_round
+        self.preparation_stream = preparation_stream
         self.audio_root = (audio_root or PREPARED_AUDIO_ROOT) / self.session_id
-        self.phase = "preparing"
+        self.phase = "streaming" if preparation_stream else "preparing"
         self.prepared_segments = 0
         self.preparation_total_segments = 0
         self.prepared_rounds = 0
         self.prepared_round_number = 0
+
+    def pause(self):
+        super().pause()
+        if self.preparation_stream:
+            self.preparation_stream.pause()
+
+    def resume(self):
+        super().resume()
+        if self.preparation_stream:
+            self.preparation_stream.resume()
+
+    def stop(self):
+        super().stop()
+        if self.preparation_stream:
+            self.preparation_stream.pause()
+
+    def _stream_first_round(self):
+        stream = self.preparation_stream
+        with self._lock:
+            self.phase = "streaming"
+            self.round_number = self.prepared_round_number = 1
+            if self.status == "starting":
+                self.status = "running"
+        while not self._stop.is_set():
+            self._resume.wait()
+            if self._stop.is_set():
+                return False
+            block, complete, progress = stream.take()
+            with self._lock:
+                self.total_segments = self.preparation_total_segments = progress["total"]
+                self.prepared_segments = progress["ready"]
+            if complete:
+                final = stream.final_source()
+                if final is None:
+                    continue
+                source, plan = final
+                with self._lock:
+                    self.context_project = source if isinstance(source, dict) else None
+                    self.candidate_pools = source if isinstance(source, list) else []
+                    self._previous_candidate_indexes = plan["candidate_indexes"]
+                    self.variant_selection = plan["variant_selection"]
+                    self.prepared_rounds = 1
+                    self.prepared_round_number = 0
+                    self.phase = "playing"
+                stream.close()
+                return True
+            if block is None:
+                self._stop.wait(.1)
+                continue
+            self._resume.wait()
+            if self._stop.is_set():
+                return False
+            audio = block["path"].read_bytes()
+            self._sequence += 1
+            position = self.generated_segments + 1
+            self._enqueue(f"{self.session_id}-r000001-s{position:04d}", self._sequence,
+                          block["text"], self.voice, audio)
+            with self._lock:
+                self.generated_segments += 1
+        return False
 
     def snapshot(self):
         result = super().snapshot()
@@ -103,6 +165,10 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
 
     def _run(self) -> None:
         try:
+            if self.preparation_stream:
+                if self._stream_first_round():
+                    super()._run()
+                return
             rounds = self._prepare()
             if rounds is None:
                 return
@@ -143,4 +209,6 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
                     self.status = "failed"
                     self.error = str(exc)
         finally:
+            if self.preparation_stream:
+                self.preparation_stream.close()
             self._finalize_thread()

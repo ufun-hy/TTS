@@ -144,6 +144,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
         playback_speed: Any = 1.0,
         volume: Any = 100.0,
         first_round: dict | None = None,
+        preparation_stream=None,
     ) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
             raise LiveSessionError("voice is invalid", 400)
@@ -173,6 +174,10 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                     from prepared_live_session import PREPARED_ROUND_COUNT, PreparedLiveSession
                 session_type = PreparedLiveSession
             options = {"first_round": first_round} if first_round and (loop_mode or context_project) else {}
+            if preparation_stream is not None:
+                if not (loop_mode or context_project):
+                    raise LiveSessionError("提前传输需要候选话术", 400)
+                options["preparation_stream"] = preparation_stream
             session = session_type(
                 uuid.uuid4().hex[:12],
                 voice.strip(),

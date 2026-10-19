@@ -116,7 +116,21 @@ def build_plan(project: dict, fingerprint: str, previous: dict | None = None, rn
         ends = [i for i, s in enumerate(selected) if END.search(s["text"].strip())]
         selected = selected[:ends[-1] + 1] if ends else []
     if selected:
-        blocks = semantic_blocks(selected) if groups is not None else prepare_synthesis_blocks(prepare_live_segments(selected))
+        if groups is not None:
+            blocks = semantic_blocks(selected)
+        else:
+            chunks = [dict(chunk, paragraph_id=s["id"]) for s in selected
+                      for chunk in prepare_live_segments([s])]
+            blocks = prepare_synthesis_blocks(chunks)
+            offset = 0
+            for block in blocks:
+                sources, length = [], 0
+                while offset < len(chunks) and length < len(block["text"]):
+                    chunk = chunks[offset]
+                    length += len(chunk["text"]) + bool(sources)
+                    sources.append({"paragraph_id": chunk["paragraph_id"]})
+                    offset += 1
+                block["sources"] = sources
         if not complete:
             blocks = blocks[:-1]  # The greedy tail may absorb the next batch.
         if any(_DYNAMIC_TIME_TOKEN.search(b["text"]) for b in blocks):

@@ -13,7 +13,9 @@ from server.prohibited_speech import candidate_reviews
 
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 END = re.compile(r'[。！？!?；;][”’」』）)]*$')
-MAX_UNITS = 5000
+# Whole projects use short speech units, so long transcripts can exceed 5,000.
+# Model requests still operate on small context groups, not this full limit.
+MAX_UNITS = 20_000
 MAX_UNIT_CHARS = 4000
 MAX_TEXT_CHARS = 1_000_000
 

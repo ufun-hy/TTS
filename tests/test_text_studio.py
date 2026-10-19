@@ -231,6 +231,41 @@ class TextStudioTest(unittest.TestCase):
             self.assertEqual(summaries[0]["paragraph_count"], 2)
             self.assertEqual(summaries[0]["generated_count"], 1)
 
+    def test_long_transcript_saves_all_units_with_and_without_context(self):
+        source = "\n\n".join(f"这是第{i}件外套。" for i in range(1, 7693))
+        paragraphs = text_studio.split_paragraphs(source)
+        self.assertEqual(len(paragraphs), 7692)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = text_studio.save_project(root, {"source_text": source, "paragraphs": paragraphs})
+            loaded = text_studio.load_project(root, project["project_id"])
+            self.assertEqual(loaded["source_text"], source)
+            self.assertEqual(loaded["paragraphs"], paragraphs)
+            groups = text_studio.build_context_groups(paragraphs)
+            project = text_studio.save_project(root, {**loaded, "context_groups": groups})
+            loaded = text_studio.load_project(root, project["project_id"])
+            self.assertEqual(loaded["paragraphs"], paragraphs)
+            self.assertEqual([p for g in loaded["context_groups"] for p in g["paragraph_ids"]],
+                             [p["id"] for p in paragraphs])
+            self.assertEqual(text_studio.list_projects(root)[0]["paragraph_count"], 7692)
+
+    def test_project_capacity_does_not_bypass_generation_request_limit(self):
+        paragraphs = [{"id": f"p{i}", "original_text": "测试。"}
+                      for i in range(text_studio.MAX_PARAGRAPHS_PER_REQUEST + 1)]
+        with mock.patch.object(text_studio, "_run_provider") as provider:
+            with self.assertRaisesRegex(ValueError, "paragraphs must contain"):
+                text_studio.generalize_paragraphs(paragraphs, "codex", 1, "")
+            provider.assert_not_called()
+
+    def test_project_and_context_reject_above_shared_capacity(self):
+        paragraphs = [{"id": f"p{i}", "original_text": "测试。"}
+                      for i in range(text_studio.MAX_PROJECT_PARAGRAPHS + 1)]
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "话术单元.*上限"):
+                text_studio.save_project(Path(directory), {"paragraphs": paragraphs})
+        with self.assertRaisesRegex(ValueError, "paragraphs must contain"):
+            text_studio.build_context_groups(paragraphs)
+
     def test_project_update_reuses_id(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

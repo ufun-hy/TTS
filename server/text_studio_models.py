@@ -12,7 +12,9 @@ import subprocess
 import time
 from typing import Any
 
-DEFAULT_CODEX_COMMAND = "codex exec --skip-git-repo-check --color never -"
+# Batch rewrites keep their own project/results/diagnostic files; no CLI session
+# history or terminal-status hooks are needed. Custom commands remain explicit.
+DEFAULT_CODEX_COMMAND = "codex exec --skip-git-repo-check --color never --ephemeral --disable hooks -"
 
 
 def validate_model(value: Any) -> str:

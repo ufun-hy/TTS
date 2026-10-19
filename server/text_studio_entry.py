@@ -50,9 +50,8 @@ from live_session_blocks import build_live_manager as build_synthesis_block_live
 # repeated CosyVoice onset artifacts at every logical segment boundary.
 text_studio.build_live_manager = build_synthesis_block_live_manager
 
-# "paragraphs" is now the speech-unit collection. Sentence-first splitting can
-# legitimately create more than the historical 2,000 natural-paragraph limit.
-# Keep a finite safety cap while allowing long cleaned recordings to be stored.
+# Preserve the deployed generalization request cap. Whole-project persistence
+# has its own shared limit with context grouping in text_studio.
 text_studio.MAX_PARAGRAPHS_PER_REQUEST = 5000
 
 _BASE_MAKE_HANDLER = text_studio.make_handler

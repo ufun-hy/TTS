@@ -1,6 +1,7 @@
 """Local Qwen3-ASR-1.7B MLX backend with no backend selection or fallback."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import importlib.util
 import json
@@ -12,6 +13,9 @@ MODEL_DIRECTORY = 'qwen3-asr-1.7b-bf16'
 BACKEND = 'qwen3-asr-1.7b-mlx'
 CHUNK_SECONDS = 30.0
 MAX_TOKENS = 1024
+# The worker thread starts on first submit. Imports, loading and inference must
+# stay on this thread: mlx-lm caches a generation stream at import time.
+_inference_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='qwen-asr')
 
 
 def validate_model(model: Path) -> Path:
@@ -53,11 +57,15 @@ def _load_model(model: Path):
 
 
 def transcribe(audio: Path, model: Path) -> dict[str, Any]:
-    """Caller serializes GPU jobs; cache only the currently configured model."""
+    """Run all callers on one persistent GPU owner thread, including CLI use."""
     model = validate_model(model)
     status = readiness(model)
     if not status['asr_ready']:
         raise ValueError(status['asr_error'])
+    return _inference_worker.submit(_transcribe_gpu, audio, model).result()
+
+
+def _transcribe_gpu(audio: Path, model: Path) -> dict[str, Any]:
     import mlx.core as mx
     if mx.default_device() != mx.gpu:
         raise RuntimeError('Qwen3-ASR MLX 未使用 Apple GPU，停止转录')
