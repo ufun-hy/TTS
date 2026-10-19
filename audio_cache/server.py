@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import uuid
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -28,6 +29,57 @@ class AudioCacheServer(ThreadingHTTPServer):
         self._client_state_at = 0.0
         self._client_state_lock = threading.RLock()
         self._session_controls: Dict[str, str] = {}
+        self._replay: Dict[str, Any] = {}
+
+    def replay_status(self, manager: AudioCacheManager) -> Dict[str, Any]:
+        with self._client_state_lock:
+            replay = dict(self._replay)
+            if not replay:
+                return {"session_id": "", "status": "idle", "items": 0}
+            replay["status"] = self._session_controls.get(replay["session_id"], "stopped")
+        replay["cache"] = manager.session_stats(replay["session_id"])
+        return replay
+
+    def replay_start(self, manager: AudioCacheManager, ids: Any) -> Dict[str, Any]:
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 500:
+            raise ValueError("item_ids must contain 1 to 500 items")
+        if any(not isinstance(item, str) or manager.library.get(item) is None for item in ids):
+            raise ValueError("one or more library audio items do not exist")
+        with self._client_state_lock:
+            current = self._replay.get("session_id", "")
+            if current and self._session_controls.get(current) in ("running", "paused"):
+                raise ValueError("a replay session is already active")
+            if any(status == "running" for session, status in self._session_controls.items()
+                   if session != current):
+                raise ValueError("stop active playback before starting an inventory replay")
+            replay_id = "replay_" + uuid.uuid4().hex[:16]
+            self._session_controls[replay_id] = "paused"
+            self._replay = {"session_id": replay_id, "items": len(ids)}
+            try:
+                for index, item_id in enumerate(ids, 1):
+                    manager.stage_library_audio(item_id, replay_id, index)
+            except Exception:
+                manager.cleanup_session(replay_id)
+                self._session_controls[replay_id] = "stopped"
+                self._replay = {}
+                raise
+            self._session_controls[replay_id] = "running"
+            return self.replay_status(manager)
+
+    def replay_control(self, manager: AudioCacheManager, action: str) -> Dict[str, Any]:
+        if action not in ("pause", "resume", "stop"):
+            raise ValueError("invalid replay action")
+        with self._client_state_lock:
+            session = self._replay.get("session_id")
+            if not session:
+                raise ValueError("no replay session")
+            prior = self._session_controls.get(session, "stopped")
+            if prior == "stopped" and action != "stop":
+                raise ValueError("replay already stopped; start a new replay")
+            self._session_controls[session] = {
+                "pause": "paused", "resume": "running", "stop": "stopped"
+            }[action]
+        return self.replay_status(manager)
 
     def client_connected(self) -> bool:
         return time.monotonic() - self.last_client_at <= self.client_timeout
@@ -149,6 +201,9 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                     "client_connected": self.server.client_connected(),  # type: ignore[attr-defined]
                 })
                 return
+            if path == "/audio/replay/status":
+                self._json(200, self.server.replay_status(manager))  # type: ignore[attr-defined]
+                return
             if path == "/audio/library":
                 query = parse_qs(split.query, keep_blank_values=True)
                 session_id = (query.get("session_id") or [""])[0]
@@ -240,6 +295,12 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             path = urlsplit(self.path).path
             try:
                 body = self._body()
+                if path == "/audio/replay/start":
+                    self._json(202, self.server.replay_start(manager, body.get("item_ids")))  # type: ignore[attr-defined]
+                    return
+                if path in ("/audio/replay/pause", "/audio/replay/resume", "/audio/replay/stop"):
+                    self._json(200, self.server.replay_control(manager, path.rsplit("/", 1)[-1]))  # type: ignore[attr-defined]
+                    return
                 if path == "/audio/ack":
                     item = manager.ack(str(body.get("id", "")), str(body.get("status", "completed")))
                     self._json(200, _item_payload(item))
