@@ -780,6 +780,13 @@ def make_handler(
                 self._json(200, {"status": "ok", **_dependency_status(root, gateway_url)})
                 return
 
+            if path == "/api/audio/replay/status":
+                try:
+                    self._json(200, live.library_replay_status())
+                except LiveSessionError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+
             if path == "/api/audio/library":
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 try:
@@ -1055,6 +1062,14 @@ def make_handler(
                         self._json(409, {"error": str(exc), "runtime": runtime.snapshot()})
                         return
                     self._json(200 if recovered else 409, {"recovered": recovered, "runtime": runtime.snapshot()})
+                    return
+
+                if path == "/api/audio/replay/start":
+                    self._json(202, live.library_replay_start(body.get("item_ids")))
+                    return
+
+                if path in ("/api/audio/replay/pause", "/api/audio/replay/resume", "/api/audio/replay/stop"):
+                    self._json(200, live.library_replay_control(path.rsplit("/", 1)[-1]))
                     return
 
                 if path == "/api/generation/start":
