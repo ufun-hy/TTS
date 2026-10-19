@@ -70,6 +70,22 @@ class AudioLibrary:
         results.sort(key=lambda x: (str(x.get("created_at") or ""), str(x.get("id"))), reverse=True)
         return results[:limit]
 
+    def get(self, item_id: str) -> dict | None:
+        if not ID.fullmatch(item_id):
+            raise ValueError("invalid library item id")
+        with self._lock:
+            meta = self.root / item_id / "metadata.json"
+            audio = self.root / item_id / "audio.wav"
+            if not meta.is_file() or not audio.is_file():
+                return None
+            try:
+                payload = json.loads(meta.read_text(encoding="utf-8"))
+                if isinstance(payload, dict) and payload.get("id") == item_id:
+                    return payload
+            except (OSError, ValueError):
+                pass
+            return None
+
     def file(self, item_id: str) -> Path | None:
         if not ID.fullmatch(item_id):
             raise ValueError("invalid library item id")
