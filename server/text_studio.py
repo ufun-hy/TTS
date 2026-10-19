@@ -787,6 +787,13 @@ def make_handler(
                     self._json(exc.status, {"error": str(exc)})
                 return
 
+            if path == "/api/audio/library/capacity":
+                try:
+                    self._json(200, live.library_capacity())
+                except LiveSessionError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+
             if path == "/api/audio/library":
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 try:
@@ -1062,6 +1069,10 @@ def make_handler(
                         self._json(409, {"error": str(exc), "runtime": runtime.snapshot()})
                         return
                     self._json(200 if recovered else 409, {"recovered": recovered, "runtime": runtime.snapshot()})
+                    return
+
+                if path == "/api/audio/library/delete":
+                    self._json(200, live.library_delete(body.get("item_ids")))
                     return
 
                 if path == "/api/audio/replay/start":
