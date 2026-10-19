@@ -681,6 +681,32 @@ class LiveSessionManager:
         except (OSError, ValueError, RuntimeError) as exc:
             raise LiveSessionError(f"audio inventory unavailable: {exc}", 502) from exc
 
+    def library_replay_status(self) -> dict[str, Any]:
+        try:
+            return self._request_json("GET", "/audio/replay/status", cache=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"inventory replay unavailable: {exc}", 502) from exc
+
+    def library_replay_start(self, ids: Any) -> dict[str, Any]:
+        if not isinstance(ids, list) or not 1 <= len(ids) <= 500 or not all(
+            isinstance(item, str) and item for item in ids
+        ):
+            raise LiveSessionError("select 1 to 500 inventory items", 400)
+        try:
+            return self._request_json(
+                "POST", "/audio/replay/start", {"item_ids": ids}, cache=True, timeout=60
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"inventory replay start failed: {exc}", 502) from exc
+
+    def library_replay_control(self, action: str) -> dict[str, Any]:
+        if action not in ("pause", "resume", "stop"):
+            raise LiveSessionError("invalid inventory replay control", 400)
+        try:
+            return self._request_json("POST", "/audio/replay/" + action, {}, cache=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LiveSessionError(f"inventory replay control failed: {exc}", 502) from exc
+
     def playback_status(self) -> dict[str, Any]:
         session = self._require_session()
         if session.session_id not in self._decoupled_session_ids:
