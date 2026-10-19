@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from timeline.tts_client import TTSClient
 
 from .manager import AudioCacheError, AudioCacheManager, AudioItem
+from .replay_journal import ReplayJournal
 
 
 class AudioCacheServer(ThreadingHTTPServer):
@@ -30,9 +31,37 @@ class AudioCacheServer(ThreadingHTTPServer):
         self._client_state_lock = threading.RLock()
         self._session_controls: Dict[str, str] = {}
         self._replay: Dict[str, Any] = {}
+        self._replay_loaded = False
+        self._replay_journal: Optional[ReplayJournal] = None
+
+    def _load_replay(self, manager: AudioCacheManager) -> None:
+        # Called under _client_state_lock, with a single persistent cache root.
+        if self._replay_loaded:
+            return
+        journal = ReplayJournal(manager.root)
+        data = journal.load()
+        if data:
+            session = data["session_id"]
+            # A prior running task is never granted playback on process restart.
+            restored = "stopped" if data["status"] == "stopped" else "paused"
+            self._session_controls[session] = restored
+            self._replay = {
+                "session_id": session, "items": data["items"],
+                "item_ids": data["item_ids"], "recovered": restored == "paused",
+            }
+        self._replay_journal = journal
+        self._replay_loaded = True
+
+    def _save_replay(self, status: str) -> None:
+        # Caller holds _client_state_lock; persist before publishing a new state.
+        if self._replay and self._replay_journal is not None:
+            self._replay_journal.save(
+                self._replay["session_id"], self._replay["item_ids"], status,
+            )
 
     def replay_status(self, manager: AudioCacheManager) -> Dict[str, Any]:
         with self._client_state_lock:
+            self._load_replay(manager)
             replay = dict(self._replay)
             if not replay:
                 return {"session_id": "", "status": "idle", "items": 0}
@@ -46,6 +75,7 @@ class AudioCacheServer(ThreadingHTTPServer):
         if any(not isinstance(item, str) or manager.library.get(item) is None for item in ids):
             raise ValueError("one or more library audio items do not exist")
         with self._client_state_lock:
+            self._load_replay(manager)
             current = self._replay.get("session_id", "")
             if current and self._session_controls.get(current) in ("running", "paused"):
                 raise ValueError("a replay session is already active")
@@ -53,16 +83,20 @@ class AudioCacheServer(ThreadingHTTPServer):
                    if session != current):
                 raise ValueError("stop active playback before starting an inventory replay")
             replay_id = "replay_" + uuid.uuid4().hex[:16]
+            # Persist selection before staging: a crash cannot leave an
+            # orphaned task that accidentally becomes playable.
+            self._replay = {"session_id": replay_id, "items": len(ids), "item_ids": list(ids), "recovered": False}
+            self._save_replay("paused")
             self._session_controls[replay_id] = "paused"
-            self._replay = {"session_id": replay_id, "items": len(ids)}
             try:
                 for index, item_id in enumerate(ids, 1):
                     manager.stage_library_audio(item_id, replay_id, index)
             except Exception:
                 manager.cleanup_session(replay_id)
+                self._save_replay("stopped")
                 self._session_controls[replay_id] = "stopped"
-                self._replay = {}
                 raise
+            self._save_replay("running")
             self._session_controls[replay_id] = "running"
             return self.replay_status(manager)
 
@@ -70,15 +104,19 @@ class AudioCacheServer(ThreadingHTTPServer):
         if action not in ("pause", "resume", "stop"):
             raise ValueError("invalid replay action")
         with self._client_state_lock:
+            self._load_replay(manager)
             session = self._replay.get("session_id")
             if not session:
                 raise ValueError("no replay session")
             prior = self._session_controls.get(session, "stopped")
             if prior == "stopped" and action != "stop":
                 raise ValueError("replay already stopped; start a new replay")
-            self._session_controls[session] = {
+            desired = {
                 "pause": "paused", "resume": "running", "stop": "stopped"
             }[action]
+            self._save_replay(desired)
+            self._session_controls[session] = desired
+            self._replay["recovered"] = False
         return self.replay_status(manager)
 
     def client_connected(self) -> bool:
