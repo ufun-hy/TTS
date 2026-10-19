@@ -30,6 +30,8 @@
   dialog.setAttribute('aria-labelledby', 'voiceDialogTitle');
   dialog.innerHTML = `
     <h2 id="voiceDialogTitle">用录音创建音色</h2>
+    <p><a href="/voice-studio" target="_blank" rel="noopener">长录音自动筛选 →</a> <span class="hint">最长 1 小时，多风格对比</span></p>
+    <p class="hint">以下为短录音直接创建</p>
     <p class="hint">选一段单人、清晰、无背景音乐的录音。支持 3～30 秒，建议 8～20 秒；录音和音色保存在本机。</p>
     <form id="voiceCreateForm">
       <fieldset id="voiceFields">

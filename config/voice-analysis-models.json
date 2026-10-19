@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "models": {
+    "silero": "1e261b036686cd0017d500ee96acd1c4ba572a9d",
+    "emotion2vec": "b318240bfe67db81a8c572ecb37ce9c3759b81c9"
+  },
+  "files": {
+    "silero_vad.jit": {
+      "url": "https://raw.githubusercontent.com/snakers4/silero-vad/1e261b036686cd0017d500ee96acd1c4ba572a9d/src/silero_vad/data/silero_vad.jit",
+      "sha256": "e1122837f4154c511485fe0b9c64455f7b929c96fbb8d79fbdb336383ebd3720",
+      "bytes": 2272526
+    },
+    "emotion2vec_plus_base/model.pt": {
+      "url": "https://huggingface.co/emotion2vec/emotion2vec_plus_base/resolve/b318240bfe67db81a8c572ecb37ce9c3759b81c9/model.pt",
+      "sha256": "60710b5aae1dbe69bdac8920028fb05882d4314fd09031922b4b61ee9e7aadbd",
+      "bytes": 1118245678
+    },
+    "emotion2vec_plus_base/config.yaml": {
+      "url": "https://huggingface.co/emotion2vec/emotion2vec_plus_base/resolve/b318240bfe67db81a8c572ecb37ce9c3759b81c9/config.yaml",
+      "sha256": "50674ec187406b4f1208925594ceaf1f28f16a22333b5f2ac5b3d0cbffdd670e",
+      "bytes": 3170
+    },
+    "emotion2vec_plus_base/configuration.json": {
+      "url": "https://huggingface.co/emotion2vec/emotion2vec_plus_base/resolve/b318240bfe67db81a8c572ecb37ce9c3759b81c9/configuration.json",
+      "sha256": "8b6a745213025c7d4565f9f074cfef1b5cd5ef76e38e2a8f7f8a3db271e735b2",
+      "bytes": 343
+    },
+    "emotion2vec_plus_base/tokens.txt": {
+      "url": "https://huggingface.co/emotion2vec/emotion2vec_plus_base/resolve/b318240bfe67db81a8c572ecb37ce9c3759b81c9/tokens.txt",
+      "sha256": "866121e470057b847d7a50e9923509141fb2924392f53385a186482a1ec0fb7f",
+      "bytes": 119
+    }
+  }
+}

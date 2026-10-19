@@ -679,6 +679,12 @@ def _dependency_status(root: Path, gateway_url: str) -> dict[str, Any]:
 
 
 class StudioServer(ThreadingHTTPServer):
+    def server_close(self):
+        jobs = getattr(self.RequestHandlerClass, 'voice_jobs', None)
+        if jobs is not None:
+            jobs.shutdown()
+        super().server_close()
+
     daemon_threads = True
 
 
@@ -716,6 +722,12 @@ def make_handler(
         models = Path(os.environ.get("AI_LIVE_STUDIO_MODELS", r"D:\AI-Live-Studio-Models"))
         bin_dir = Path(os.environ.get("AI_LIVE_STUDIO_BIN", str(root / "runtime" / "bin")))
         voice_registration = VoiceRegistration(data_root, models, bin_dir)
+        from voice_datasets.studio_jobs import VoiceStudioJobs
+        from voice_datasets.draft_preview import request_preview
+        voice_jobs = VoiceStudioJobs(voice_registration, models, runtime, confirm_tts_release,
+            lambda prompt, text: request_preview(gateway_url, tts_api_key or _read_keychain_api_key(), prompt, text))
+        voice_registration.jobs = voice_jobs
+        voice_registration.project_root = root
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tts-text-studio/1.1"
@@ -1069,6 +1081,7 @@ def make_handler(
         def log_message(self, fmt: str, *args: Any) -> None:
             print(f"text-studio {self.address_string()} - {fmt % args}", flush=True)
 
+    Handler.voice_jobs = voice_jobs if single_machine else None
     return Handler
 
 

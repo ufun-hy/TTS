@@ -415,6 +415,34 @@ def make_handler(
             self._json(404, {"success": False, "error": "not_found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/synthesize-draft":
+                if (os.environ.get("WINDOWS_SINGLE_MACHINE") != "1"
+                        or self.client_address[0] not in ("127.0.0.1", "::1") or not self._authorized()):
+                    self._json(403, {"error": "local_only"})
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 16384 or self.headers.get_content_type() != "application/json":
+                        raise ValueError("invalid_request")
+                    try:
+                        from server.voice_draft import synthesize_draft
+                    except ModuleNotFoundError:
+                        from voice_draft import synthesize_draft
+                    audio = synthesize_draft(json.loads(self.rfile.read(length)),
+                        Path(os.environ["AI_LIVE_STUDIO_DATA"]), engine_runtime,
+                        engine_runtime.engine_url, _engine_request_text)
+                except (ValueError, TypeError) as exc:
+                    self._json(400, {"error": str(exc)})
+                    return
+                except (OSError, RuntimeError) as exc:
+                    self._json(502, {"error": str(exc)})
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Content-Length", str(len(audio)))
+                self.end_headers()
+                self.wfile.write(audio)
+                return
             if self.path == "/runtime/stop":
                 if self.client_address[0] not in ("127.0.0.1", "::1") or not self._authorized():
                     self._json(403, {"success": False, "error": "local_only"})

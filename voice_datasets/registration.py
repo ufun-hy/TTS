@@ -91,7 +91,31 @@ class VoiceRegistration:
         if result.returncode:
             raise ValueError(f'录音处理失败，请检查录音和运行库；日志：{log}')
 
-    def register(self, draft_id, name, transcript):
+    def prepare(self, draft_id, transcript, control=None):
+        directory = self.directory(draft_id)
+        prompt_text = build_zero_shot_prompt_text(transcript)
+        if not isinstance(transcript, str) or len(transcript) > 2000 or '<|' in transcript or '|>' in transcript or '\x00' in transcript:
+            raise ValueError('录音原文无效')
+        (directory / 'reference.txt').write_text(transcript.strip(), encoding='utf-8')
+        prompt = directory / ('prompt-' + uuid.uuid4().hex + '.gguf')
+        if control is None:
+            runner = self._run
+        else:
+            from voice_datasets.analysis import run_audio
+            runner = lambda command, log, timeout: run_audio(command, log, control, timeout)
+        runner([str(self.cli), '--frontend-only', '--speech-tokenizer',
+                   str(self.tts / 'speech_tokenizer_v3.int8.onnx'), '--campplus',
+                   str(self.tts / 'campplus.int8.onnx'), '--prompt-audio',
+                   str(directory / 'reference.wav'), '--prompt-text', prompt_text,
+                   '--prompt-speech-output', str(prompt)], directory / 'frontend.log', 180)
+        if not prompt.is_file() or prompt.stat().st_size < 24:
+            raise ValueError('未生成有效音色文件，原配置保持不变')
+        with prompt.open('rb') as stream:
+            if stream.read(4) != b'GGUF':
+                raise ValueError('生成的音色格式无效，原配置保持不变')
+        return prompt
+
+    def register(self, draft_id, name, transcript, *, prepared_prompt=None, control=None):
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
             raise ValueError('请填写 1～60 字的音色名称')
         if not isinstance(transcript, str) or not 1 <= len(transcript.strip()) <= 2000:
@@ -119,16 +143,7 @@ class VoiceRegistration:
             (directory / 'reference.txt').write_text(transcript.strip(), encoding='utf-8')
             run_id = uuid.uuid4().hex
             prompt = directory / f'prompt-{run_id}.gguf'
-            self._run([str(self.cli), '--frontend-only', '--speech-tokenizer',
-                       str(self.tts / 'speech_tokenizer_v3.int8.onnx'), '--campplus',
-                       str(self.tts / 'campplus.int8.onnx'), '--prompt-audio',
-                       str(directory / 'reference.wav'), '--prompt-text', prompt_text,
-                       '--prompt-speech-output', str(prompt)], directory / 'frontend.log', 180)
-            if not prompt.is_file() or prompt.stat().st_size < 24:
-                raise ValueError('未生成有效音色文件，原配置保持不变')
-            with prompt.open('rb') as stream:
-                if stream.read(4) != b'GGUF':
-                    raise ValueError('生成的音色格式无效，原配置保持不变')
+            prompt = prepared_prompt or self.prepare(draft_id, transcript, control)
             # Do not overwrite edits made outside this service while extraction ran.
             if self.config.read_bytes() != config_bytes:
                 raise ValueError('音色配置在生成期间发生变化，请重试')

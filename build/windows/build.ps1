@@ -207,7 +207,7 @@ try {
     }
 
     $bundledPython = Join-Path $pythonDir "python.exe"
-    & $bundledPython -c "import torch, qwen_asr; print(torch.__version__); print(qwen_asr.__name__)"
+    & $bundledPython -c "import torch, torchaudio, qwen_asr, funasr; print(torch.__version__); print(qwen_asr.__name__); print(funasr.__version__)"
     if ($LASTEXITCODE -ne 0) { throw "Bundled Python import smoke test failed" }
     Remove-DevelopmentFiles $sitePackages
 

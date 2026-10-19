@@ -707,6 +707,14 @@ def stop(args: argparse.Namespace) -> int:
                 pass
     except (OSError, error.URLError):
         pass
+    try:
+        studio = records.get('text-studio')
+        if studio and _inspect_process('text-studio', studio)['owned']:
+            opener = request.build_opener(request.ProxyHandler({}))
+            with opener.open(request.Request('http://127.0.0.1:8770/api/voice-registration/jobs/shutdown', data=b'', method='POST'), timeout=15):
+                pass
+    except (OSError, error.URLError):
+        pass
     remaining = _stop_processes(records)
     untracked = _untracked_listeners(records) if os.name == "nt" else []
     for listener in untracked:
