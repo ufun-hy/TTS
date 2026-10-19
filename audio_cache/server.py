@@ -149,6 +149,26 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                     "client_connected": self.server.client_connected(),  # type: ignore[attr-defined]
                 })
                 return
+            if path == "/audio/library":
+                query = parse_qs(split.query, keep_blank_values=True)
+                session_id = (query.get("session_id") or [""])[0]
+                try:
+                    limit = int((query.get("limit") or ["100"])[0])
+                    self._json(200, {"items": manager.library.list(session_id, limit)})
+                except (ValueError, TypeError) as exc:
+                    self._json(400, {"error": str(exc)})
+                return
+            if path.startswith("/audio/library/files/"):
+                item_id = unquote(path.rsplit("/", 1)[-1])
+                try:
+                    file = manager.library.file(item_id)
+                except ValueError:
+                    file = None
+                if file is None:
+                    self._json(404, {"error": "library_audio_not_found"})
+                    return
+                self._send_file(file)
+                return
             if path == "/audio/next":
                 query = parse_qs(split.query, keep_blank_values=True)
                 self.server.update_client_state(query)  # type: ignore[attr-defined]
