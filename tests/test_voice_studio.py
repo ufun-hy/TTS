@@ -166,7 +166,7 @@ class JobTests(unittest.TestCase):
         with mock.patch.object(self.service,'readiness',return_value={'ready':True,'missing':[]}):
             self.jobs.action(job['id'],'save',{**body,'heard':True});saved=self.wait(job['id'])
         self.assertEqual(saved['state'],'ready',saved['error'])
-        config=json.loads(self.service.config.read_text());self.assertEqual(len(config),2)
+        config=json.loads(self.service.config.read_text(encoding='utf-8'));self.assertEqual(len(config),2)
         again=self.jobs.action(job['id'],'save',{**body,'heard':True})
         self.assertEqual(again['candidates'][0]['registered'],saved['candidates'][0]['registered'])
         self.assertEqual(self.service.config.read_bytes(),json.dumps(config,ensure_ascii=False,indent=2).encode()+b'\n')

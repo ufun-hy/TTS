@@ -20,8 +20,8 @@ $CosyVoiceSha256 = "24c8589adcc0587932b5a7cc8d7489de8bd4f4b651bd0f3a67d4b42a611b
 # CosyVoice upstream documents noise with prebuilt GGML CUDA on Windows.
 $LlamaVulkanUrl = "https://github.com/ggml-org/llama.cpp/releases/download/b10938/llama-b10938-bin-win-vulkan-x64.zip"
 $LlamaVulkanSha256 = "caf934c42fcdb504fe49b0ac24e4bac5568520295bbc37ddd6a28b7132109c86"
-$FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-15-13-18/ffmpeg-n8.1.2-53-g1005b294ff-win64-lgpl-shared-8.1.zip"
-$FfmpegSha256 = "3b8e88c903043650350bf39adcd96c686e348e35857fd3476603e4d4ce126063"
+$FfmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-19-13-06/ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-shared-8.1.zip"
+$FfmpegSha256 = "638dd2a073cc1838cb668e736a822a1a58a3ca5405a109b0eca41c5ee03ec9a1"
 
 function Download-Verified([string]$Url, [string]$Sha256, [string]$Destination) {
     Write-Host "Downloading $Url"
@@ -176,7 +176,7 @@ try {
         ollama = "0.34.0"
         cosyvoice = "v0.1.3 (1616b12, no ICU)"
         ggml_backend = "llama.cpp b10938 prebuilt Vulkan backend"
-        ffmpeg = "n8.1.2-53-g1005b294ff"
+        ffmpeg = "n8.1.3-18-g46d899d7a0"
         model_path_default = "D:\\AI-Live-Studio-Models"
     }
     $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Stage "runtime\runtime-manifest.json") -Encoding UTF8
