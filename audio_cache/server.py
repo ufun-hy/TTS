@@ -354,6 +354,9 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                             original = entry.metadata.get("library_id")
                             if isinstance(original, str):
                                 protected.add(original)
+                            # Generated items use their cache ID as archive ID.
+                            if entry.metadata.get("source") == "live_session":
+                                protected.add(entry.id)
                     self._json(200, manager.library.delete(item_ids, protected))
                     return
                 if path == "/audio/replay/start":
