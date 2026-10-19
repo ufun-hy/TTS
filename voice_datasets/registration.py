@@ -158,6 +158,7 @@ class VoiceRegistration:
             (directory / f'voices-before-{run_id}.json').write_bytes(config_bytes)
             config[voice_id] = {'prompt_speech': f'voices/{voice_id}.gguf', 'label': name.strip()}
             temporary = self.config.with_name(f'voices-{run_id}.tmp')
-            temporary.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+            with temporary.open('w', encoding='utf-8', newline='\n') as stream:
+                stream.write(json.dumps(config, ensure_ascii=False, indent=2) + '\n')
             os.replace(temporary, self.config)
             return {'id': voice_id, 'label': name.strip(), 'registered': True}

@@ -43,7 +43,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller==6.16.0 cryptography==50.0.2
-          choco install innosetup ffmpeg -y --no-progress
+          choco install innosetup -y --no-progress
+
+      - name: Install verified FFmpeg for tests
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-test.zip"
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-15-13-18/ffmpeg-n8.1.2-53-g1005b294ff-win64-lgpl-shared-8.1.zip" -OutFile $archive
+          $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne "3b8e88c903043650350bf39adcd96c686e348e35857fd3476603e4d4ce126063") { throw "FFmpeg SHA256 mismatch: $actualHash" }
+          $destination = Join-Path $env:RUNNER_TEMP "ffmpeg-test"
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+          $ffmpeg = Get-ChildItem -LiteralPath $destination -Filter "ffmpeg.exe" -File -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw "FFmpeg archive does not contain ffmpeg.exe" }
+          $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Run Windows runtime tests
         shell: pwsh
