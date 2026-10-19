@@ -102,7 +102,7 @@ async function refreshAudioLibrary(){
 async function refreshLibraryReplay(){
   try{
     const d=await apiGet('/api/audio/replay/status');
-    $('libraryReplayStatus').textContent=`库存回放：${({idle:'未启动',running:'播放中',paused:'已暂停',stopped:'已停止'})[d.status]||d.status} · ${d.items||0} 段`;
+    $('libraryReplayStatus').textContent=`库存回放：${d.recovered?'重启后已恢复，等待手动继续':(({idle:'未启动',running:'播放中',paused:'已暂停',stopped:'已停止'})[d.status]||d.status)} · ${d.items||0} 段`;
     $('libraryPlayBtn').disabled=['running','paused'].includes(d.status);
     $('libraryPauseBtn').disabled=d.status!=='running';
     $('libraryResumeBtn').disabled=d.status!=='paused';
