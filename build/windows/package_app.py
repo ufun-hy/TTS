@@ -12,7 +12,7 @@ SOURCE_DIRS = {
     "audio_cache", "audio_client", "local_runtime", "recording_transcript",
     "server", "timeline", "voice_datasets", "web", "config", "scripts",
 }
-SOURCE_FILES = {"windows_client.py", "windows_launcher.py", "windows_playback_service.py"}
+SOURCE_FILES = {"windows_client.py", "windows_launcher.py", "windows_playback_service.py", "desktop_shell.py"}
 
 
 def digest(path):
