@@ -96,6 +96,8 @@ def _extended_make_handler(*args: Any, **kwargs: Any):
                     raise ValueError("text is required")
                 result = restore_script(text)
                 self._json(200, result)
+            except PermissionError as exc:
+                self._json(403, {"error": str(exc)})
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
             except Exception as exc:

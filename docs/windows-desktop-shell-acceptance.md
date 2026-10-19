@@ -28,3 +28,11 @@
 
 ## 回滚
 桌面壳以独立模块接入，回滚相关提交即可恢复旧启动器。请先完成 Windows 实机验收，再开展音频生成与播放拆分。
+
+## 2026-10-19 审阅修复验证
+
+- 关闭回调返回 `False` 取消关闭，确认退出成功后返回 `True`。已核对 pywebview 6.2.1 wheel 的 `webview/event.py` 与 Windows `winforms.py`：回调返回 False 才设置取消关闭。
+- 页面心跳不再触发 Runtime 停止；旧 guardian 入口直接退出，新启动只更新会话标记以使旧 guardian 失效。隐藏、页面崩溃或无页面均保留后台，必须显式退出。
+- Python 3.11 的桌面行为测试覆盖隐藏、托盘恢复、停止失败保留窗口及成功退出；库存/回放测试桩改为带时长的 ProcessingResult。
+- Studio JSON POST 统一检查 Content-Type 和 Origin（存在时只允许同端口本机 HTTP 来源），拒绝 cross-site 请求；无 Origin 的本机脚本调用仍兼容。真实 HTTP 回归覆盖生成、播放、回放和库存删除。
+- Windows GUI 实机验收仍待执行：直播或回放中关闭窗口，等待至少 120 秒，确认任务持续运行，再从托盘恢复并确认退出。

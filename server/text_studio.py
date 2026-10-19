@@ -741,7 +741,26 @@ def make_handler(
             self.end_headers()
             self.wfile.write(encoded)
 
+        def _validate_json_request(self) -> None:
+            origin_header = self.headers.get("Origin")
+            try:
+                origin = urllib.parse.urlsplit(origin_header or "")
+                allowed = origin_header is None or (
+                    origin.scheme == "http"
+                    and origin.hostname in ("127.0.0.1", "localhost", "::1")
+                    and origin.port == self.server.server_port
+                    and not origin.username and not origin.password
+                    and not origin.path and not origin.query and not origin.fragment
+                )
+            except ValueError:
+                allowed = False
+            if (not allowed
+                    or self.headers.get("Sec-Fetch-Site") == "cross-site"
+                    or self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json"):
+                raise PermissionError("JSON requests from a local Studio origin only")
+
         def _read_json(self) -> dict[str, Any]:
+            self._validate_json_request()
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > MAX_BODY_BYTES:
                 raise ValueError("request body must be between 1 byte and 16 MiB")
@@ -1048,13 +1067,7 @@ def make_handler(
                     return
 
                 if path == "/api/runtime/recover":
-                    origin_header = self.headers.get("Origin")
-                    origin = urllib.parse.urlsplit(origin_header or "")
-                    if (self.client_address[0] not in ("127.0.0.1", "::1")
-                            or self.headers.get("Content-Type", "").split(";")[0] != "application/json"
-                            or (origin_header is not None and (origin.scheme != "http"
-                                or origin.hostname not in ("127.0.0.1", "localhost", "::1")
-                                or origin.port != self.server.server_port))):
+                    if self.client_address[0] not in ("127.0.0.1", "::1"):
                         self._json(403, {"error": "local recovery only"})
                         return
                     if runtime is None:
@@ -1137,6 +1150,8 @@ def make_handler(
                     return
 
                 self._json(404, {"error": "not_found"})
+            except PermissionError as exc:
+                self._json(403, {"error": str(exc)})
             except subprocess.TimeoutExpired:
                 self._json(504, {"error": "provider_timeout"})
             except LiveSessionError as exc:

@@ -127,26 +127,17 @@ class JobControlTests(unittest.TestCase):
             self.assertEqual(runtime._stop_processes({'ollama':record}),{})
             run.assert_not_called()
 
-    def test_last_browser_closure_stops_runtime_but_another_view_keeps_it(self):
-        data=self.root/'session-data'
-        (data/'runtime').mkdir(parents=True)
-        write_json(data/'runtime/session.json',{'started':100})
-        now=[101.0]
-        with mock.patch.object(session.time,'time',side_effect=lambda:now[0]):
-            session.view_event(data,'first-window',True)
-            session.view_event(data,'second-window',False)
-        def tick(_):
-            now[0]+=3
-            if now[0]>125:
-                with mock.patch.object(session.time,'time',side_effect=lambda:now[0]):
-                    session.view_event(data,'second-window',True)
-        with mock.patch.object(session.time,'sleep',side_effect=tick), \
-             mock.patch.object(session.time,'time',side_effect=lambda:now[0]), \
-             mock.patch.object(session.subprocess,'run',return_value=mock.Mock(returncode=0)) as stop:
-            session.guard(ROOT,data,100)
-        self.assertGreaterEqual(now[0],140)
-        stop.assert_called_once()
-        self.assertIn('stop',stop.call_args.args[0])
+    def test_page_lifetime_cannot_stop_runtime(self):
+        data = self.root / 'session-data'
+        (data / 'runtime').mkdir(parents=True)
+        for closed in (False, True):
+            with mock.patch.object(session.time, 'time', return_value=100):
+                session.view_event(data, 'first-window', closed)
+            with mock.patch('subprocess.run') as stop, mock.patch('subprocess.Popen') as spawn:
+                session.launch_guardian(ROOT, data, Path(sys.executable))
+                session.guard(ROOT, data, 100)
+            stop.assert_not_called()
+            spawn.assert_not_called()
 
     @unittest.skipUnless(os.name=='nt','Windows parent process handles')
     def test_worker_exits_when_parent_is_killed(self):

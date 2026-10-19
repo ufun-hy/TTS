@@ -3,12 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from audio_cache.manager import AudioCacheManager
+from audio_cache.processing import ProcessingResult
 
 
 class AudioLibraryTests(unittest.TestCase):
     @staticmethod
     def manager(root):
-        return AudioCacheManager(root, processor=lambda data, meta: (data, {"duration": 1.25}))
+        return AudioCacheManager(root, processor=lambda data, meta: ProcessingResult(data, raw_duration=1.25, duration=1.25))
 
     def test_archive_survives_ack_cleanup_and_restart(self):
         with tempfile.TemporaryDirectory() as directory:

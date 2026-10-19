@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from audio_cache.manager import AudioCacheManager
+from audio_cache.processing import ProcessingResult
 from audio_cache.server import AudioCacheServer
 
 
@@ -11,7 +12,7 @@ class LibraryReplayTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.manager = AudioCacheManager(
-            Path(self.temp.name), processor=lambda audio, metadata: (audio, {"duration": 1.0})
+            Path(self.temp.name), processor=lambda audio, metadata: ProcessingResult(audio, raw_duration=1.0, duration=1.0)
         )
         self.server = AudioCacheServer(("127.0.0.1", 0), lambda *args, **kwargs: None)
         for i in range(2):
@@ -49,7 +50,7 @@ class LibraryReplayTests(unittest.TestCase):
         self.server.server_close()
         self.server = AudioCacheServer(("127.0.0.1", 0), lambda *args, **kwargs: None)
         fresh = AudioCacheManager(
-            Path(self.temp.name), processor=lambda data, meta: (data, {"duration": 1.0})
+            Path(self.temp.name), processor=lambda data, meta: ProcessingResult(data, raw_duration=1.0, duration=1.0)
         )
         recovered = self.server.replay_status(fresh)
         self.assertEqual(recovered["session_id"], session)

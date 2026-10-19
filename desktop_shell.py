@@ -26,8 +26,8 @@ def run_desktop(url: str, stop_runtime: Callable[[], bool]) -> None:
     def on_close() -> bool:
         if not stopping.is_set():
             window.hide()
-            return True  # Cancel the window close; runtime remains alive.
-        return False
+            return False  # pywebview cancels closing only on False.
+        return True
 
     window.events.closing += on_close
 

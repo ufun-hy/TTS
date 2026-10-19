@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from audio_cache.manager import AudioCacheManager
+from audio_cache.processing import ProcessingResult
 from audio_cache.server import AudioCacheServer
 
 
@@ -14,7 +15,7 @@ class LibraryCapacityTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.manager = AudioCacheManager(
-            self.root, processor=lambda audio, metadata: (audio, {"duration": 1.0})
+            self.root, processor=lambda audio, metadata: ProcessingResult(audio, raw_duration=1.0, duration=1.0)
         )
         self.manager.add_audio(b"RIFF1234", {"source": "live_session", "session_id": "s"}, "one")
         self.manager.add_audio(b"RIFF5678", {"source": "live_session", "session_id": "s"}, "two")
