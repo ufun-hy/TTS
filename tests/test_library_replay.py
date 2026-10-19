@@ -41,6 +41,10 @@ class LibraryReplayTests(unittest.TestCase):
         self.assertEqual(self.server.replay_control(self.manager, "stop")["status"], "stopped")
         self.assertEqual(len(self.manager.library.list()), 2)
 
+    def test_unknown_replay_session_does_not_autoplay_after_restart(self):
+        self.assertEqual(self.server.session_control("replay_old_session")["status"], "stopped")
+        self.assertEqual(self.server.session_control("ordinary_live")["status"], "running")
+
     def test_replay_rejects_conflict_invalid_ids_and_duplicate_start(self):
         with self.assertRaises(ValueError):
             self.server.replay_start(self.manager, ["missing"])
