@@ -41,6 +41,38 @@ class LibraryReplayTests(unittest.TestCase):
         self.assertEqual(self.server.replay_control(self.manager, "stop")["status"], "stopped")
         self.assertEqual(len(self.manager.library.list()), 2)
 
+    def test_replay_recovers_paused_and_requires_explicit_resume(self):
+        first = self.server.replay_start(self.manager, ["original0", "original1"])
+        session = first["session_id"]
+        self.assertEqual(first["status"], "running")
+        # Simulate a restart with the same filesystem, without duplicating WAVs.
+        self.server.server_close()
+        self.server = AudioCacheServer(("127.0.0.1", 0), lambda *args, **kwargs: None)
+        fresh = AudioCacheManager(
+            Path(self.temp.name), processor=lambda data, meta: (data, {"duration": 1.0})
+        )
+        recovered = self.server.replay_status(fresh)
+        self.assertEqual(recovered["session_id"], session)
+        self.assertEqual(recovered["status"], "paused")
+        self.assertTrue(recovered["recovered"])
+        self.assertEqual(recovered["cache"]["ready"], 2)
+        self.assertIsNone(self.server.claim_next(fresh, session))
+        continued = self.server.replay_control(fresh, "resume")
+        self.assertEqual(continued["status"], "running")
+        self.assertFalse(continued["recovered"])
+        self.assertEqual(self.server.claim_next(fresh, session).metadata["library_id"], "original0")
+
+    def test_stopped_replay_remains_stopped_after_restart(self):
+        first = self.server.replay_start(self.manager, ["original1"])
+        self.server.replay_control(self.manager, "stop")
+        self.server.server_close()
+        self.server = AudioCacheServer(("127.0.0.1", 0), lambda *args, **kwargs: None)
+        resumed = self.server.replay_status(self.manager)
+        self.assertEqual(resumed["session_id"], first["session_id"])
+        self.assertEqual(resumed["status"], "stopped")
+        with self.assertRaisesRegex(ValueError, "already stopped"):
+            self.server.replay_control(self.manager, "resume")
+
     def test_unknown_replay_session_does_not_autoplay_after_restart(self):
         self.assertEqual(self.server.session_control("replay_old_session")["status"], "stopped")
         self.assertEqual(self.server.session_control("ordinary_live")["status"], "running")
