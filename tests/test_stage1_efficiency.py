@@ -6,7 +6,8 @@ import tempfile
 import threading
 import unittest
 import wave
-from urllib.request import urlopen
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from audio_cache.processing import AudioProcessingConfig, AudioProcessor
 from server.engine_runtime import ManagedEngine
@@ -102,6 +103,31 @@ class StageOneEfficiencyTests(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertFalse(result["value"][1])
             self.assertTrue(cache.get_or_create("慢合成", "default", lambda: wav_bytes())[1])
+
+    def test_gateway_rejects_removed_speak_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = TTSResultCache(Path(directory), FakeVoiceStore(), revision="model-v1")
+            engine = ManagedEngine("http://engine", probe=lambda: True)
+            server = Gateway(("127.0.0.1", 0), make_handler(
+                Queue(), FakeVoiceStore(), RateLimiter(30), "key", engine,
+                lambda _text, _voice: wav_bytes(), 200, cache,
+            ))
+            serving = threading.Thread(target=server.serve_forever)
+            serving.start()
+            try:
+                request = Request(
+                    f"http://127.0.0.1:{server.server_port}/speak",
+                    data=json.dumps({"text": "hello", "voice": "default"}).encode("utf-8"),
+                    headers={"Authorization": "Bearer key", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as context:
+                    urlopen(request, timeout=2)
+                self.assertEqual(context.exception.code, 404)
+            finally:
+                server.shutdown()
+                server.server_close()
+                serving.join(2)
 
     def test_gateway_health_does_not_wait_for_slow_synthesis(self):
         with tempfile.TemporaryDirectory() as directory:
