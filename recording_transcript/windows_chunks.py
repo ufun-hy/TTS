@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
-import audioop
+from array import array
+import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 import wave
+
+
+def _pcm_rms(sample: bytes, width: int) -> int:
+    """Match audioop.rms integer PCM semantics without Python 3.13 audioop."""
+    values = array("h" if width == 2 else "i")
+    values.frombytes(sample)
+    if sys.byteorder != "little":
+        values.byteswap()
+    if not values:
+        return 0
+    return math.isqrt(sum(value * value for value in values) // len(values))
 
 
 @dataclass(frozen=True)
@@ -34,7 +47,7 @@ def split_wav(source: Path, output_dir: Path, target_seconds: float = 30.0, max_
     for start in range(0, frames, frame_size):
         count = min(frame_size, frames - start)
         sample = raw[start * width:(start + count) * width]
-        quiet = audioop.rms(sample, width) <= threshold
+        quiet = _pcm_rms(sample, width) <= threshold
         if quiet and silence_start is None:
             silence_start = start
         elif not quiet and silence_start is not None:
