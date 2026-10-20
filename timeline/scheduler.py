@@ -14,7 +14,7 @@ from .cache import AudioCache
 from .player import Player
 from .runtime_selector import RuntimeSelector, Selection
 from .session import RuntimeSession, utc_now
-from .tts_client import TTSClient, TTSClientError
+from server.tts_client import TTSClient, TTSClientError
 
 
 @dataclass
