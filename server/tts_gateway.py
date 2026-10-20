@@ -460,9 +460,8 @@ def make_handler(
             if self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._json(403, {"success": False, "error": "local_only"})
                 return
-            if not rate_limiter.allow():
-                self._json(429, {"success": False, "error": "rate_limited"}, {"Retry-After": "60"})
-                return
+            # /synthesize is the internal batch TTS API. The retired /speak
+            # route owned the legacy rate limit; don't throttle live synthesis.
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].lower()
             if content_type != "application/json":
                 self._json(415, {"success": False, "error": "content_type_must_be_application_json"})
