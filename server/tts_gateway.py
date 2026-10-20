@@ -318,11 +318,7 @@ def synthesize_and_play(
             audio = synthesize_text(job.text, job.voice)
         job.audio_path.write_bytes(audio)
         synthesized = time.monotonic()
-        # `/speak` is the legacy fire-and-play endpoint on macOS.  Windows
-        # single-machine mode consumes `/synthesize` through WinMM instead;
-        # never invoke the macOS-only afplay binary there.
-        if os.name != "nt":
-            subprocess.run(["/usr/bin/afplay", str(job.audio_path)], check=True)
+        # Windows device playback is owned by the WinMM playback service.
         finished = time.monotonic()
         print(json.dumps({
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -455,13 +451,13 @@ def make_handler(
                     "engine": engine_runtime.stats(),
                 })
                 return
-            if self.path not in ("/speak", "/synthesize"):
+            if self.path != "/synthesize":
                 self._json(404, {"success": False, "error": "not_found"})
                 return
             if not self._authorized():
                 self._json(401, {"success": False, "error": "unauthorized"})
                 return
-            if self.path == "/synthesize" and self.client_address[0] not in ("127.0.0.1", "::1"):
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
                 self._json(403, {"success": False, "error": "local_only"})
                 return
             if not rate_limiter.allow():
@@ -515,14 +511,6 @@ def make_handler(
                 self.end_headers()
                 self.wfile.write(audio)
                 return
-
-            job = Job(text, voice, self.client_address[0], self.server.audio_dir)  # type: ignore[attr-defined]
-            queue.put(job)
-            job.done.wait()
-            if job.error:
-                self._json(502, {"success": False, "job_id": job.job_id, "error": "tts_failed"})
-            else:
-                self._json(200, {"success": True, "job_id": job.job_id})
 
         def log_message(self, fmt: str, *args) -> None:
             if os.environ.get("TTS_HTTP_LOG", "0") == "1":
@@ -679,7 +667,7 @@ def main() -> int:
         signal.signal(signal.SIGTERM, shutdown_handler)
         signal.signal(signal.SIGINT, shutdown_handler)
 
-    print(f"API: http://{args.host}:{args.port}/speak", flush=True)
+    print(f"API: http://{args.host}:{args.port}/synthesize", flush=True)
     print(f"Voices: {', '.join(voice_store.ids())}", flush=True)
     print(f"TTS cache: {args.tts_cache_dir}", flush=True)
     print(f"Engine idle sleep: {args.engine_idle_seconds:g}s" if engine_runtime.managed else "Engine mode: external", flush=True)
