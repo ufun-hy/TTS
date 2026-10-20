@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from timeline.tts_client import TTSClient
+from server.tts_client import TTSClient
 
 from .manager import AudioCacheError, AudioCacheManager, AudioItem
 from .replay_journal import ReplayJournal
