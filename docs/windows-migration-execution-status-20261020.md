@@ -140,3 +140,20 @@ CI 状态（本批操作时的观察）：
 ## 结论
 
 **真实进度：阶段 0 的 Windows Python 功能回归已 PASS；安装包构建与真实设备烟测仍待验收，未将整个阶段标记完全完成。** 之前的桌面壳与库存功能只代表另外一批代码改造，不能视为“阶段 4 单宿主已完成”。
+
+## 阶段 2：禁用话术 Windows 端到端接入（2026-10-20）
+
+本批仅实现阶段 2 第一项；`main` 原有的完整风险抽屉/候选组设计没有整体覆盖 Windows 页面，以保留单机化的音频生成与播放解耦。
+
+已提交：
+- `server/text_studio.py` 按主干规则校验 `prohibited_reviews`，项目 JSON 继续原样持久化；试听在调用 CosyVoice3 前执行 `broadcast_text`，全禁用时失败且不产生 WAV；`/api/generation/start` 与兼容的 `/api/live/start` 在 `live.start` 前用 `filter_segments` 过滤，并在无可播内容时拒绝开始。
+- Text Studio 为浏览器提供 `/text-studio-prohibited.js` 和与服务端同源的 `/text-studio-prohibited-rules.js`；前端显示每段命中数、允许逐条确认或定位修改，人工确认使用候选完整文本、命中位置、标签、规则版本与确认时间绑定；提供撤销该段确认能力。
+- 项目保存/加载包括 `prohibited_reviews`；编辑或切换候选清除该段过期确认；客户端向试听和生成接口传输确认记录。所有确认继续由服务端按完整文本/位置/规则版本再校验，不依赖前端显示状态。
+- 新增 `tests/test_windows_prohibited_integration.py`、`tests/windows_prohibited_ui.js`；新增 Python 双版本测试、前端 JS 语法和浏览器规则验证。
+- Windows CI run `39369362620`（新增端到端测试及前端校验步骤）Python 3.11/3.13 均 **SUCCESS**。随后 Unicode 位置兼容性和撤销按钮补丁已提交，最新 CI 仍需确认结束结果。
+
+局限及验收要求：
+- 前端实现的是轻量逐条确认/编辑体验，没有完全复制 `main` 风险抽屉的分类与上下文候选组交互；阶段 2 其他模块仍未接入。
+- 当前支持的是**每段最终选中候选**的确认与过滤，未加入上下文组批量确认。
+- 需要在 Windows 真实工作台依次验收：加载项目→命中→人工确认→保存重启→试听→生成→库存 WAV→播放器播放，并验证不含未确认禁用文本；最新 Installer 完整构建和实机操作结果尚未取得。
+- 本次不修改播放组件、不清理用户已有数据、不部署。
