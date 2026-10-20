@@ -11,7 +11,7 @@
 | 阶段 | 本次判定 | 证据 / 下一道关 |
 |---|---|---|
 | 阶段 0：测试安全网 | **功能回归 PASS；安装包构建待完成** | Windows 双版本功能回归已绿；全量 Windows runtime tests、WinMM smoke 和 dry-run 在安装包工作流中已通过，打包步骤仍在执行 |
-| 阶段 1：砍 Mac/局域网遗留 | **首批已提交，待回归** | 删除 macOS `server/stack_services.py`、对应 Python CLI 和两个 launchd 专项测试；其余脚本及旧网络链路待审查。`audio_cache` 保留到阶段 4 |
+| 阶段 1：砍 Mac/局域网遗留 | **两批清理已提交，仍在进行** | 删除 macOS `server/stack_services.py`、对应 Python CLI 和两个 launchd 专项测试；其余脚本及旧网络链路待审查。`audio_cache` 保留到阶段 4 |
 | 阶段 2：移植 main 六个业务模块 | 尚未执行 | 必须逐项迁移并跑对应测试，不能直接覆盖 Windows 交叉修改 |
 | 阶段 3：安全修复 | 尚未执行 | Origin/Host/Content-Type，TTS gateway 异常及认证，离线补丁签名 |
 | 阶段 4：单宿主进程化 | 尚未执行 | 新 Host、Windows Job Object、GPU 调度、进程内队列；需实机验证 |
@@ -34,6 +34,27 @@
 本批**不涉及** Windows 播放器、Audio Cache、`scripts/windows-runtime.py`、`recording_transcript/windows_worker.py` 或 `main`。尚存的 macOS Bash 脚本、Mac Keychain 调用、MLX 分支、旧 timeline CLI 以及局域网轮询链路仍应按原计划继续分批审查，不得宣称阶段 1 全部完成。
 
 删除后的 CI 工作流 run `39364041752`、安装包 run `39364041732` 已触发，写入报告时还未确认最终结果。
+
+## 2026-10-20 阶段 1 第二批清理（Windows 目标分支）
+
+按原文档第 3 节与第 6 节，继续清理已确认的 macOS 专用运维入口，分两次独立提交：
+
+1. Commit `eb7445c617d42bbbc5dc93cc09f2218d490b7874`：删除 15 个 macOS 运维 Shell，包含 `scripts/funnel-*.sh`、`scripts/service-*.sh`、`scripts/stack-{common,start,stop,restart,status}.sh`、`scripts/managed-service.sh`。这些脚本依赖 launchd、Keychain 或 Tailscale Funnel，Windows Runtime 仍走 `scripts/windows-runtime.py`。
+2. Commit `d89427deb20511f655407cf73b92aa75f6d1e291`：删除 `scripts/timeline-{run,generalize,resegment}.py` 三个旧 CLI 入口。**尚未删除 timeline 的算法和 `tts_client.py`**，因为 Windows 服务仍有运行时调用；它们必须在依赖迁移验证后才能继续移除。
+
+保持不动：
+- `audio_cache/*`、`audio_client/playback.py`、`audio_client/wav_compat.py`：旧播放路径需要等阶段 4 替换；
+- `recording_transcript/windows_worker.py` 和 Windows 专属启动、安装、升级模块；
+- `start.sh`、`scripts/text-studio-start.sh`、`scripts/recording-transcript-start.sh` 暂留待依赖审查，不能因为是 Shell 立即全部删除；
+- `main`、模型文件及用户运行数据。
+
+CI 状态（本批操作时的观察）：
+- 删除 15 个 Mac Shell 后的 Windows Patch workflow run `39366049658` 已 **SUCCESS**；
+- Installer run `39366049653` 当时仍在执行；
+- 再删除 3 个 timeline CLI 后 Patch run `39366121165` 与 Installer run `39366121166` 已触发，**未取得最终结果**；
+- 前一批 `launchd` 删除后的功能回归 run `39364041752`、Patch run `39364041721`、Installer run `39364041732` 均已 **SUCCESS**。
+
+**阶段 1 仍未完成**：timeline 内部调用迁移、`timeline/tts_client.py` Keychain 剥离、MLX ASR 拆分、`/speak` 与 `afplay` 清理、剩余 Mac 入口清理、最终导入/打包回归。
 
 ## 阶段 0 未完成条件
 
