@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import os
 import uuid
-from io import BytesIO
-import time
-import wave
 from typing import Any, Callable
 from server.context_variants import prepare_context_live
 
 if __package__:
     from .live_session import (
-        BUFFER_POLL_SECONDS,
         DEFAULT_BUFFER_HIGH_SECONDS,
         DEFAULT_BUFFER_LOW_SECONDS,
         VOICE_ID,
@@ -30,7 +26,6 @@ if __package__:
     )
 else:
     from live_session import (
-        BUFFER_POLL_SECONDS,
         DEFAULT_BUFFER_HIGH_SECONDS,
         DEFAULT_BUFFER_LOW_SECONDS,
         VOICE_ID,
@@ -102,74 +97,6 @@ def prepare_synthesis_blocks(segments: list[dict[str, str]]) -> list[dict[str, s
 class SynthesisBlockLiveSession(LiveSession):
     """LiveSession that synthesizes adjacent short segments as one utterance."""
 
-    def _wait_for_buffer_capacity(self) -> None:
-        """Resume synthesis when a connected Windows client reports no session buffer.
-
-        The base LiveSession treats a missing current-session state as unsafe
-        after that session has been seen once. In practice the Windows client
-        can temporarily report no current session once its local buffer drains
-        or cached session files disappear, while it is still actively polling.
-        Keeping backpressure active in that state deadlocks synthesis forever.
-
-        For the synthesis-block live path, an actively connected client with no
-        current-session state means there is no trustworthy positive buffer to
-        protect, so release backpressure and refill. A truly disconnected client
-        still pauses generation to avoid an unbounded Mac-side backlog.
-        """
-        while not self._stop.is_set():
-            self._resume.wait()
-            if self._stop.is_set():
-                return
-
-            cache = self._cache_status(self.session_id)
-            client_state = cache.get("client_state") if isinstance(cache.get("client_state"), dict) else {}
-            client_connected = bool(cache.get("client_connected", False))
-            valid_state = client_state.get("session_id") == self.session_id
-
-            if valid_state:
-                self._client_session_seen = True
-            elif not self._client_session_seen:
-                # Bootstrap: Windows cannot report this session until the first
-                # generated item reaches it, so allow initial synthesis.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            elif client_connected:
-                # Windows is still polling but no longer reports buffered audio
-                # for this session. Treat that as an empty buffer and refill
-                # immediately instead of leaving backpressure stuck forever.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            else:
-                # Once Windows has acknowledged this session, only a genuine
-                # disconnect/stale client state should stop generation.
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-
-            try:
-                buffered_seconds = max(0.0, float(client_state.get("buffered_seconds", 0) or 0))
-            except (TypeError, ValueError):
-                buffered_seconds = 0.0
-
-            with self._lock:
-                active = self._backpressure_active
-            if active:
-                if buffered_seconds <= self.buffer_low_seconds:
-                    with self._lock:
-                        self._backpressure_active = False
-                    return
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            if buffered_seconds >= self.buffer_high_seconds:
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            return
-
     def _run(self) -> None:
         try:
             with self._lock:
@@ -194,24 +121,16 @@ class SynthesisBlockLiveSession(LiveSession):
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(block["text"])
-                    synthesis_started = time.monotonic()
-                    audio = self._synthesize(speech_text, self.voice)
-                    synthesis_seconds = time.monotonic() - synthesis_started
-                    try:
-                        with wave.open(BytesIO(audio), "rb") as handle:
-                            audio_seconds = handle.getnframes() / max(1, handle.getframerate())
-                    except (OSError, EOFError, wave.Error):
-                        audio_seconds = 0.0
-                    with self._lock:
-                        self._synthesis_seconds += synthesis_seconds
-                        self._audio_seconds += audio_seconds
+                    audio = self._synthesize_with_recovery(speech_text, block["id"])
+                    if audio is None or self._stop.is_set():
+                        return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
                     self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
-                    with self._lock:
-                        self.generated_segments += 1
                     if self._stop.is_set():
                         return
+                    with self._lock:
+                        self.generated_segments += 1
                 if not self.looping:
                     break
             with self._lock:
@@ -236,6 +155,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
         segments: Any,
         playback_speed: Any = 1.0,
         volume: Any = 100.0,
+        autoplay: bool = True,
         first_round: dict | None = None,
         preparation_stream=None,
     ) -> dict[str, Any]:
@@ -269,8 +189,9 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 raise LiveSessionError("reset the previous live session before starting a new one")
             options = {}
             session_type = SynthesisBlockLiveSession
-            if first_round or preparation_stream is not None:
-                from server.prepared_live_session import PreparedLiveSession
+            prepared_session = bool(loop_mode or context_project or first_round or preparation_stream is not None)
+            if prepared_session:
+                from server.prepared_live_session import PREPARED_ROUND_COUNT, PreparedLiveSession
                 session_type = PreparedLiveSession
                 if first_round:
                     options["first_round"] = first_round
@@ -294,15 +215,30 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
             )
             self._session = session
             self._runtime_lease = runtime_lease
+            if not autoplay:
+                self._decoupled_session_ids.add(session.session_id)
+            self._cache_control(session.session_id, "starting" if autoplay else "paused")
             session.start()
+            if autoplay:
+                self._cache_control(session.session_id, "running")
             if runtime_lease:
                 import threading
                 threading.Thread(target=self._release_runtime_after_session, args=(session, runtime_lease), daemon=True, name="live-runtime-release").start()
-            return {
+            result = {
                 "session_id": session.session_id,
                 "status": "starting",
                 "looping": session.looping,
             }
+            if prepared_session:
+                result.update({
+                    key: value for key, value in session.snapshot().as_dict().items()
+                    if key in (
+                        "phase", "prepared_segments", "preparation_total_segments",
+                        "prepared_rounds", "preparation_total_rounds", "prepared_round_number",
+                    )
+                })
+                result["preparation_total_rounds"] = PREPARED_ROUND_COUNT
+            return result
 
 
 def build_live_manager(
@@ -326,4 +262,5 @@ def build_live_manager(
         stop_timeout_seconds=stop_timeout,
         runtime=runtime,
         confirm_tts_release=confirm_tts_release,
+        capacity_guard=True,
     )

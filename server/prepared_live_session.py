@@ -100,6 +100,8 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
             position = self.generated_segments + 1
             self._enqueue(f"{self.session_id}-r000001-s{position:04d}", self._sequence,
                           block["text"], self.voice, audio)
+            if self._stop.is_set():
+                return False
             with self._lock:
                 self.generated_segments += 1
         return False
@@ -196,6 +198,8 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
                 self._sequence += 1
                 item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
                 self._enqueue(item_id, self._sequence, block.text, self.voice, audio)
+                if self._stop.is_set():
+                    return
                 with self._lock:
                     self.generated_segments += 1
             with self._lock:

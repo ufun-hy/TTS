@@ -7,9 +7,13 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 import uuid
 
 ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+METADATA_RESERVE_BYTES = 16 * 1024
+MIN_FREE_DISK_BYTES = 16 * 1024 * 1024
+CAPACITY_CACHE_SECONDS = 1.0
 
 
 class AudioLibrary:
@@ -17,10 +21,15 @@ class AudioLibrary:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._capacity_cache = None
+        self._capacity_cache_at = 0.0
 
     def capacity(self) -> dict:
-        """Exact disk usage of archived assets, including metadata."""
+        """Report archive and filesystem capacity, refreshing at most once per second."""
         with self._lock:
+            now = time.monotonic()
+            if self._capacity_cache and now - self._capacity_cache_at < CAPACITY_CACHE_SECONDS:
+                return dict(self._capacity_cache)
             count = 0
             used = 0
             for entry in self.root.iterdir():
@@ -39,10 +48,16 @@ class AudioLibrary:
             if not 0.01 <= cap_gib <= 100000:
                 raise ValueError("library capacity must be between 0.01 and 100000 GiB")
             max_bytes = int(cap_gib * (1024 ** 3))
-            return {
+            capacity = {
                 "item_count": count, "used_bytes": used,
                 "limit_bytes": max_bytes, "remaining_bytes": max(0, max_bytes - used),
+                "disk_free_bytes": shutil.disk_usage(self.root).free,
+                "metadata_reserve_bytes": METADATA_RESERVE_BYTES,
+                "free_space_reserve_bytes": MIN_FREE_DISK_BYTES,
             }
+            self._capacity_cache = capacity
+            self._capacity_cache_at = now
+            return dict(capacity)
 
     def delete(self, item_ids: list[str], protected_ids: set[str]) -> dict:
         """Explicit archive deletion only; reject the entire request on conflict."""
@@ -59,6 +74,7 @@ class AudioLibrary:
                 raise ValueError("one or more inventory items do not exist")
             for item_id in item_ids:
                 shutil.rmtree(self.root / item_id)
+            self._capacity_cache = None
             return {"deleted": len(item_ids), "capacity": self.capacity()}
 
     def store(self, item_id: str, audio_path: Path, metadata: dict) -> dict:
@@ -74,10 +90,10 @@ class AudioLibrary:
             usage = self.capacity()
             size = audio_path.stat().st_size
             # Reserve extra room for metadata before starting a durable copy.
-            if usage["used_bytes"] + size + 16384 > usage["limit_bytes"]:
+            if usage["used_bytes"] + size + METADATA_RESERVE_BYTES > usage["limit_bytes"]:
                 raise ValueError("audio library capacity reached; delete old inventory explicitly")
             free_space = shutil.disk_usage(self.root).free
-            if free_space < size + 16 * 1024 * 1024:
+            if free_space < size + MIN_FREE_DISK_BYTES:
                 raise OSError("not enough disk space for archived audio")
             temporary = self.root / ("." + item_id + "." + uuid.uuid4().hex + ".tmp")
             temporary.mkdir()
@@ -95,6 +111,7 @@ class AudioLibrary:
                     json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                 )
                 os.replace(temporary, target)
+                self._capacity_cache = None
                 return info
             finally:
                 if temporary.exists():

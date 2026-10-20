@@ -246,7 +246,7 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 return
             if path == "/audio/library/capacity":
                 try:
-                    self._json(200, manager.library.capacity())
+                    self._json(200, manager.library_capacity())
                 except (ValueError, OSError) as exc:
                     self._json(503, {"error": str(exc)})
                 return

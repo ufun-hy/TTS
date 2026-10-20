@@ -58,3 +58,51 @@
 - **G5/G6 未完成**：原版页面完整入口和 main 24 个提交差异仍需文件级适配/审计；不直接覆盖 Windows 页面或播放器。
 
 本轮修改 `d973bec8`、`23107f7`、`c0d8180`；原 12 份 main 测试未改动。新的完整保真审计：https://github.com/ufun-hy/TTS/actions/runs/39399381250
+
+## 2026-10-20 首轮准备、持续直播及 D4 容量门控复修
+
+### 执行环境与基线
+- 工作分支：`codex/windows-offline-runtime-v1`，工作树：`/Users/ufun/code/2026/TTS-windows-offline-runtime-v1`；执行前 HEAD 为 `5808008`，工作区干净。
+- 当前机器没有运行中的 TTS 服务，`AI_LIVE_STUDIO_DATA` 未设置；代码默认数据目录为当前工作树 `runtime/`。该目录含既有模型、日志和运行数据，本轮未清理或修改。
+- 使用 macOS 上的 Python 3.11.15 执行本地测试；不是 Windows Python，也没有 CosyVoice3 / WinMM 真机验证。
+- 修改前 12 份原版测试为 6/12 PASS。完整逐文件结果和日志在 `/tmp/tts-windows-main-business-baseline-20261020/summary.json` 及同目录各测试 `.log`。
+
+### 本轮修复
+- `build_live_manager()` 改为创建已有的 `SynthesisBlockLiveSessionManager`，支持完整首轮准备、已准备音频 handoff、连续候选轮次和准备状态返回；保留 `autoplay=False` 及独立播放控制。
+- 恢复可暂停、可停止的 TTS 暂时性错误重试，并将 Gateway 单次请求设为 `retries=0`，避免客户端内部不可中断的等待。连续失败最多重试 5 次（最多 6 次尝试），之后将 Session 标为失败；首轮后台准备使用相同上限。
+- 生成结果在停止后不会进入 Audio Cache；内容、sequence 和候选轮次在重试中保持不变。
+- 用户已明确批准 D4 容量方案。生成不再因 ACK、客户端在线状态或缓冲水位暂停；官方管理器在入库前检查归档库存和实际磁盘余量，空间不足时显示已用量/上限并等待容量释放。停止可以立即打断等待；不自动删除库存。容量门控按 Audio Processor 的最慢速度估算 WAV 增长，并沿用现有 20 GiB 默认库存上限与 16 MiB 磁盘余量。
+- `AudioLibrary.capacity()` 的磁盘用量结果最多缓存 1 秒，并在本地归档新增或显式删除后失效，避免生成过程中重复扫描库存目录。
+
+### 12 份原版测试对照
+
+| 原版测试 | 修改前 | 修改后 | 修改后失败原因 / 分类 |
+| --- | --- | --- | --- |
+| `test_context_variants.py` | PASS | PASS | — |
+| `test_live_session_blocks.py` | PASS | PASS | — |
+| `test_semantic_tts_blocks.py` | PASS | PASS | — |
+| `test_context_live.py` | PASS | PASS | — |
+| `test_first_round_preparation.py` | PASS | PASS | — |
+| `test_prepared_live_session.py` | FAIL（8 failures、2 errors） | PASS | 恢复准备管理器接线、重试与首轮状态字段；首轮失败不再误作完成。 |
+| `test_live_session.py` | FAIL（7 failures） | PASS | 恢复可中断重试、暂停/停止；D4 已按用户批准切换为容量门控。 |
+| `test_prohibited_reviews.py` | FAIL | FAIL | D5：原测试桩返回 JSON，Windows 试听保持严格 WAV 校验；其中 3 项 errors。 |
+| `test_prohibited_speech.py` | FAIL | FAIL | D5：原测试桩返回 JSON，Windows 试听保持严格 WAV 校验；1 项 error。 |
+| `test_text_studio.py` | FAIL | FAIL | D5 非 WAV 测试桩导致 1 项 error；G5 页面检查仍缺少“准备 1 轮并开播”旧入口文案。 |
+| `test_tts_client.py` | PASS | PASS | — |
+| `test_tts_gateway.py` | FAIL | FAIL | D2：旧 `/speak` 路径返回 404，2 项 failures；未恢复 Mac 接口。 |
+
+修改后共 8/12 文件 PASS，4/12 仍失败。审计日志在 `/tmp/tts-windows-main-business-after-20261020/summary.json` 及同目录各测试 `.log`。原版测试快照和断言没有修改或跳过；当前 Windows 专项测试中与获批 D4 旧策略冲突的断言已更新为容量等待验证。
+
+### D2 / D4 / D5 处置
+- **D2 待单独批准**：`/speak` 不存在是 Windows 协议差异；本轮保留 `/synthesize`。
+- **D4 已批准并实施**：原 `LiveSession` / `SynthesisBlockLiveSession` 的高水位与断连等待已移除。库存满或剩余磁盘不足时，当前音频暂留在生成线程，状态显示容量原因；用户删除旧库存或释放磁盘后自动重试入库。客户端缓存空间没有独立配额字段，因此以服务端现有库存配额及文件系统余量为门控依据。
+- D4 门控位于正式音频入库边界；首轮准备服务和 `PreparedLiveSession` 会先将有限的首轮 WAV 写入既有准备目录，20 GiB 归档配额不统计这些工作文件。入库前的文件系统余量检查会计入它们当前占用，但不会在首轮准备期间提前按归档配额暂停。
+- **D5 仍未批准**：未改变原测试桩、未放宽 RIFF/WAV 校验。
+- **G5 仍在范围外**：本轮没有重做页面入口和前端完整流程。
+
+### 验证与限制
+- 修改前和修改后均运行了 `scripts/audit_main_business.py` 的全部 12 份 `main@35d92fb` 原版测试。
+- 按 `.github/workflows/windows-functional-regression.yml` 两组命令复跑：第一组 79 项通过，第二组 60 项通过。原始日志分别为 `/tmp/tts-windows-regression-1-20261020.log` 和 `/tmp/tts-windows-regression-2-20261020.log`。
+- 本机环境只能验证 Python 逻辑，不能证明 Windows 音频播放、CosyVoice3 Vulkan 推理或真实磁盘表现。
+- 容量门控由官方 `build_live_manager()` 创建的生产管理器启用；直接构造管理器的测试/调用方默认不启用该门控。
+- 阶段 2 尚未完成：D2、D5 未获偏差批准，G5 页面入口仍待独立修复；不以本轮 8/12 结果宣布整体 PASS。

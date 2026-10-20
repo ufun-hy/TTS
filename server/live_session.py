@@ -20,7 +20,7 @@ import uuid
 import wave
 from typing import Any, Callable
 
-from server.tts_client import TTSClient, load_api_key
+from server.tts_client import RetryableTTSClientError, TTSClient, load_api_key
 from server.context_variants import choose_variant_round, prepare_context_live
 from server.semantic_tts_blocks import semantic_blocks
 from local_runtime import RuntimeBusyError, RuntimeLease, RuntimeManager, RuntimeStage
@@ -33,9 +33,10 @@ MAX_LIVE_SEGMENT_CHARS = 200  # matches the default TTS Gateway request limit
 VOICE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 DEFAULT_BUFFER_HIGH_SECONDS = 30.0
 DEFAULT_BUFFER_LOW_SECONDS = 12.0
-BUFFER_POLL_SECONDS = 0.25
+CAPACITY_POLL_SECONDS = 1.0
 CACHE_ENQUEUE_TIMEOUT_SECONDS = 30.0
 STOP_TIMEOUT_SECONDS = 120.0
+MAX_TTS_RECOVERY_RETRIES = 5
 VOICE_LABELS = {
     "default": "默认声音",
     "speaker_a": "主播A",
@@ -218,9 +219,13 @@ class LiveSnapshot:
     stop_timed_out: bool = False
     stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS
     rtf: float = 0.0
+    capacity_waiting: bool = False
+    capacity_used_bytes: int = 0
+    capacity_limit_bytes: int = 0
+    capacity_reason: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "session_id": self.session_id,
             "status": self.status,
             "generated_segments": self.generated_segments,
@@ -241,7 +246,18 @@ class LiveSnapshot:
             "finished": self.finished,
             "round_number": self.round_number,
             "looping": self.looping,
+            "capacity_waiting": self.capacity_waiting,
+            "capacity_used_bytes": self.capacity_used_bytes,
+            "capacity_limit_bytes": self.capacity_limit_bytes,
+            "capacity_reason": self.capacity_reason,
         }
+        for key in (
+            "phase", "prepared_segments", "preparation_total_segments",
+            "prepared_rounds", "preparation_total_rounds", "prepared_round_number",
+        ):
+            if hasattr(self, key):
+                result[key] = getattr(self, key)
+        return result
 
 
 class LiveSession:
@@ -289,7 +305,6 @@ class LiveSession:
         self._previous_candidate_indexes: list[int] | None = None
         self._sequence = 0
         self._backpressure_active = False
-        self._client_session_seen = False
         self.status = "starting"
         self.generated_segments = 0
         self.total_segments = len(segments)
@@ -299,6 +314,11 @@ class LiveSession:
         self._stop_requested_at: float | None = None
         self._synthesis_seconds = 0.0
         self._audio_seconds = 0.0
+        self.capacity_waiting = False
+        self.capacity_used_bytes = 0
+        self.capacity_limit_bytes = 0
+        self.capacity_reason = ""
+        self.capacity_message = ""
 
     def start(self) -> None:
         self._thread.start()
@@ -341,6 +361,11 @@ class LiveSession:
             stop_timeout_seconds = self.stop_timeout_seconds
             synthesis_seconds = self._synthesis_seconds
             audio_seconds = self._audio_seconds
+            capacity_waiting = self.capacity_waiting
+            capacity_used_bytes = self.capacity_used_bytes
+            capacity_limit_bytes = self.capacity_limit_bytes
+            capacity_reason = self.capacity_reason
+            capacity_message = self.capacity_message
         stop_timed_out = bool(
             status == "stopping"
             and stop_requested_at is not None
@@ -358,7 +383,7 @@ class LiveSession:
             int(cache.get("completed", 0) or 0),
             int(cache.get("failed", 0) or 0),
             bool(cache.get("client_connected", False)),
-            error,
+            capacity_message if capacity_waiting and not error else error,
             finished,
             round_number,
             self.looping,
@@ -368,6 +393,10 @@ class LiveSession:
             stop_timed_out,
             stop_timeout_seconds,
             synthesis_seconds / audio_seconds if audio_seconds > 0 else 0.0,
+            capacity_waiting,
+            capacity_used_bytes,
+            capacity_limit_bytes,
+            capacity_reason,
         )
 
     def _finalize_thread(self) -> None:
@@ -400,51 +429,53 @@ class LiveSession:
         return prepare_live_segments(selected)
 
     def _wait_for_buffer_capacity(self) -> None:
-        """Pause synthesis while the Windows player has a healthy local buffer."""
+        """Keep manual pause control; inventory capacity is checked before enqueue."""
+        self._resume.wait()
+        with self._lock:
+            self._backpressure_active = False
+
+    def _synthesize_with_recovery(self, text: str, segment_id: str) -> bytes | None:
+        """Retry temporary TTS errors without changing the current item or sequence."""
+        if self.context_project and len(text) > MAX_LIVE_SEGMENT_CHARS:
+            raise LiveSessionError("resolved context block exceeds Gateway text limit", 400)
+        retry_count = 0
         while not self._stop.is_set():
-            self._resume.wait()
+            if retry_count:
+                self._resume.wait()
+                self._wait_for_buffer_capacity()
             if self._stop.is_set():
-                return
-            cache = self._cache_status(self.session_id)
-            client_state = cache.get("client_state") if isinstance(cache.get("client_state"), dict) else {}
-            valid_state = client_state.get("session_id") == self.session_id
-            if valid_state:
-                self._client_session_seen = True
-            elif not self._client_session_seen:
-                # Bootstrap: Windows cannot report this session until the first
-                # generated item reaches it, so allow initial synthesis.
-                with self._lock:
-                    self._backpressure_active = False
-                return
-            else:
-                # Once Windows has acknowledged this session, a missing/stale
-                # state means there is no trustworthy consumer state. Wait
-                # rather than generating an unbounded backlog on the Mac.
-                with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-
+                return None
+            started = time.monotonic()
             try:
-                buffered_seconds = max(0.0, float(client_state.get("buffered_seconds", 0) or 0))
-            except (TypeError, ValueError):
-                buffered_seconds = 0.0
-
-            with self._lock:
-                active = self._backpressure_active
-            if active:
-                if buffered_seconds <= self.buffer_low_seconds:
-                    with self._lock:
-                        self._backpressure_active = False
-                    return
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            if buffered_seconds >= self.buffer_high_seconds:
+                audio = self._synthesize(text, self.voice)
+            except RetryableTTSClientError as exc:
                 with self._lock:
-                    self._backpressure_active = True
-                self._stop.wait(BUFFER_POLL_SECONDS)
-                continue
-            return
+                    self._synthesis_seconds += time.monotonic() - started
+                retry_count += 1
+                print(json.dumps({
+                    "event": "TTS temporary error", "session_id": self.session_id,
+                    "segment": segment_id, "round": self.round_number,
+                    "sequence": self._sequence + 1, "status": exc.status_code,
+                    "retryable": True, "retry_after": exc.retry_after,
+                    "retry_count": retry_count, "retry_limit": MAX_TTS_RECOVERY_RETRIES,
+                    "session_status": self.status, "error": str(exc),
+                }), flush=True)
+                if retry_count > MAX_TTS_RECOVERY_RETRIES:
+                    raise
+                if self._stop.wait(exc.retry_delay(retry_count)):
+                    return None
+            else:
+                synthesis_seconds = time.monotonic() - started
+                try:
+                    with wave.open(BytesIO(audio), "rb") as handle:
+                        audio_seconds = handle.getnframes() / max(1, handle.getframerate())
+                except (OSError, EOFError, wave.Error):
+                    audio_seconds = 0.0
+                with self._lock:
+                    self._synthesis_seconds += synthesis_seconds
+                    self._audio_seconds += audio_seconds
+                return audio
+        return None
 
     def _run(self) -> None:
         try:
@@ -469,24 +500,16 @@ class LiveSession:
                     if self._stop.is_set():
                         return
                     speech_text = resolve_dynamic_time(segment["text"])
-                    synthesis_started = time.monotonic()
-                    audio = self._synthesize(speech_text, self.voice)
-                    synthesis_seconds = time.monotonic() - synthesis_started
-                    try:
-                        with wave.open(BytesIO(audio), "rb") as handle:
-                            audio_seconds = handle.getnframes() / max(1, handle.getframerate())
-                    except (OSError, EOFError, wave.Error):
-                        audio_seconds = 0.0
-                    with self._lock:
-                        self._synthesis_seconds += synthesis_seconds
-                        self._audio_seconds += audio_seconds
+                    audio = self._synthesize_with_recovery(speech_text, segment["id"])
+                    if audio is None or self._stop.is_set():
+                        return
                     self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
                     self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
-                    with self._lock:
-                        self.generated_segments += 1
                     if self._stop.is_set():
                         return
+                    with self._lock:
+                        self.generated_segments += 1
                 if not self.looping:
                     break
             with self._lock:
@@ -520,6 +543,7 @@ class LiveSessionManager:
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
         runtime: RuntimeManager | None = None,
         confirm_tts_release: Callable[[], bool] | None = None,
+        capacity_guard: bool = False,
     ) -> None:
         self.gateway_url = gateway_url.rstrip("/")
         self.cache_url = cache_url.rstrip("/")
@@ -540,6 +564,7 @@ class LiveSessionManager:
         self._session: LiveSession | None = None
         self.runtime = runtime
         self._confirm_tts_release = confirm_tts_release
+        self.capacity_guard = capacity_guard
         self._runtime_lease: RuntimeLease | None = None
         self._runtime_release_lock = threading.Lock()
         self._decoupled_session_ids: set[str] = set()
@@ -806,7 +831,8 @@ class LiveSessionManager:
     def _synthesize(self, text: str, voice: str) -> bytes:
         if self._synthesize_impl:
             return self._synthesize_impl(text, voice)
-        audio, _latency = self._tts.synthesize(text, voice)
+        # The session owns retries so pause and stop can interrupt backoff.
+        audio, _latency = self._tts.synthesize(text, voice, retries=0)
         return audio
 
     def _enqueue(self, item_id: str, sequence: int, text: str, voice: str, audio: bytes) -> None:
@@ -814,6 +840,10 @@ class LiveSessionManager:
             self._enqueue_impl(item_id, sequence, text, voice, audio)
             return
         session = self._require_session()
+        if not self._wait_for_inventory_capacity(session, audio):
+            return
+        if session._stop.is_set():
+            return
         round_position = session.generated_segments + 1
         self._request_json("POST", "/audio/enqueue", {
             "id": item_id,
@@ -831,6 +861,61 @@ class LiveSessionManager:
             "session_final": bool(not session.looping and session.total_segments and round_position >= session.total_segments),
             "audio_base64": base64.b64encode(audio).decode("ascii"),
         }, cache=True, timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
+
+    def _wait_for_inventory_capacity(self, session: LiveSession, audio: bytes) -> bool:
+        if not self.capacity_guard:
+            return True
+        while not session._stop.is_set():
+            session._resume.wait()
+            if session._stop.is_set():
+                break
+            capacity = self.library_capacity()
+            try:
+                used = int(capacity["used_bytes"])
+                limit = int(capacity["limit_bytes"])
+                remaining = int(capacity["remaining_bytes"])
+                disk_free = int(capacity["disk_free_bytes"])
+                metadata_reserve = int(capacity["metadata_reserve_bytes"])
+                disk_reserve = int(capacity["free_space_reserve_bytes"])
+                expansion = max(1.0, float(capacity["max_audio_expansion_ratio"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise LiveSessionError("audio inventory capacity response is incomplete", 502) from exc
+            estimated_archive_size = math.ceil(len(audio) * expansion) + 64 * 1024
+            inventory_fits = remaining >= estimated_archive_size + metadata_reserve
+            disk_fits = disk_free >= len(audio) + estimated_archive_size + disk_reserve
+            if inventory_fits and disk_fits:
+                with session._lock:
+                    session.capacity_waiting = False
+                    session.capacity_used_bytes = used
+                    session.capacity_limit_bytes = limit
+                    session.capacity_reason = ""
+                    session.capacity_message = ""
+                return True
+
+            reason = "inventory" if not inventory_fits else "disk"
+            if reason == "inventory":
+                message = (
+                    f"音频库存容量不足：已用 {used / 1024**3:.2f} / {limit / 1024**3:.2f} GiB。"
+                    "释放库存容量后会自动继续生成。"
+                )
+            else:
+                message = (
+                    f"磁盘可用空间不足：当前可用 {disk_free / 1024**3:.2f} GiB。"
+                    "释放磁盘空间后会自动继续生成。"
+                )
+            with session._lock:
+                session.capacity_waiting = True
+                session.capacity_used_bytes = used
+                session.capacity_limit_bytes = limit
+                session.capacity_reason = reason
+                session.capacity_message = message
+            session._stop.wait(CAPACITY_POLL_SECONDS)
+
+        with session._lock:
+            session.capacity_waiting = False
+            session.capacity_reason = ""
+            session.capacity_message = ""
+        return False
 
     def _cache_status(self, session_id: str) -> dict[str, Any]:
         if self._cache_status_impl:
@@ -894,17 +979,13 @@ def build_live_manager(
     runtime: RuntimeManager | None = None,
     confirm_tts_release: Callable[[], bool] | None = None,
 ) -> LiveSessionManager:
-    high = os.environ.get("LIVE_BUFFER_HIGH_SECONDS", str(DEFAULT_BUFFER_HIGH_SECONDS))
-    low = os.environ.get("LIVE_BUFFER_LOW_SECONDS", str(DEFAULT_BUFFER_LOW_SECONDS))
-    stop_timeout = os.environ.get("LIVE_STOP_TIMEOUT_SECONDS", str(STOP_TIMEOUT_SECONDS))
-    return LiveSessionManager(
+    from server.live_session_blocks import build_live_manager as build_block_manager
+
+    return build_block_manager(
         gateway_url,
         cache_url,
         tts_api_key,
         cache_api_key,
-        buffer_high_seconds=high,
-        buffer_low_seconds=low,
-        stop_timeout_seconds=stop_timeout,
         runtime=runtime,
         confirm_tts_release=confirm_tts_release,
     )

@@ -204,6 +204,15 @@ class AudioCacheManager:
         with self._lock:
             return dict(self._state_counts)
 
+    def library_capacity(self) -> Dict[str, Any]:
+        capacity = self.library.capacity()
+        processor = getattr(self._processor, "__self__", None)
+        config = getattr(processor, "config", None)
+        speed_enabled = bool(getattr(config, "speed_enabled", False))
+        minimum_speed = float(getattr(config, "speed_min", 1.0)) if speed_enabled else 1.0
+        capacity["max_audio_expansion_ratio"] = 1.0 / minimum_speed
+        return capacity
+
     def session_stats(self, session_id: str) -> Dict[str, int]:
         if not session_id:
             raise AudioCacheError("session_id is required")

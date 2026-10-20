@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import threading
 import time
-import threading
 import unittest
+from unittest.mock import patch
 
 from server.live_session import (
     LiveSession,
@@ -14,6 +14,7 @@ from server.live_session import (
     prepare_live_segments,
     resolve_dynamic_time,
 )
+from server.tts_client import RetryableTTSClientError
 
 
 class _RepeatRng:
@@ -166,8 +167,7 @@ class LiveSessionTests(unittest.TestCase):
         self.assertEqual(len({item[0] for item in enqueued}), 4)
         self.assertEqual(manager.status()["round_number"], 2)
 
-    def test_backpressure_pauses_at_high_watermark_and_resumes_at_low_watermark(self):
-        state = {"buffered_seconds": 0.0}
+    def test_high_buffer_does_not_pause_generation(self):
         synthesized = []
         enqueued = []
         session_id = "live-backpressure"
@@ -182,7 +182,7 @@ class LiveSessionTests(unittest.TestCase):
                 "client_state": {
                     "session_id": session_id,
                     "buffered_segments": 3,
-                    "buffered_seconds": state["buffered_seconds"],
+                    "buffered_seconds": 0.0,
                     "playback_status": "buffered",
                 },
             }
@@ -194,7 +194,14 @@ class LiveSessionTests(unittest.TestCase):
         def enqueue(item_id, sequence, text, voice, audio):
             enqueued.append((item_id, sequence, text, voice, audio))
             if len(enqueued) == 1:
-                state["buffered_seconds"] = 30.0
+                cache_status_state["buffered_seconds"] = 300.0
+
+        cache_status_state = {"buffered_seconds": 0.0}
+
+        def dynamic_cache_status(_session_id):
+            value = cache_status(_session_id)
+            value["client_state"]["buffered_seconds"] = cache_status_state["buffered_seconds"]
+            return value
 
         session = LiveSession(
             session_id,
@@ -202,7 +209,7 @@ class LiveSessionTests(unittest.TestCase):
             [{"id": "p1", "text": "第一段"}, {"id": "p2", "text": "第二段"}],
             synthesize,
             enqueue,
-            cache_status,
+            dynamic_cache_status,
             buffer_high_seconds=30.0,
             buffer_low_seconds=12.0,
         )
@@ -210,20 +217,109 @@ class LiveSessionTests(unittest.TestCase):
         deadline = time.monotonic() + 1
         while len(enqueued) < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
-        self.assertEqual(len(enqueued), 1)
-        time.sleep(0.15)
-        self.assertEqual(len(synthesized), 1)
-        self.assertTrue(session.snapshot().backpressure_active)
-
-        state["buffered_seconds"] = 12.0
-        deadline = time.monotonic() + 1
-        while len(enqueued) < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        self.assertGreaterEqual(len(enqueued), 1)
+        cache_status_state["buffered_seconds"] = 300.0
+        session._thread.join(timeout=1)
         self.assertEqual(len(enqueued), 2)
         self.assertEqual(synthesized, ["第一段", "第二段"])
-        session._thread.join(timeout=1)
         self.assertFalse(session._thread.is_alive())
+        self.assertFalse(session.snapshot().backpressure_active)
         self.assertEqual(session.status, "stopped")
+
+    def test_inventory_capacity_waits_then_resumes_without_buffer_ack(self):
+        synthesized, enqueued = [], []
+        limit = 100 * 1024**3
+        capacity = {
+            "used_bytes": limit,
+            "limit_bytes": limit,
+            "remaining_bytes": 0,
+            "disk_free_bytes": 1_000_000_000,
+            "metadata_reserve_bytes": 16_384,
+            "free_space_reserve_bytes": 16 * 1024 * 1024,
+            "max_audio_expansion_ratio": 1.1,
+        }
+
+        def request(method, path, body=None, cache=False, timeout=None):
+            if path == "/audio/library/capacity":
+                return dict(capacity)
+            if path == "/audio/enqueue":
+                enqueued.append(body)
+                return {}
+            return {}
+
+        manager = LiveSessionManager(
+            "http://gateway", "http://cache",
+            synthesize=lambda text, _voice: synthesized.append(text) or b"RIFFaudio",
+            cache_status=lambda session_id: {
+                "client_connected": False,
+                "client_state": {"session_id": session_id, "buffered_seconds": 300},
+            },
+            capacity_guard=True,
+        )
+        manager._request_json = request
+        manager.start("default", [{"id": "p1", "text": "第一段"}])
+
+        deadline = time.monotonic() + 1
+        while not manager.status()["capacity_waiting"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        waiting = manager.status()
+        self.assertTrue(waiting["capacity_waiting"])
+        self.assertEqual(waiting["capacity_reason"], "inventory")
+        self.assertIn("100.00 / 100.00 GiB", waiting["error"])
+        self.assertEqual(synthesized, ["第一段"])
+        self.assertEqual(enqueued, [])
+
+        capacity.update(used_bytes=0, remaining_bytes=limit)
+        manager._session._thread.join(timeout=2)
+        self.assertFalse(manager._session._thread.is_alive())
+        self.assertEqual(manager.status()["status"], "stopped")
+        self.assertFalse(manager.status()["capacity_waiting"])
+        self.assertEqual([item["sequence"] for item in enqueued], [1])
+        self.assertEqual(enqueued[0]["text"], "第一段")
+
+    def test_stop_interrupts_inventory_capacity_wait(self):
+        enqueued = []
+        limit = 100 * 1024**3
+        manager = LiveSessionManager(
+            "http://gateway", "http://cache", synthesize=lambda *_: b"RIFFaudio",
+            cache_status=lambda session_id: {"client_state": {"session_id": session_id}},
+            capacity_guard=True,
+        )
+        manager._request_json = lambda method, path, body=None, cache=False, timeout=None: {
+            "used_bytes": limit, "limit_bytes": limit, "remaining_bytes": 0,
+            "disk_free_bytes": 1_000_000_000, "metadata_reserve_bytes": 16_384,
+            "free_space_reserve_bytes": 16 * 1024 * 1024, "max_audio_expansion_ratio": 1.1,
+        } if path == "/audio/library/capacity" else enqueued.append(body) or {}
+        manager.start("default", [{"id": "p1", "text": "第一段"}])
+
+        deadline = time.monotonic() + 1
+        while not manager.status()["capacity_waiting"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(manager.status()["capacity_waiting"])
+        manager.stop()
+        manager._session._thread.join(timeout=0.5)
+        self.assertFalse(manager._session._thread.is_alive())
+        self.assertEqual(manager.status()["status"], "stopped")
+        self.assertEqual(enqueued, [])
+
+    def test_temporary_tts_retries_are_bounded(self):
+        attempts = []
+
+        def synthesize(*_args):
+            attempts.append(True)
+            raise RetryableTTSClientError("temporarily unavailable", status_code=503)
+
+        manager = LiveSessionManager(
+            "http://gateway", "http://cache", synthesize=synthesize,
+            enqueue=lambda *_: None, cache_status=lambda _session_id: {},
+        )
+        with patch.object(RetryableTTSClientError, "retry_delay", return_value=0.001):
+            manager.start("default", [{"id": "p1", "text": "第一段"}])
+            manager._session._thread.join(timeout=1)
+
+        self.assertFalse(manager._session._thread.is_alive())
+        self.assertEqual(manager.status()["status"], "failed")
+        self.assertEqual(len(attempts), 6)
 
     def test_failed_segment_sets_failed_state(self):
         manager = LiveSessionManager(

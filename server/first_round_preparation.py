@@ -9,7 +9,7 @@ import threading
 import time
 
 from server.first_round_plan import build_plan, source_signature, project_inputs, normalized_source
-from server.live_session import LiveSessionError
+from server.live_session import LiveSessionError, MAX_TTS_RECOVERY_RETRIES
 from server.tts_client import RetryableTTSClientError
 
 
@@ -206,7 +206,11 @@ class FirstRoundPreparation:
                 if current and any(b["audio_key"] == block["audio_key"] for b in current["blocks"]):
                     if isinstance(error, RetryableTTSClientError):
                         current["retry_count"] = current.get("retry_count", 0) + 1
-                        current["retry_at"] = time.monotonic() + error.retry_delay(current["retry_count"])
+                        if current["retry_count"] > MAX_TTS_RECOVERY_RETRIES:
+                            current["error"] = str(error)
+                            current["retry_at"] = 0
+                        else:
+                            current["retry_at"] = time.monotonic() + error.retry_delay(current["retry_count"])
                     elif error:
                         current["error"] = str(error)
                     else:

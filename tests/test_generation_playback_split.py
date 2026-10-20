@@ -2,7 +2,7 @@
 import time
 import unittest
 
-from server.live_session import LiveSessionManager, LiveSessionError
+from server.live_session import build_live_manager, LiveSessionError
 
 
 class GenerationPlaybackSplitTests(unittest.TestCase):
@@ -20,11 +20,20 @@ class GenerationPlaybackSplitTests(unittest.TestCase):
                 return {"status": controls.get(session, "running")}
             if path.startswith("/audio/session-status/"):
                 return {"ready": 2, "client_connected": True}
+            if path == "/audio/library/capacity":
+                return {
+                    "used_bytes": 0,
+                    "limit_bytes": 100_000_000,
+                    "remaining_bytes": 100_000_000,
+                    "disk_free_bytes": 1_000_000_000,
+                    "metadata_reserve_bytes": 16_384,
+                    "free_space_reserve_bytes": 16 * 1024 * 1024,
+                    "max_audio_expansion_ratio": 1.1,
+                }
             return {}
 
-        manager = LiveSessionManager(
-            "http://gateway", "http://cache", synthesize=lambda *_: b"RIFF"
-        )
+        manager = build_live_manager("http://gateway", "http://cache")
+        manager._synthesize_impl = lambda *_: b"RIFF"
         manager._request_json = request
         return manager, events, controls
 
