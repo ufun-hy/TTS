@@ -57,7 +57,7 @@ jobs:
       - name: Newly added functionality regression
         shell: pwsh
         run: |
-          python -m unittest -v tests.test_windows_desktop_shell tests.test_generation_playback_split tests.test_audio_library tests.test_library_replay tests.test_replay_journal tests.test_audio_library_capacity tests.test_tts_client_migration tests.test_qwen_asr tests.test_voice_datasets
+          python -m unittest -v tests.test_windows_desktop_shell tests.test_generation_playback_split tests.test_audio_library tests.test_library_replay tests.test_replay_journal tests.test_audio_library_capacity tests.test_tts_client_migration tests.test_qwen_asr tests.test_voice_datasets tests.test_windows_asr_chunks
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Related existing regression
         shell: pwsh
