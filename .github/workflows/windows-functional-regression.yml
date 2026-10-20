@@ -22,12 +22,16 @@ permissions:
 jobs:
   functional-regression:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Install test prerequisites
         shell: pwsh
         run: |
@@ -46,5 +50,5 @@ jobs:
       - name: Related existing regression
         shell: pwsh
         run: |
-          python -m unittest -v tests.test_live_session tests.test_text_studio tests.test_windows_playback_lifecycle tests.test_audio_cache
+          python -m unittest -v tests.test_live_session tests.test_text_studio tests.test_windows_playback_lifecycle tests.test_audio_cache tests.test_wav_compat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
