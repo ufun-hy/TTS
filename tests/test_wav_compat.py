@@ -134,8 +134,8 @@ class WavCompatTests(unittest.TestCase):
             source.write_bytes(float32_wav())
             original = Path.stat
             calls = {"count": 0}
-            def changing_stat(path):
-                value = original(path)
+            def changing_stat(path, *args, **kwargs):
+                value = original(path, *args, **kwargs)
                 if path == source:
                     calls["count"] += 1
                     if calls["count"] == 3:
