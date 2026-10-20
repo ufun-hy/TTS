@@ -94,6 +94,17 @@ CI 状态（本批操作时的观察）：
 
 **阶段 1 仍待**：剩余 Mac Shell 脚本的测试/打包引用收敛、timeline 历史算法与测试依赖界定，完整的项目级引用排查与最终 Windows 安装包验证。**不在本阶段替换 Audio Cache 和现有 WinMM 播放路径。**
 
+## 阶段 1 第五批：Mac 安装/启动入口清理
+
+- 删除 6 个仅针对 Mac 或 Apple Silicon 的 Shell 入口：根目录 `start.sh`，`scripts/install.sh`、`scripts/cosyvoice-runtime-ab.sh`、`scripts/voice-prepare.sh`、`scripts/text-studio-start.sh`、`scripts/recording-transcript-start.sh`。删除提交 `1689c51fd1fb6ccc70f7e6400e4fb5380448dc7d`。
+- `tests/test_service_entrypoints.py` 仅删除了 macOS Bash 专属检查；保留 Windows 可用的 Python entrypoint 和直接启动测试。提交 `445b3a033d668b8b68c3901316dcbe1d1af7dacf`。
+- 仍保留 `timeline/engine.py`、`timeline/scheduler.py`、`timeline/resegmenter.py` 等算法模块：当前测试直接导入相关逻辑，不能因删除 CLI 就认定全目录可删除。阶段 1 本批不动算法，以免丢失现有功能。
+- 扩展 Windows 功能回归矩阵：包含 Python entrypoint、timeline runtime/generalization/resegmentation/sentence reconstruction 的测试，变更 `2fef8614a837a461afe0b0d280331737d2ab2d18`。
+- 完整安装包和补丁构建由 Shell 删除触发；最终 CI 需要查看对应 workflow runs，写入本报告时尚未确认结果。
+- Windows Runtime 仍按 `scripts/windows-runtime.py` 启动，Windows 安装包由 `build/windows/package_app.py` 读取 Git tracked 文件；已删除文件不会纳入新构建的分发清单。
+
+**阶段 1 出口尚未完成**：仍需对项目各处的旧 Mac/MLX/局域网依赖进行全量引用检查，核验 Windows 最新 Installer/Patch，确认哪些 timeline 模块能在不丢失功能的前提下迁移或清理，不能宣称阶段 1 全部 PASS。
+
 ## 阶段 0 未完成条件
 
 1. GitHub Actions 真实运行并得到 Python 3.11 / 3.13 两套测试结论。
