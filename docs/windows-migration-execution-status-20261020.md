@@ -11,7 +11,7 @@
 | 阶段 | 本次判定 | 证据 / 下一道关 |
 |---|---|---|
 | 阶段 0：测试安全网 | **功能回归 PASS；安装包构建待完成** | Windows 双版本功能回归已绿；全量 Windows runtime tests、WinMM smoke 和 dry-run 在安装包工作流中已通过，打包步骤仍在执行 |
-| 阶段 1：砍 Mac/局域网遗留 | 未开始删除 | 阶段 0 通过后再逐模块删除；保留 `audio_cache` 直到阶段 4 |
+| 阶段 1：砍 Mac/局域网遗留 | **首批已提交，待回归** | 删除 macOS `server/stack_services.py`、对应 Python CLI 和两个 launchd 专项测试；其余脚本及旧网络链路待审查。`audio_cache` 保留到阶段 4 |
 | 阶段 2：移植 main 六个业务模块 | 尚未执行 | 必须逐项迁移并跑对应测试，不能直接覆盖 Windows 交叉修改 |
 | 阶段 3：安全修复 | 尚未执行 | Origin/Host/Content-Type，TTS gateway 异常及认证，离线补丁签名 |
 | 阶段 4：单宿主进程化 | 尚未执行 | 新 Host、Windows Job Object、GPU 调度、进程内队列；需实机验证 |
@@ -22,6 +22,18 @@
 - `tests/test_wav_compat.py`：测试中的 monkey-patch `changing_stat(path, *args, **kwargs)`，传递 Python 3.13 新增或扩展的 stat 关键字参数，避免误报类型错误。
 - `.github/workflows/windows-functional-regression.yml`：Windows Python 3.11 / 3.13 矩阵；覆盖本阶段已有桌面、库存、回放测试，并加入 `tests.test_wav_compat`。
 - Windows Functional Regression run `39363238597`：Python 3.11 / 3.13 新增测试通过，既有测试均因未准备 FFmpeg（两项）及 Windows UTF-8 默认编码断言（一项）失败。\n- 针对性修复：`tests/test_text_studio.py` 明确 `read_text(encoding="utf-8")`；功能回归工作流按已有打包工作流的 SHA-256 固定版本安装 FFmpeg。\n- **后续复测 run `39363739503`：Python 3.11 与 3.13 两个作业均 SUCCESS。** https://github.com/ufun-hy/TTS/actions/runs/39363739503\n- Windows Installer run `39363716583`：截至本次核查，测试、WinMM smoke、Runtime dry-run 已成功，`Build full installer` 仍在执行，整条流水线尚未结论。https://github.com/ufun-hy/TTS/actions/runs/39363716583
+
+## 阶段 1 第一批变更
+
+在回归基线 Python 3.11 / 3.13 两套功能检查通过后，按原计划先删除 macOS launchd 专属代码：
+- `server/stack_services.py`（launchd 生命周期）
+- `scripts/stack-services.py`（仅调用上述管理模块的旧 CLI）
+- `tests/test_stack_services.py`（针对该 Mac 管理模块的测试）
+- `tests/test_stack_launchd_integration.py`（macOS launchd 集成测试）
+
+本批**不涉及** Windows 播放器、Audio Cache、`scripts/windows-runtime.py`、`recording_transcript/windows_worker.py` 或 `main`。尚存的 macOS Bash 脚本、Mac Keychain 调用、MLX 分支、旧 timeline CLI 以及局域网轮询链路仍应按原计划继续分批审查，不得宣称阶段 1 全部完成。
+
+删除后的 CI 工作流 run `39364041752`、安装包 run `39364041732` 已触发，写入报告时还未确认最终结果。
 
 ## 阶段 0 未完成条件
 
