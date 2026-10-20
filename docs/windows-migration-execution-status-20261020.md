@@ -82,6 +82,18 @@ CI 状态（本批操作时的观察）：
 
 补救后最新 CI run `39366991723` 已触发，写入本记录时尚未取得最终结论。**不得将初次失败的批次标记为 PASS。**
 
+## 阶段 1 第四批：移除 TTS Gateway 的 Mac 现场播报入口
+
+- `server/tts_gateway.py`：不再接受 `POST /speak`；仅保留 Windows 客户端使用的 `POST /synthesize`。
+- 清除 `/usr/bin/afplay` 调用；保留现有 `/synthesize` 合成及认证路径，`/speak` 请求由网关返回 404。
+- 将 Gateway 启动日志里的 API 地址改成 `/synthesize`。
+- `tests/test_stage1_efficiency.py` 增加旧 `/speak` 请求返回 404 的回归检查。
+- 为避免提前改变旧系统内部的 worker 生命期和 `/health` 协议，本轮**没有**删除 Gateway 的内部 Queue/Worker 类；该内部结构需要阶段 4 的单宿主队列替换后清理。
+- 变更提交：`0aafc08374e8c76e19e85ca20d2084319492ef4a`，测试提交 `7f30105ee2fc74790fb9de8974edf505532132bb`。
+- GitHub Windows Functional Regression run `39367307297`（首个业务变更）已 SUCCESS；包含新增旧路由断言的 run `39367347746` 已启动，最终结果待核对；Installer/patch 运行中。
+
+**阶段 1 仍待**：剩余 Mac Shell 脚本的测试/打包引用收敛、timeline 历史算法与测试依赖界定，完整的项目级引用排查与最终 Windows 安装包验证。**不在本阶段替换 Audio Cache 和现有 WinMM 播放路径。**
+
 ## 阶段 0 未完成条件
 
 1. GitHub Actions 真实运行并得到 Python 3.11 / 3.13 两套测试结论。
