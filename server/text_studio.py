@@ -37,6 +37,9 @@ from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, 
 from server.context_variants import build_context_groups, build_variant_prompt, normalize_units, validate_context_project, validate_variant_result, ID as CONTEXT_ID
 from server.semantic_tts_blocks import safe_continuous_text
 from server.tts_gateway import VoiceStore
+from server.tts_client import TTSClient, load_api_key
+from server.first_round_preparation import FirstRoundPreparation
+from server.first_round_plan import normalized_source, project_inputs
 try:
     from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 except ImportError:
@@ -768,6 +771,9 @@ class StudioServer(ThreadingHTTPServer):
         jobs = getattr(self.RequestHandlerClass, 'voice_jobs', None)
         if jobs is not None:
             jobs.shutdown()
+        preparation = getattr(self.RequestHandlerClass, "audio_preparation", None)
+        if preparation is not None:
+            preparation.close()
         super().server_close()
 
     daemon_threads = True
@@ -781,6 +787,11 @@ def make_handler(
     audio_cache_api_key: str = "",
 ):
     html_path = root / "web" / "text-studio.html"
+    preparation_tts = TTSClient(gateway_url, tts_api_key or load_api_key())
+    preparation_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser() / "text-studio" / "preparation"
+    preparation = FirstRoundPreparation(preparation_root,
+        lambda text, voice: preparation_tts.synthesize(text, voice, retries=0)[0],
+        VoiceStore(root, Path("voices.json"), gateway_url).cache_fingerprint)
     single_machine = os.environ.get("WINDOWS_SINGLE_MACHINE") == "1"
     data_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
     runtime = RuntimeManager(lock_path=str(data_root / "runtime" / "gpu-owner.json")) if single_machine else None
@@ -921,6 +932,14 @@ def make_handler(
 
             if path == "/api/live/status":
                 self._json(200, live.status())
+                return
+
+            if path == "/api/preparation/status":
+                try:
+                    identifier = _validate_project_id((query.get("project_id") or [""])[0])
+                    self._json(200, preparation.status(identifier))
+                except ValueError as exc:
+                    self._json(400, {"error": str(exc)})
                 return
 
             if path == "/api/runtime/status":
@@ -1066,6 +1085,15 @@ def make_handler(
                     self._json(409, {"error": "请在 AI Live Studio 启动器中使用签名更新入口"})
                     return
 
+                if path == "/api/preparation/start":
+                    project = load_project(root, _validate_project_id(body.get("project_id")))
+                    self._json(202, preparation.update(project, activate=True))
+                    return
+
+                if path == "/api/preparation/pause":
+                    self._json(200, preparation.pause(_validate_project_id(body.get("project_id"))))
+                    return
+
                 if path == "/api/context/groups":
                     self._json(200, {"context_groups": build_context_groups(body.get("paragraphs"))})
                     return
@@ -1144,7 +1172,9 @@ def make_handler(
 
                 if path == "/api/project/save":
                     project = save_project(root, body)
+                    preparation_status = preparation.update(project)
                     self._json(200, {
+                        "preparation": preparation_status,
                         "project_id": project["project_id"],
                         "project": project,
                         "summary": _project_summary(project),
@@ -1253,18 +1283,45 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
+                    segments = body.get("segments")
                     groups = body.get("context_groups")
+                    options = {}
+                    stream = None
+                    if body.get("project_id"):
+                        identifier = _validate_project_id(body["project_id"])
+                        project = load_project(root, identifier)
+                        preparation.update(project)
+                        if body.get("stream_preparation"):
+                            segments, groups, _, _ = project_inputs(project)
+                        else:
+                            source = normalized_source(segments, groups)
+                            first_round = preparation.handoff(identifier, source, body.get("voice", "default"))
+                            if first_round:
+                                options["first_round"] = first_round
+                    elif body.get("stream_preparation"):
+                        raise LiveSessionError("提前传输需要已保存项目", 400)
                     if groups is not None:
-                        validate_context_project(body.get("segments"), groups, complete=True)
-                        safe_segments = {"paragraphs": body["segments"], "context_groups": groups}
+                        validate_context_project(segments, groups, complete=True)
+                        safe_segments = {"paragraphs": segments, "context_groups": groups}
                     else:
-                        safe_segments = filter_segments(body.get("segments"))
-                    result = live.start(
-                        body.get("voice", "default"),
-                        safe_segments,
-                        body.get("playback_speed", 1.0),
-                        body.get("volume", 100.0),
-                    )
+                        safe_segments = filter_segments(segments)
+                    if body.get("stream_preparation"):
+                        stream = preparation.open_stream(identifier, body.get("voice", "default"))
+                        options["preparation_stream"] = stream
+                    try:
+                        result = live.start(
+                            body.get("voice", "default"), safe_segments,
+                            body.get("playback_speed", 1.0), body.get("volume", 100.0),
+                            **options,
+                        )
+                    except Exception:
+                        if stream:
+                            stream.close()
+                        raise
+                    result["preparation_reused"] = bool(options)
+                    result["streaming_preparation"] = stream is not None
+                    if stream is None:
+                        preparation.pause_active()
                     self._json(202, result)
                     return
 
@@ -1303,6 +1360,7 @@ def make_handler(
         def log_message(self, fmt: str, *args: Any) -> None:
             print(f"text-studio {self.address_string()} - {fmt % args}", flush=True)
 
+    Handler.audio_preparation = preparation
     Handler.voice_jobs = voice_jobs if single_machine else None
     return Handler
 

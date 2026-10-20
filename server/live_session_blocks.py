@@ -236,6 +236,8 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
         segments: Any,
         playback_speed: Any = 1.0,
         volume: Any = 100.0,
+        first_round: dict | None = None,
+        preparation_stream=None,
     ) -> dict[str, Any]:
         if not isinstance(voice, str) or not VOICE_ID.fullmatch(voice):
             raise LiveSessionError("voice is invalid", 400)
@@ -265,7 +267,16 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 if self._session.status in ("starting", "running", "paused"):
                     raise LiveSessionError("a live session is already running")
                 raise LiveSessionError("reset the previous live session before starting a new one")
-            session = SynthesisBlockLiveSession(
+            options = {}
+            session_type = SynthesisBlockLiveSession
+            if first_round or preparation_stream is not None:
+                from server.prepared_live_session import PreparedLiveSession
+                session_type = PreparedLiveSession
+                if first_round:
+                    options["first_round"] = first_round
+                if preparation_stream is not None:
+                    options["preparation_stream"] = preparation_stream
+            session = session_type(
                 uuid.uuid4().hex[:12],
                 voice.strip(),
                 prepared_segments,
@@ -279,6 +290,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,
+                **options,
             )
             self._session = session
             self._runtime_lease = runtime_lease
