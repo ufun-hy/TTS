@@ -163,3 +163,17 @@ CI 状态（本批操作时的观察）：
 最新补丁 `c6c6685fe4c4d380b1c84fd0193f2a3ded8c0faa` 补齐文字替换/重生成后清除过期人工确认，避免原先的准许记录错误复用。Windows Functional Regression run `39369561620` 的 Python 3.11 和 3.13 作业均 **SUCCESS**，包括 Python 禁用话术边界、项目持久化和浏览器端 JavaScript 语法/规则测试。https://github.com/ufun-hy/TTS/actions/runs/39369561620
 
 **仍未验收**：完整 Windows 安装包构建、真实用户操作、真实 CosyVoice3 WAV 和 WinMM 连续播放的端到端结果。阶段 2 第一项可标记“已编码+自动化回归通过，待实机验收”，不等于阶段 2 全部完成。
+
+
+## 阶段 2：上下文候选生成接入（2026-10-20）
+
+本批在保留 Windows 工作台和原有独立生成/播放控制的前提下迁移上下文组功能。
+
+- Studio 新增 `/api/context/groups` 和 `/api/context/generalize`。整组提示词、成员覆盖、候选数量与顺序由 `server/context_variants.py` 校验；模型没有完整覆盖全部 ID 时不返回部分结果。
+- 保存项目支持 `context_groups`；既有上下文项目禁止在不带分组数据时被旧版客户端覆盖。
+- 页面新增“复制为上下文组试验”：先保存原项目，再创建新项目和空的上下文组，不修改原项目。点击“泛化全部段落”时逐组执行，完成一个组即保存，切换组内候选时组内其他段同步选相同版本。
+- 单段重生成在上下文组模式中禁止，以避免造成组内版本不一致；项目仍可通过已保存分组恢复编辑状态。
+- 新增 `tests/test_windows_context_integration.py` 验证分组项目持久化、完整候选及不完整输出拒绝；新增 `tests/windows_context_ui.js` 验证浏览器脚本语法和接入标志，并纳入 Python 3.11/3.13 Windows CI。
+- 初始整组 API/UI 回归 run `39370203447` 的两套 Python 作业均 SUCCESS。最后添加单段重生成保护后，最新 run `39370290651` 已触发，最终状态需查看 Actions。
+
+**边界**：这轮只接入上下文分组与整组候选生成、编辑选取，不包括 `main` 的整组局部润色 `/api/context/polish`、首轮准备与预生成、直播循环中按组随机选择多个版本；这些属于阶段 2 后续任务。没有覆盖 Windows 原有音频库存或重做 WinMM 逻辑。完整 Installer 与真实 AI 生成仍需实机验收。
