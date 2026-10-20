@@ -16,6 +16,10 @@ MIN_FREE_DISK_BYTES = 16 * 1024 * 1024
 CAPACITY_CACHE_SECONDS = 1.0
 
 
+class LibraryCapacityError(ValueError):
+    """The current WAV must wait for inventory or disk space."""
+
+
 class AudioLibrary:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
@@ -24,11 +28,11 @@ class AudioLibrary:
         self._capacity_cache = None
         self._capacity_cache_at = 0.0
 
-    def capacity(self) -> dict:
+    def capacity(self, *, refresh=False) -> dict:
         """Report archive and filesystem capacity, refreshing at most once per second."""
         with self._lock:
             now = time.monotonic()
-            if self._capacity_cache and now - self._capacity_cache_at < CAPACITY_CACHE_SECONDS:
+            if not refresh and self._capacity_cache and now - self._capacity_cache_at < CAPACITY_CACHE_SECONDS:
                 return dict(self._capacity_cache)
             count = 0
             used = 0
@@ -87,14 +91,14 @@ class AudioLibrary:
             if target.exists():
                 # Immutable entries cannot silently be overwritten.
                 raise ValueError("library item already exists")
-            usage = self.capacity()
+            usage = self.capacity(refresh=True)
             size = audio_path.stat().st_size
             # Reserve extra room for metadata before starting a durable copy.
             if usage["used_bytes"] + size + METADATA_RESERVE_BYTES > usage["limit_bytes"]:
-                raise ValueError("audio library capacity reached; delete old inventory explicitly")
+                raise LibraryCapacityError("audio library capacity reached; delete old inventory explicitly")
             free_space = shutil.disk_usage(self.root).free
             if free_space < size + MIN_FREE_DISK_BYTES:
-                raise OSError("not enough disk space for archived audio")
+                raise LibraryCapacityError("not enough disk space for archived audio")
             temporary = self.root / ("." + item_id + "." + uuid.uuid4().hex + ".tmp")
             temporary.mkdir()
             try:
@@ -103,7 +107,8 @@ class AudioLibrary:
                     raise ValueError("empty audio file")
                 info = {k: metadata.get(k) for k in (
                     "session_id", "sequence", "text", "voice", "duration",
-                    "created_at", "playback_speed", "volume", "source"
+                    "created_at", "playback_speed", "volume", "source", "source_audio_sha256",
+                    "round_position", "round_total", "looping", "session_final"
                 )}
                 info["id"] = item_id
                 info["size_bytes"] = (temporary / "audio.wav").stat().st_size

@@ -23,6 +23,9 @@ jobs:
   functional-regression:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     strategy:
       fail-fast: false
       matrix:
@@ -70,4 +73,9 @@ jobs:
         shell: pwsh
         run: |
           python -m unittest -v tests.test_live_session tests.test_text_studio tests.test_windows_playback_lifecycle tests.test_audio_cache tests.test_wav_compat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Live generation production boundaries
+        shell: pwsh
+        run: |
+          python -m unittest -v tests.test_windows_live_review tests.test_first_round_preparation tests.test_prepared_live_session
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

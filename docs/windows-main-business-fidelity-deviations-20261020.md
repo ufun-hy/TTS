@@ -106,3 +106,16 @@
 - 本机环境只能验证 Python 逻辑，不能证明 Windows 音频播放、CosyVoice3 Vulkan 推理或真实磁盘表现。
 - 容量门控由官方 `build_live_manager()` 创建的生产管理器启用；直接构造管理器的测试/调用方默认不启用该门控。
 - 阶段 2 尚未完成：D2、D5 未获偏差批准，G5 页面入口仍待独立修复；不以本轮 8/12 结果宣布整体 PASS。
+
+
+## 2026-10-20 `2c6244f` 提交审阅与修正
+
+审阅结论：原提交存在阻断项，修正后才允许推送。按 Windows 单机单个生成任务、独立播放和长时间库存生成检查。
+
+1. **P1 — 首轮音频写进源码目录**：生产 factory 改为 PreparedLiveSession 后，默认路径仍是安装目录/runtime/prepared-live；Program Files 无写权限时首轮失败。改为 AI_LIVE_STUDIO_DATA/prepared-live，显式测试目录仍可覆盖。
+2. **P1 — 暂停期间仍可发送**：容量 HTTP 查询返回后没有重新检查暂停；查询中点击暂停会继续入库。合并各循环的交付步骤，并在容量查询后重新等待手动恢复。
+3. **P2 — 停止时库存计数少一段**：入库成功后恰逢 stop，先退出再计数。现在只在确认交付成功后递增 sequence 和生成数量，即使 stop 已请求，也准确记录已落盘库存；停止前未开始交付的合成结果仍丢弃。
+4. **P1 — 容量检查与落盘竞争导致失败**：预检查通过后，其他写入占用磁盘/库存，store 抛错会将片段标 failed。落盘处使用实时检查，容量不足返回 507，保留已处理 WAV 为 pending，重试同一 ID，不再次合成或处理 WAV；恢复后只归档一次。预估磁盘峰值计入队列、处理副本与归档。
+5. **P2 — HTTP 缓存桥丢失音频身份元数据**：source_audio_sha256、round_position/round_total、looping/session_final 在服务端白名单被丢弃。现保留这些字段，并按实际收到的音频计算哈希。
+
+生产边界回归：tests/test_windows_live_review.py。前三项在修正前均失败，日志 /tmp/tts-review-before-20261020.log；修正后连同实际 HTTP 507 恢复共 4 项通过，日志 /tmp/tts-review-boundaries-20261020.log。原版审计保持 8/12，日志 /tmp/tts-review-main-business-20261020/。测试已加入 Windows 3.11/3.13 workflow。D2/D5 尚不计为原版通过，后续独立适配。

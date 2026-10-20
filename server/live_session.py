@@ -84,6 +84,10 @@ class LiveSessionError(RuntimeError):
         self.status = status
 
 
+class InventoryCapacityError(RuntimeError):
+    pass
+
+
 def _live_audio_settings(playback_speed: Any, volume: Any) -> tuple[float, float]:
     try:
         playback_speed = float(playback_speed)
@@ -477,6 +481,18 @@ class LiveSession:
                 return audio
         return None
 
+    def _deliver(self, item_id: str, text: str, audio: bytes) -> bool:
+        self._resume.wait()
+        if self._stop.is_set():
+            return False
+        sequence = self._sequence + 1
+        if self._enqueue(item_id, sequence, text, self.voice, audio) is False:
+            return False
+        with self._lock:
+            self._sequence = sequence
+            self.generated_segments += 1
+        return not self._stop.is_set()
+
     def _run(self) -> None:
         try:
             with self._lock:
@@ -503,13 +519,9 @@ class LiveSession:
                     audio = self._synthesize_with_recovery(speech_text, segment["id"])
                     if audio is None or self._stop.is_set():
                         return
-                    self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
-                    self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
-                    if self._stop.is_set():
+                    if not self._deliver(item_id, speech_text, audio):
                         return
-                    with self._lock:
-                        self.generated_segments += 1
                 if not self.looping:
                     break
             with self._lock:
@@ -835,17 +847,13 @@ class LiveSessionManager:
         audio, _latency = self._tts.synthesize(text, voice, retries=0)
         return audio
 
-    def _enqueue(self, item_id: str, sequence: int, text: str, voice: str, audio: bytes) -> None:
+    def _enqueue(self, item_id: str, sequence: int, text: str, voice: str, audio: bytes) -> bool:
         if self._enqueue_impl:
             self._enqueue_impl(item_id, sequence, text, voice, audio)
-            return
+            return True
         session = self._require_session()
-        if not self._wait_for_inventory_capacity(session, audio):
-            return
-        if session._stop.is_set():
-            return
         round_position = session.generated_segments + 1
-        self._request_json("POST", "/audio/enqueue", {
+        payload = {
             "id": item_id,
             "sequence": sequence,
             "source": "live_session",
@@ -860,7 +868,31 @@ class LiveSessionManager:
             "looping": session.looping,
             "session_final": bool(not session.looping and session.total_segments and round_position >= session.total_segments),
             "audio_base64": base64.b64encode(audio).decode("ascii"),
-        }, cache=True, timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
+        }
+
+        while not session._stop.is_set():
+            if not self._wait_for_inventory_capacity(session, audio):
+                return False
+            session._resume.wait()
+            if session._stop.is_set():
+                return False
+            try:
+                self._request_json("POST", "/audio/enqueue", payload, cache=True,
+                                   timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
+                with session._lock:
+                    session.capacity_waiting = False
+                    session.capacity_message = ""
+                    session.capacity_reason = ""
+                return True
+            except InventoryCapacityError:
+                # The cache retains the processed WAV under this same item ID.
+                with session._lock:
+                    session.capacity_waiting = True
+                    session.capacity_reason = "inventory_or_disk"
+                    session.capacity_message = "入库空间不足，已保留当前音频；释放容量后自动继续。"
+                if session._stop.wait(CAPACITY_POLL_SECONDS):
+                    return False
+        return False
 
     def _wait_for_inventory_capacity(self, session: LiveSession, audio: bytes) -> bool:
         if not self.capacity_guard:
@@ -882,7 +914,8 @@ class LiveSessionManager:
                 raise LiveSessionError("audio inventory capacity response is incomplete", 502) from exc
             estimated_archive_size = math.ceil(len(audio) * expansion) + 64 * 1024
             inventory_fits = remaining >= estimated_archive_size + metadata_reserve
-            disk_fits = disk_free >= len(audio) + estimated_archive_size + disk_reserve
+            # Queue source, processing input/output, and durable archive can coexist.
+            disk_fits = disk_free >= 2 * len(audio) + 2 * estimated_archive_size + disk_reserve
             if inventory_fits and disk_fits:
                 with session._lock:
                     session.capacity_waiting = False
@@ -968,6 +1001,8 @@ class LiveSessionManager:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 507:
+                raise InventoryCapacityError(detail) from exc
             raise RuntimeError(detail or f"HTTP {exc.code}") from exc
 
 

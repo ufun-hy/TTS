@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,7 +15,7 @@ import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .processing import AudioProcessor, ProcessingResult
-from .library import AudioLibrary
+from .library import AudioLibrary, LibraryCapacityError
 
 
 STATES = ("pending", "ready", "processing", "completed", "failed")
@@ -79,12 +80,23 @@ class AudioCacheManager:
             return item
 
     def add_audio(self, audio: bytes, metadata: Dict[str, Any], item_id: Optional[str] = None) -> AudioItem:
+        with self._lock:
+            existing = self.get(item_id) if item_id else None
+            if existing and existing.status == "pending" and existing.metadata.get("capacity_waiting"):
+                if (existing.metadata.get("source_audio_sha256") != hashlib.sha256(audio).hexdigest()
+                        or existing.metadata.get("session_id") != metadata.get("session_id")):
+                    raise AudioCacheError("capacity retry does not match the pending audio")
+                self.library.store(existing.id, existing.audio_path, existing.metadata)
+                existing.metadata.pop("capacity_waiting")
+                return self._move_state(existing, "ready")
         item = self.create_pending(metadata, item_id)
         try:
             temporary = item.directory / ".audio.wav.tmp"
             temporary.write_bytes(audio)
             os.replace(temporary, item.audio_path)
             return self.process_pending(item.id)
+        except LibraryCapacityError:
+            raise
         except Exception as exc:
             self._mark_failed(item.id, str(exc))
             raise
@@ -123,6 +135,11 @@ class AudioCacheManager:
                 if item.metadata.get("source") == "live_session":
                     self.library.store(item.id, item.audio_path, item.metadata)
                 return self._move_state(item, "ready")
+        except LibraryCapacityError:
+            with self._lock:
+                item.metadata["capacity_waiting"] = True
+                self._move_state(item, "pending")
+            raise
         except Exception as exc:
             self._mark_failed(item.id, str(exc), current_state="processing")
             raise

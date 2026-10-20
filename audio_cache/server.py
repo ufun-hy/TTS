@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from server.tts_client import TTSClient
 
 from .manager import AudioCacheError, AudioCacheManager, AudioItem
+from .library import LibraryCapacityError
 from .replay_journal import ReplayJournal
 
 
@@ -389,6 +390,8 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                     self._json(200, self.server.session_control(session_id))  # type: ignore[attr-defined]
                     return
                 self._json(404, {"error": "not_found"})
+            except LibraryCapacityError as exc:
+                self._json(507, {"error": str(exc), "capacity": manager.library_capacity()})
             except (AudioCacheError, ValueError, TypeError, json.JSONDecodeError) as exc:
                 self._json(400, {"error": str(exc)})
             except (OSError, RuntimeError) as exc:
@@ -398,7 +401,8 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
             item_id = body.get("id")
             metadata = {
                 key: body[key]
-                for key in ("text", "voice", "target_duration", "sequence", "source", "session_id", "playback_speed", "volume")
+                for key in ("text", "voice", "target_duration", "sequence", "source", "session_id", "playback_speed", "volume",
+                            "source_audio_sha256", "round_position", "round_total", "looping", "session_final")
                 if key in body
             }
             if "voice" not in metadata:
@@ -415,6 +419,8 @@ def make_handler(manager: AudioCacheManager, tts: Optional[TTSClient] = None, ap
                 if not tts:
                     raise RuntimeError("TTS client is not configured")
                 audio, _latency = tts.synthesize(text, str(metadata["voice"]))
+            import hashlib
+            metadata["source_audio_sha256"] = hashlib.sha256(audio).hexdigest()
             return manager.add_audio(audio, metadata, str(item_id) if item_id is not None else None)
 
         def _preload(self, body: Dict[str, Any]) -> None:

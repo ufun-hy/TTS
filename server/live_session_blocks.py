@@ -124,13 +124,9 @@ class SynthesisBlockLiveSession(LiveSession):
                     audio = self._synthesize_with_recovery(speech_text, block["id"])
                     if audio is None or self._stop.is_set():
                         return
-                    self._sequence += 1
                     item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
-                    self._enqueue(item_id, self._sequence, speech_text, self.voice, audio)
-                    if self._stop.is_set():
+                    if not self._deliver(item_id, speech_text, audio):
                         return
-                    with self._lock:
-                        self.generated_segments += 1
                 if not self.looping:
                     break
             with self._lock:

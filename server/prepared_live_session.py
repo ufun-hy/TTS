@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import os
 from pathlib import Path
 
 if __package__:
@@ -37,7 +38,9 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
         super().__init__(*args, **kwargs)
         self.first_round = first_round
         self.preparation_stream = preparation_stream
-        self.audio_root = (audio_root or PREPARED_AUDIO_ROOT) / self.session_id
+        data_root = os.environ.get("AI_LIVE_STUDIO_DATA")
+        default_root = Path(data_root).expanduser() / "prepared-live" if data_root else PREPARED_AUDIO_ROOT
+        self.audio_root = (audio_root or default_root) / self.session_id
         self.phase = "streaming" if preparation_stream else "preparing"
         self.prepared_segments = 0
         self.preparation_total_segments = 0
@@ -96,14 +99,9 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
             if self._stop.is_set():
                 return False
             audio = block["path"].read_bytes()
-            self._sequence += 1
             position = self.generated_segments + 1
-            self._enqueue(f"{self.session_id}-r000001-s{position:04d}", self._sequence,
-                          block["text"], self.voice, audio)
-            if self._stop.is_set():
+            if not self._deliver(f"{self.session_id}-r000001-s{position:04d}", block["text"], audio):
                 return False
-            with self._lock:
-                self.generated_segments += 1
         return False
 
     def snapshot(self):
@@ -195,13 +193,9 @@ class PreparedLiveSession(SynthesisBlockLiveSession):
                 audio = block.path.read_bytes()
                 if self._stop.is_set():
                     return
-                self._sequence += 1
                 item_id = f"{self.session_id}-r{self.round_number:06d}-s{position:04d}"
-                self._enqueue(item_id, self._sequence, block.text, self.voice, audio)
-                if self._stop.is_set():
+                if not self._deliver(item_id, block.text, audio):
                     return
-                with self._lock:
-                    self.generated_segments += 1
             with self._lock:
                 self.prepared_round_number = 0
             # Continue the existing ordered synthesis loop with the same
