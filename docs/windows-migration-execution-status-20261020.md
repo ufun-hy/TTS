@@ -10,7 +10,7 @@
 
 | 阶段 | 本次判定 | 证据 / 下一道关 |
 |---|---|---|
-| 阶段 0：测试安全网 | **进行中（未验收）** | 修复 `tests/test_wav_compat.py` 对 Path.stat 参数的兼容；新增 Windows Python 3.11/3.13 回归矩阵；尚无测试运行结果 |
+| 阶段 0：测试安全网 | **功能回归 PASS；安装包构建待完成** | Windows 双版本功能回归已绿；全量 Windows runtime tests、WinMM smoke 和 dry-run 在安装包工作流中已通过，打包步骤仍在执行 |
 | 阶段 1：砍 Mac/局域网遗留 | 未开始删除 | 阶段 0 通过后再逐模块删除；保留 `audio_cache` 直到阶段 4 |
 | 阶段 2：移植 main 六个业务模块 | 尚未执行 | 必须逐项迁移并跑对应测试，不能直接覆盖 Windows 交叉修改 |
 | 阶段 3：安全修复 | 尚未执行 | Origin/Host/Content-Type，TTS gateway 异常及认证，离线补丁签名 |
@@ -21,7 +21,7 @@
 
 - `tests/test_wav_compat.py`：测试中的 monkey-patch `changing_stat(path, *args, **kwargs)`，传递 Python 3.13 新增或扩展的 stat 关键字参数，避免误报类型错误。
 - `.github/workflows/windows-functional-regression.yml`：Windows Python 3.11 / 3.13 矩阵；覆盖本阶段已有桌面、库存、回放测试，并加入 `tests.test_wav_compat`。
-- 本轮读取 GitHub 最新提交检查时，GitHub 返回 combined statuses 为空、关联 PR 工作流运行列表为空。**这不是通过，也不能证明工作流执行失败**；需要在 GitHub Actions 页核对 workflow 是否实际触发，且提供 run/job 日志。
+- Windows Functional Regression run `39363238597`：Python 3.11 / 3.13 新增测试通过，既有测试均因未准备 FFmpeg（两项）及 Windows UTF-8 默认编码断言（一项）失败。\n- 针对性修复：`tests/test_text_studio.py` 明确 `read_text(encoding="utf-8")`；功能回归工作流按已有打包工作流的 SHA-256 固定版本安装 FFmpeg。\n- **后续复测 run `39363739503`：Python 3.11 与 3.13 两个作业均 SUCCESS。** https://github.com/ufun-hy/TTS/actions/runs/39363739503\n- Windows Installer run `39363716583`：截至本次核查，测试、WinMM smoke、Runtime dry-run 已成功，`Build full installer` 仍在执行，整条流水线尚未结论。https://github.com/ufun-hy/TTS/actions/runs/39363716583
 
 ## 阶段 0 未完成条件
 
@@ -39,4 +39,4 @@
 
 ## 结论
 
-**真实进度：原始计划阶段 0 已开始落实，但尚未通过完成门槛。** 之前的桌面壳与库存功能只代表另外一批代码改造，不能视为“阶段 4 单宿主已完成”。
+**真实进度：阶段 0 的 Windows Python 功能回归已 PASS；安装包构建与真实设备烟测仍待验收，未将整个阶段标记完全完成。** 之前的桌面壳与库存功能只代表另外一批代码改造，不能视为“阶段 4 单宿主已完成”。
