@@ -54,7 +54,20 @@ CI 状态（本批操作时的观察）：
 - 再删除 3 个 timeline CLI 后 Patch run `39366121165` 与 Installer run `39366121166` 已触发，**未取得最终结果**；
 - 前一批 `launchd` 删除后的功能回归 run `39364041752`、Patch run `39364041721`、Installer run `39364041732` 均已 **SUCCESS**。
 
-**阶段 1 仍未完成**：timeline 内部调用迁移、`timeline/tts_client.py` Keychain 剥离、MLX ASR 拆分、`/speak` 与 `afplay` 清理、剩余 Mac 入口清理、最终导入/打包回归。
+**阶段 1 仍未完成**：timeline 其余内部调用清理、`/speak` 与 `afplay` 清理、剩余 Mac 入口清理、最终导入/打包回归。
+
+## 阶段 1 第三批：TTSClient 与 ASR Windows 专用化
+
+- 新增 `server/tts_client.py`，保留原 `/synthesize` HTTP 客户端行为，API Key 仅由 Runtime 环境变量或显式参数提供，不再调用 macOS Keychain。
+- `server/live_session.py` 和保留的 `timeline/scheduler.py` 均改从 `server.tts_client` 导入；删除 `timeline/tts_client.py`。
+- `recording_transcript/qwen_asr.py` 改为纯 Windows CUDA 后端兼容接口，移除 MLX 加载与 macOS 自动选择分支；底层保留 `recording_transcript/qwen_asr_windows.py` 及 `windows_worker.py` 子进程执行。
+- `voice_datasets/transcription.py` 中 ASR 版本来源从 `mlx-audio` 改为 `qwen-asr`，backend 记录使用 CUDA 常量；`recording_transcript/pipeline.py` 更新误导性 MLX 描述。
+- 新增 `tests/test_tts_client_migration.py`，更新 `tests/test_qwen_asr.py`，并将 TTSClient、ASR 和声音数据集测试纳入 Windows 功能回归工作流。
+- 该批当前 GitHub 工作流 run `39366829015` 已触发；最终状态需要以 Actions 实际执行结果为准。
+
+**重要兼容性边界**：已有历史声音数据集若采用 `mlx-audio` 标识，其 identity 不会自动改写；Windows 新运行会使用 CUDA 标识，旧目录如出现 identity mismatch，须保留旧目录并创建新任务目录，不得静默覆盖历史结果。
+
+尚未完成：`/speak`+ `afplay`、剩余 Mac shell（包括 `start.sh`）、timeline 其余算法模块的引用清理、其他潜在 MLX 依赖与旧 audio_client 轮询协议；最终完成标准是功能/安装包测试绿色且不存在 Mac 专属调用。
 
 ## 阶段 0 未完成条件
 
