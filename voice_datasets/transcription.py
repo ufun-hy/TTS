@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from recording_transcript.qwen_asr import transcribe as transcribe_qwen, validate_model
+from recording_transcript.qwen_asr import BACKEND, transcribe as transcribe_qwen, validate_model
 
 
 def write_json(path: Path, value) -> None:
@@ -158,12 +158,12 @@ def prepare_speaker(speaker_dir: Path, model: Path, transcribe, size=600.0, over
         "model_path": str(model.resolve()),
         "model_sha256": model_weights_sha256(model),
         "model_config_sha256": sha256(model / "config.json"),
-        "backend_version": version("mlx-audio"),
+        "backend_version": version("qwen-asr"),
         "window_seconds": size,
         "overlap_seconds": overlap,
         "language": "zh",
         "word_timestamps": False,
-        "backend": "qwen3-asr-1.7b-mlx",
+        "backend": BACKEND,
     }
     identity_path = asr_dir / "identity.json"
     if identity_path.exists():
