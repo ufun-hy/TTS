@@ -55,6 +55,11 @@ def main() -> int:
         results.append({"test_file": name + ".py", "status": status, "exit_code": code,
                         "elapsed_seconds": round(time.monotonic() - started, 2)})
         print(f"{status:7s} {name} ({results[-1]['elapsed_seconds']}s)", flush=True)
+        if status != "PASS":
+            # Print the final traceback/assertion details to the CI console.
+            # The full original log remains in the uploaded artifact.
+            tail = "\\n".join(log.splitlines()[-42:])
+            print(f"--- {name}: failure detail ---\\n{tail}\\n--- end ---", flush=True)
     passed = sum(r["status"] == "PASS" for r in results)
     output = {"baseline": "main@35d92fb", "total": len(results),
               "passed": passed, "failed_or_timed_out": len(results) - passed,
