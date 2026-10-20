@@ -34,6 +34,7 @@ else:
 
 from recording_transcript.results import list_results, load_result
 from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments, validate_reviews, candidate_reviews
+from server.context_variants import build_context_groups, build_variant_prompt, normalize_units, validate_context_project, validate_variant_result, ID as CONTEXT_ID
 try:
     from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 except ImportError:
@@ -400,6 +401,34 @@ def generalize_paragraphs(
     return results
 
 
+def generalize_context_group_windows(body: dict, root: Path) -> dict:
+    """Return complete group candidates only; partial model output is rejected."""
+    units = normalize_units(body.get("paragraphs"))
+    if len(units) > 30 or sum(len(p["original_text"]) for p in units) > 8000:
+        raise ValueError("context group is too large")
+    group_id, revision = body.get("group_id"), body.get("revision", 0)
+    if not isinstance(group_id, str) or not CONTEXT_ID.fullmatch(group_id):
+        raise ValueError("invalid group_id")
+    if type(revision) is not int or not 0 <= revision < 1_000_000:
+        raise ValueError("invalid group revision")
+    count, provider = body.get("candidate_count", 3), body.get("provider", "codex")
+    if provider not in {"codex", "chatgpt", "gemini", "agy", "ollama", "openai_compatible"}:
+        raise ValueError("invalid provider")
+    model = validate_model(body.get("model", ""))
+    before, after = body.get("before", ""), body.get("after", "")
+    if any(not isinstance(x, str) or len(x) > 4000 for x in (before, after)):
+        raise ValueError("invalid neighboring context")
+    prompt = build_variant_prompt(units, count, body.get("instruction", ""), before, after)
+    options = {"model": model}
+    if provider in {"ollama", "openai_compatible"}:
+        options["provider_root"] = root
+    raw = _run_provider(provider, prompt, DEFAULT_TIMEOUT_SECONDS, **options)
+    result = validate_variant_result(raw, units, count, group_id, revision + 1)
+    result["group"]["generation_settings"] = {"provider": provider, "model": model,
+                                               "instruction": body.get("instruction", "")}
+    return result
+
+
 def _projects_root(root: Path) -> Path:
     runtime_root = Path(os.environ.get("AI_LIVE_STUDIO_DATA", str(root / "runtime"))).expanduser()
     path = runtime_root / "projects" if os.name == "nt" and os.environ.get("WINDOWS_SINGLE_MACHINE") == "1" else runtime_root / "text-studio" / "projects"
@@ -472,6 +501,10 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(paragraph, dict) and "prohibited_reviews" in paragraph:
             validate_reviews(paragraph["prohibited_reviews"])
 
+    context_groups = payload.get("context_groups")
+    if context_groups is not None:
+        validate_context_project(paragraphs, context_groups)
+
     name = payload.get("name", "未命名项目")
     if not isinstance(name, str) or not name.strip():
         name = "未命名项目"
@@ -522,6 +555,9 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         except (OSError, ValueError, json.JSONDecodeError):
             pass
 
+    if existing.get("context_groups") and context_groups is None:
+        raise ValueError("context group data is required; reload before saving")
+
     kind = payload.get("project_kind", project_kind(existing) if existing else "saved")
     if kind not in {"saved", "draft"}:
         raise ValueError("invalid project_kind")
@@ -546,6 +582,9 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         "created_at": created_at,
         "updated_at": now,
     }
+
+    if context_groups is not None:
+        project.update(schema_version=2, context_groups=context_groups)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name("project.json.tmp")
@@ -1006,6 +1045,15 @@ def make_handler(
 
                 if path == "/api/update/apply":
                     self._json(409, {"error": "请在 AI Live Studio 启动器中使用签名更新入口"})
+                    return
+
+                if path == "/api/context/groups":
+                    self._json(200, {"context_groups": build_context_groups(body.get("paragraphs"))})
+                    return
+
+                if path == "/api/context/generalize":
+                    result = generalize_context_group_windows(body, root)
+                    self._json(200, result)
                     return
 
                 if path == "/api/generalize":
