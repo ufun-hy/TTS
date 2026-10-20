@@ -1,4 +1,4 @@
-"""Local Qwen3-ASR-1.7B MLX pipeline for the standalone transcript page."""
+"""Local Qwen3-ASR-1.7B CUDA pipeline for the standalone transcript page."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def transcribe_recording(
     on_stage: Callable[[str], None] | None = None,
     control=None,
 ) -> str:
-    """Decode input and run the local Qwen3-ASR-1.7B MLX model."""
+    """Decode input and run the local Qwen3-ASR-1.7B CUDA model."""
     del project_root  # Kept in the public signature for existing callers.
     source = source.expanduser()
     if not source.is_file():
@@ -77,7 +77,7 @@ def transcribe_recording(
     except TaskInterrupted:
         raise
     except ImportError as exc:
-        raise TranscriptError("当前 Python 环境缺少 Qwen MLX 依赖，请使用 Qwen ASR 环境启动") from exc
+        raise TranscriptError("当前 Python 环境缺少 Windows Qwen ASR CUDA 依赖，请使用 Qwen ASR 环境启动") from exc
     except AudioDecodeError as exc:
         raise TranscriptError(str(exc)) from exc
     except OSError as exc:
