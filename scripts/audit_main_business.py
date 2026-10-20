@@ -4,6 +4,7 @@ This audit never edits or skips main tests. Expected failures remain failures.
 """
 from __future__ import annotations
 import argparse
+import shutil
 import json
 from pathlib import Path
 import subprocess
@@ -26,8 +27,15 @@ def main() -> int:
     root = Path(args.output)
     root.mkdir(parents=True, exist_ok=True)
     results = []
+    repo = Path(__file__).resolve().parents[1]
     for name in TESTS:
-        command = [sys.executable, "-m", "unittest", "-v", "tests.main_business_baseline." + name]
+        # Preserve exact main source while running it at its original tests/ path:
+        # browser asset tests use __file__-relative resource lookup.
+        test = repo / "tests" / (name + ".py")
+        baseline = repo / "tests" / "main_business_baseline" / (name + ".py")
+        prior = test.read_bytes() if test.exists() else None
+        shutil.copyfile(baseline, test)
+        command = [sys.executable, "-m", "unittest", "-v", "tests." + name]
         started = time.monotonic()
         try:
             result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
@@ -38,6 +46,11 @@ def main() -> int:
         except subprocess.TimeoutExpired as exc:
             code, status = 124, "TIMEOUT"
             log = str(exc)
+        finally:
+            if prior is None:
+                test.unlink()
+            else:
+                test.write_bytes(prior)
         (root / (name + ".log")).write_text(log, encoding="utf-8")
         results.append({"test_file": name + ".py", "status": status, "exit_code": code,
                         "elapsed_seconds": round(time.monotonic() - started, 2)})
