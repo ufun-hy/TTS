@@ -35,6 +35,8 @@ else:
 from recording_transcript.results import list_results, load_result
 from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments, validate_reviews, candidate_reviews
 from server.context_variants import build_context_groups, build_variant_prompt, normalize_units, validate_context_project, validate_variant_result, ID as CONTEXT_ID
+from server.semantic_tts_blocks import safe_continuous_text
+from server.tts_gateway import VoiceStore
 try:
     from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 except ImportError:
@@ -661,8 +663,25 @@ def _asr_health() -> dict[str, Any]:
         return {"ready": False, "error": str(exc)}
 
 
-def _tts_preview(text: str, voice: str, gateway_url: str, reviews: list[dict] | None = None) -> bytes:
-    text = broadcast_text(text, reviews)
+def _tts_preview(text: str, voice: str, gateway_url: str, reviews: list[dict] | None = None,
+                 context_segments: list[dict] | None = None, paragraph_id: str = "") -> bytes:
+    if context_segments is not None:
+        prepared = []
+        seen = set()
+        for segment in context_segments:
+            if not isinstance(segment, dict) or not isinstance(segment.get('id'), str) or segment['id'] in seen:
+                raise ValueError('invalid preview context ids')
+            value = segment.get('text')
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError('invalid preview context text')
+            seen.add(segment['id'])
+            prepared.append({**segment, 'prohibited_reviews': candidate_reviews(segment, 0, value)})
+        if paragraph_id not in seen:
+            raise ValueError('preview paragraph is missing from context')
+        safe, spans, _ = safe_continuous_text(prepared)
+        text = ''.join(safe[sp['start']:sp['end']] for sp in spans if sp['paragraph_id'] == paragraph_id).strip()
+    else:
+        text = broadcast_text(text, reviews)
     if not text:
         raise ValueError("本段全部为待处理的禁止播报话术，没有可试听内容；请修改或人工确认。")
     key = _read_keychain_api_key()
@@ -1056,6 +1075,25 @@ def make_handler(
                     self._json(200, result)
                     return
 
+                if path == "/api/context/polish":
+                    units = normalize_units(body.get("paragraphs"))
+                    targets = body.get("target_ids")
+                    expected = {p["id"] for p in units}
+                    if not isinstance(targets, list) or not targets or any(not isinstance(i, str) or i not in expected for i in targets):
+                        raise ValueError("invalid polish target_ids")
+                    instruction = body.get("instruction", "")
+                    if not isinstance(instruction, str):
+                        raise ValueError("invalid polish instruction")
+                    request = {**body, "candidate_count": 1, "instruction": instruction +
+                               "。仅润色这些目标单元：" + json.dumps(targets, ensure_ascii=False) +
+                               "。所有其他单元必须逐字保持原样，不可改写；以完整上下文保持目标单元承接，不恢复已修正的旧事实。"}
+                    result = generalize_context_group_windows(request, root)
+                    by_id = {p["id"]: p for p in result["paragraphs"]}
+                    if any(by_id[p["id"]]["candidates"][0] != p["original_text"] for p in units if p["id"] not in targets):
+                        raise ValueError("polish changed non-target units; deterministic edits retained")
+                    self._json(200, result)
+                    return
+
                 if path == "/api/generalize":
                     paragraphs = body.get("paragraphs")
                     if not isinstance(paragraphs, list):
@@ -1128,8 +1166,15 @@ def make_handler(
                                                         confirm_release=confirm_tts_release)
                             except RuntimeBusyError as exc:
                                 raise LiveSessionError(str(exc), 409) from exc
-                        reviews = candidate_reviews(body, 0, text) if "prohibited_reviews" in body else None
-                        result = _tts_preview(text.strip(), voice.strip(), gateway_url, reviews=reviews)
+                        options = {}
+                        if "prohibited_reviews" in body:
+                            options["reviews"] = candidate_reviews(body, 0, text)
+                        if "context_segments" in body:
+                            context = body["context_segments"]
+                            if not isinstance(context, list) or not 1 <= len(context) <= 30:
+                                raise ValueError("invalid preview context")
+                            options.update(context_segments=context, paragraph_id=body.get("paragraph_id"))
+                        result = _tts_preview(text.strip(), voice.strip(), gateway_url, **options)
                     finally:
                         if lease and runtime:
                             if _stop_tts_engine(gateway_url, tts_api_key):
@@ -1175,7 +1220,12 @@ def make_handler(
                     return
 
                 if path == "/api/generation/start":
-                    safe_segments = filter_segments(body.get("segments"))
+                    groups = body.get("context_groups")
+                    if groups is not None:
+                        validate_context_project(body.get("segments"), groups, complete=True)
+                        safe_segments = {"paragraphs": body["segments"], "context_groups": groups}
+                    else:
+                        safe_segments = filter_segments(body.get("segments"))
                     result = live.start(
                         body.get("voice", "default"),
                         safe_segments,
@@ -1203,7 +1253,12 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
-                    safe_segments = filter_segments(body.get("segments"))
+                    groups = body.get("context_groups")
+                    if groups is not None:
+                        validate_context_project(body.get("segments"), groups, complete=True)
+                        safe_segments = {"paragraphs": body["segments"], "context_groups": groups}
+                    else:
+                        safe_segments = filter_segments(body.get("segments"))
                     result = live.start(
                         body.get("voice", "default"),
                         safe_segments,
