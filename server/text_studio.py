@@ -1250,12 +1250,13 @@ def make_handler(
                     return
 
                 if path == "/api/generation/start":
+                    segments = body.get("segments")
                     groups = body.get("context_groups")
                     if groups is not None:
-                        validate_context_project(body.get("segments"), groups, complete=True)
-                        safe_segments = {"paragraphs": body["segments"], "context_groups": groups}
+                        validate_context_project(segments, groups, complete=True)
+                        safe_segments = {"paragraphs": segments, "context_groups": groups}
                     else:
-                        safe_segments = filter_segments(body.get("segments"))
+                        safe_segments = filter_segments(segments)
                     result = live.start(
                         body.get("voice", "default"),
                         safe_segments,
