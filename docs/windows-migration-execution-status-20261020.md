@@ -69,6 +69,19 @@ CI 状态（本批操作时的观察）：
 
 尚未完成：`/speak`+ `afplay`、剩余 Mac shell（包括 `start.sh`）、timeline 其余算法模块的引用清理、其他潜在 MLX 依赖与旧 audio_client 轮询协议；最终完成标准是功能/安装包测试绿色且不存在 Mac 专属调用。
 
+### 第三批 CI 复测与问题修复
+
+初次 CUDA 迁移 CI run `39366829015` 在 Python 3.13 报错，定位到：
+- `audio_cache/server.py` 仍导入已删除的 `timeline.tts_client`；
+- `recording_transcript/windows_chunks.py` 依赖 Python 3.13 不再提供的 `audioop`。
+
+已针对性补救：
+- Audio Cache 的 TTSClient 导入统一指向 `server.tts_client`；
+- 用整数 PCM RMS 替换 `audioop.rms`，保留 16/32-bit PCM 的阈值比较行为；
+- 增加 `tests/test_windows_asr_chunks.py` 并纳入 3.11/3.13 CI。
+
+补救后最新 CI run `39366991723` 已触发，写入本记录时尚未取得最终结论。**不得将初次失败的批次标记为 PASS。**
+
 ## 阶段 0 未完成条件
 
 1. GitHub Actions 真实运行并得到 Python 3.11 / 3.13 两套测试结论。
