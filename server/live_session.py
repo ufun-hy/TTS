@@ -19,7 +19,7 @@ import uuid
 import wave
 from typing import Any, Callable
 
-from timeline.tts_client import TTSClient, load_api_key
+from server.tts_client import TTSClient, load_api_key
 from local_runtime import RuntimeBusyError, RuntimeLease, RuntimeManager, RuntimeStage
 
 
