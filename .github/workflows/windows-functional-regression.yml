@@ -57,12 +57,14 @@ jobs:
       - name: Newly added functionality regression
         shell: pwsh
         run: |
-          python -m unittest -v tests.test_windows_desktop_shell tests.test_generation_playback_split tests.test_audio_library tests.test_library_replay tests.test_replay_journal tests.test_audio_library_capacity tests.test_tts_client_migration tests.test_qwen_asr tests.test_voice_datasets tests.test_windows_asr_chunks tests.test_service_entrypoints tests.test_runtime tests.test_timeline tests.test_generalize_robustness tests.test_resegmenter tests.test_sentence_reconstruction tests.test_semantic_tts_blocks tests.test_context_variants tests.test_migrated_prohibited_core tests.test_windows_prohibited_integration
+          python -m unittest -v tests.test_windows_desktop_shell tests.test_generation_playback_split tests.test_audio_library tests.test_library_replay tests.test_replay_journal tests.test_audio_library_capacity tests.test_tts_client_migration tests.test_qwen_asr tests.test_voice_datasets tests.test_windows_asr_chunks tests.test_service_entrypoints tests.test_runtime tests.test_timeline tests.test_generalize_robustness tests.test_resegmenter tests.test_sentence_reconstruction tests.test_semantic_tts_blocks tests.test_context_variants tests.test_migrated_prohibited_core tests.test_windows_prohibited_integration tests.test_windows_context_integration
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Browser prohibited review and inline syntax
         shell: pwsh
         run: |
           node tests/windows_prohibited_ui.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/windows_context_ui.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Related existing regression
         shell: pwsh
