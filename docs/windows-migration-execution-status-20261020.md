@@ -105,6 +105,24 @@ CI 状态（本批操作时的观察）：
 
 **阶段 1 出口尚未完成**：仍需对项目各处的旧 Mac/MLX/局域网依赖进行全量引用检查，核验 Windows 最新 Installer/Patch，确认哪些 timeline 模块能在不丢失功能的前提下迁移或清理，不能宣称阶段 1 全部 PASS。
 
+## 阶段 1 出口核查与阶段 2 首批移植
+
+阶段 1 最新复核：
+- Windows 功能回归 run `39367670323`：Python 3.11、3.13 **SUCCESS**。
+- Windows Patch run `39367640187`：**SUCCESS**。
+- Windows Installer run `39367640270`：检测时 Windows Runtime tests、WinMM smoke、runtime dry-run 步骤 **SUCCESS**，完整 Installer 构建尚未取得最终结论。完整阶段 1 出口和 Windows 实机验证因此不能标记全部 PASS。
+- `timeline` 的运行时调度/选择/文本生成算法仍被专项测试导入，暂时保留；Mac shell 运维与入口已按批次移除。
+- Git 比较显示 Windows 分支比 `main` 落后 **24 个提交**；这些更改涉及业务和播放协议的交叉修改，禁止直接覆盖或整体合并。
+
+阶段 2 第一批（独立模块移植，**未接入 UI/Live Session**）：
+- 已从 `main` 原样引入 `config/text-studio-prohibited.json`、`server/prohibited_speech.py`、`server/semantic_tts_blocks.py`、`server/context_variants.py`。
+- 已同步引入 `tests/test_semantic_tts_blocks.py`、`tests/test_context_variants.py`；新增 Windows 独立禁用话术测试 `tests/test_migrated_prohibited_core.py`，并将三者纳入双 Python 矩阵。
+- 上述模块构成可独立测试的基础，**尚不能宣称完整的禁用话术管理、上下文候选生成及语义播报 UI 已迁移**。
+- `main` 的 `first_round_preparation` 等模块仍引用旧 `timeline.tts_client.RetryableTTSClientError`，而 Windows 分支已迁入 `server.tts_client`；后续须先解决契约差异，再接入预生成与直播。
+- 主干 `server/text_studio.py`、`server/live_session.py` 和 `web/text-studio.html` 与 Windows 现状冲突，不能照搬，需要按 API 功能单独合并和回归。
+
+剩余阶段 2 迁移顺序建议：先完成各独立模块专项测试；再合并前端交互与 Studio API；最后接入第一轮计划/预生成、恢复逻辑，逐项验收。
+
 ## 阶段 0 未完成条件
 
 1. GitHub Actions 真实运行并得到 Python 3.11 / 3.13 两套测试结论。
