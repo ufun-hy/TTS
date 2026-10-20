@@ -6,6 +6,7 @@ on:
       - codex/windows-offline-runtime-v1
     paths:
       - "server/**"
+      - "timeline/tts_client.py"
       - "web/**"
       - "audio_cache/**"
       - "audio_client/**"
