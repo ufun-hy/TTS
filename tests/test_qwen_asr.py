@@ -20,17 +20,22 @@ class QwenASRTests(unittest.TestCase):
         self.source = self.root/'real.mp3'
         self.source.write_bytes(b'test')
 
-    def test_rejects_non_qwen_missing_and_smaller_models(self):
+    def test_rejects_non_qwen_and_missing_models(self):
         self.assertEqual(qwen_asr.validate_model(self.model), self.model)
         for config in (
             {'model_type': 'other_asr'},
-            {'model_type': 'qwen3_asr', 'thinker_config': {'text_config': {'hidden_size': 1024, 'num_hidden_layers': 28}}},
+            {},
         ):
             (self.model/'config.json').write_text(json.dumps(config))
             with self.assertRaises(ValueError):
                 qwen_asr.validate_model(self.model)
         with self.assertRaises(ValueError):
             qwen_asr.validate_model(self.root/'missing')
+        self.config = {'model_type': 'qwen3_asr'}
+        (self.model/'config.json').write_text(json.dumps(self.config))
+        (self.model/'model.safetensors').unlink()
+        with self.assertRaises(ValueError):
+            qwen_asr.validate_model(self.model)
 
     def test_decode_clean_and_call_qwen(self):
         decoded = self.root/'decoded.wav'
