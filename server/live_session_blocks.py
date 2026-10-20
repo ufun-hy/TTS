@@ -8,6 +8,7 @@ from io import BytesIO
 import time
 import wave
 from typing import Any, Callable
+from server.context_variants import prepare_context_live
 
 if __package__:
     from .live_session import (
@@ -240,13 +241,14 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
+            context_project = prepare_context_live(segments) if isinstance(segments, dict) else None
             loop_mode = bool(
                 isinstance(segments, list)
                 and segments
                 and all(isinstance(item, dict) and "candidates" in item for item in segments)
             )
             candidate_pools = prepare_candidate_pools(segments) if loop_mode else []
-            prepared_segments = [] if loop_mode else prepare_live_segments(segments)
+            prepared_segments = [] if loop_mode or context_project else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
 
@@ -273,6 +275,7 @@ class SynthesisBlockLiveSessionManager(LiveSessionManager):
                 playback_speed,
                 volume,
                 candidate_pools=candidate_pools,
+                context_project=context_project,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,

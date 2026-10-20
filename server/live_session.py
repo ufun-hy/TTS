@@ -7,6 +7,7 @@ from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import hashlib
 import math
 import os
 import random
@@ -20,6 +21,8 @@ import wave
 from typing import Any, Callable
 
 from server.tts_client import TTSClient, load_api_key
+from server.context_variants import choose_variant_round, prepare_context_live
+from server.semantic_tts_blocks import semantic_blocks
 from local_runtime import RuntimeBusyError, RuntimeLease, RuntimeManager, RuntimeStage
 
 
@@ -256,12 +259,15 @@ class LiveSession:
         buffer_high_seconds: float = DEFAULT_BUFFER_HIGH_SECONDS,
         buffer_low_seconds: float = DEFAULT_BUFFER_LOW_SECONDS,
         stop_timeout_seconds: float = STOP_TIMEOUT_SECONDS,
+        context_project: dict | None = None,
     ) -> None:
         self.session_id = session_id
         self.voice = voice
         self.segments = segments
         self.candidate_pools = candidate_pools or []
-        self.looping = bool(self.candidate_pools)
+        self.context_project = context_project
+        self.variant_selection: list[dict] = []
+        self.looping = bool(self.candidate_pools or self.context_project)
         self._synthesize = synthesize
         self._enqueue = enqueue
         self._cache_status = cache_status
@@ -372,6 +378,15 @@ class LiveSession:
                 self.finished = False
 
     def _round_segments(self) -> list[dict[str, str]]:
+        if self.context_project:
+            groups = self.context_project["context_groups"]
+            selected, indexes = choose_variant_round(self.context_project["paragraphs"], groups,
+                                                     self._previous_candidate_indexes, self._random)
+            self._previous_candidate_indexes = indexes
+            self.variant_selection = [{"group_id": g["id"], "revision": g["revision"],
+                                       "variant_id": g["variants"][index]["id"]}
+                                      for g, index in zip(groups, indexes)]
+            return semantic_blocks(selected)
         if not self.looping:
             if self.round_number:
                 return []
@@ -534,13 +549,14 @@ class LiveSessionManager:
             raise LiveSessionError("voice is invalid", 400)
         playback_speed, volume = _live_audio_settings(playback_speed, volume)
         try:
+            context_project = prepare_context_live(segments) if isinstance(segments, dict) else None
             loop_mode = bool(
                 isinstance(segments, list)
                 and segments
                 and all(isinstance(item, dict) and "candidates" in item for item in segments)
             )
             candidate_pools = prepare_candidate_pools(segments) if loop_mode else []
-            prepared_segments = [] if loop_mode else prepare_live_segments(segments)
+            prepared_segments = [] if loop_mode or context_project else prepare_live_segments(segments)
         except ValueError as exc:
             raise LiveSessionError(str(exc), 400) from exc
         runtime_lease: RuntimeLease | None = None
@@ -566,6 +582,7 @@ class LiveSessionManager:
                 playback_speed,
                 volume,
                 candidate_pools=candidate_pools,
+                context_project=context_project,
                 buffer_high_seconds=self.buffer_high_seconds,
                 buffer_low_seconds=self.buffer_low_seconds,
                 stop_timeout_seconds=self.stop_timeout_seconds,
@@ -612,7 +629,10 @@ class LiveSessionManager:
             session = self._session
         if not session:
             return LiveSnapshot("", "idle", 0, 0, 0, 0, 0, 0, False).as_dict()
-        return session.snapshot().as_dict()
+        result = session.snapshot().as_dict()
+        if session.context_project:
+            result["variant_selection"] = list(session.variant_selection)
+        return result
 
     def pause(self) -> dict[str, Any]:
         session = self._require_session()
@@ -794,6 +814,7 @@ class LiveSessionManager:
             self._enqueue_impl(item_id, sequence, text, voice, audio)
             return
         session = self._require_session()
+        round_position = session.generated_segments + 1
         self._request_json("POST", "/audio/enqueue", {
             "id": item_id,
             "sequence": sequence,
@@ -803,6 +824,11 @@ class LiveSessionManager:
             "voice": voice,
             "playback_speed": session.playback_speed,
             "volume": session.volume,
+            "source_audio_sha256": hashlib.sha256(audio).hexdigest(),
+            "round_position": round_position,
+            "round_total": session.total_segments,
+            "looping": session.looping,
+            "session_final": bool(not session.looping and session.total_segments and round_position >= session.total_segments),
             "audio_base64": base64.b64encode(audio).decode("ascii"),
         }, cache=True, timeout=CACHE_ENQUEUE_TIMEOUT_SECONDS)
 
