@@ -110,7 +110,7 @@ class TextStudioTest(unittest.TestCase):
             self.assertEqual(record["paragraph_start"], 8)
             self.assertEqual(record["batch_id"], "batch-002")
             self.assertTrue(record["end_time"])
-            self.assertEqual(Path(record["response_path"]).read_text(),
+            self.assertEqual(Path(record["response_path"]).read_text(encoding="utf-8"),
                              "partial" if error is text_studio.subprocess.TimeoutExpired else output.stdout)
             if error is not ValueError:
                 self.assertEqual(record["model"], "test-model")
