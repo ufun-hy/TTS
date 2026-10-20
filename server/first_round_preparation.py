@@ -10,7 +10,7 @@ import time
 
 from server.first_round_plan import build_plan, source_signature, project_inputs, normalized_source
 from server.live_session import LiveSessionError
-from timeline.tts_client import RetryableTTSClientError
+from server.tts_client import RetryableTTSClientError
 
 
 class FirstRoundPreparation:
