@@ -1,0 +1,50 @@
+name: Windows Functional Regression
+
+on:
+  push:
+    branches:
+      - codex/windows-offline-runtime-v1
+    paths:
+      - "audio_cache/**"
+      - "audio_client/**"
+      - "server/**"
+      - "web/**"
+      - "windows_launcher.py"
+      - "desktop_shell.py"
+      - "windows_playback_service.py"
+      - "tests/**"
+      - ".github/workflows/windows-functional-regression.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  functional-regression:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test prerequisites
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install cryptography
+      - name: Validate changed Python modules
+        shell: pwsh
+        run: |
+          python -m py_compile desktop_shell.py windows_launcher.py windows_playback_service.py audio_cache/library.py audio_cache/manager.py audio_cache/server.py audio_cache/replay_journal.py server/live_session.py server/text_studio.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Newly added functionality regression
+        shell: pwsh
+        run: |
+          python -m unittest -v tests.test_windows_desktop_shell tests.test_generation_playback_split tests.test_audio_library tests.test_library_replay tests.test_replay_journal tests.test_audio_library_capacity
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Related existing regression
+        shell: pwsh
+        run: |
+          python -m unittest -v tests.test_live_session tests.test_text_studio tests.test_windows_playback_lifecycle tests.test_audio_cache
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
