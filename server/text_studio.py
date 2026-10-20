@@ -33,6 +33,7 @@ else:
     from live_session import LiveSessionError, build_live_manager, resolve_dynamic_time
 
 from recording_transcript.results import list_results, load_result
+from server.prohibited_speech import RULES as PROHIBITED_RULES, broadcast_text, filter_segments, validate_reviews, candidate_reviews
 try:
     from .text_studio_http_providers import list_ollama_models, provider_config, run_http_provider, unload_ollama_url
 except ImportError:
@@ -467,6 +468,10 @@ def save_project(root: Path, payload: dict[str, Any]) -> dict[str, Any]:
             f"项目包含 {len(paragraphs)} 个话术单元，超过单个项目 {MAX_PROJECT_PARAGRAPHS} 个的上限，请分为多个项目保存"
         )
 
+    for paragraph in paragraphs:
+        if isinstance(paragraph, dict) and "prohibited_reviews" in paragraph:
+            validate_reviews(paragraph["prohibited_reviews"])
+
     name = payload.get("name", "未命名项目")
     if not isinstance(name, str) or not name.strip():
         name = "未命名项目"
@@ -617,7 +622,10 @@ def _asr_health() -> dict[str, Any]:
         return {"ready": False, "error": str(exc)}
 
 
-def _tts_preview(text: str, voice: str, gateway_url: str) -> bytes:
+def _tts_preview(text: str, voice: str, gateway_url: str, reviews: list[dict] | None = None) -> bytes:
+    text = broadcast_text(text, reviews)
+    if not text:
+        raise ValueError("本段全部为待处理的禁止播报话术，没有可试听内容；请修改或人工确认。")
     key = _read_keychain_api_key()
     if not key:
         raise RuntimeError("TTS API key is not available")
@@ -795,10 +803,12 @@ def make_handler(
             path = parsed.path
             query = urllib.parse.parse_qs(parsed.query)
 
-            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js"}:
-                is_risk_script = path in {"/text-studio-risk.js", "/text-studio-search.js"}
+            if path in {"/", "/index.html", "/text-studio-risk.js", "/text-studio-search.js", "/text-studio-prohibited.js", "/text-studio-prohibited-rules.js"}:
+                is_risk_script = path.endswith(".js")
                 try:
-                    body = (root / "web" / path.lstrip("/") if is_risk_script else html_path).read_bytes()
+                    body = (("const TextStudioProhibitedRules=" + json.dumps(PROHIBITED_RULES, ensure_ascii=False) + ";").encode("utf-8")
+                            if path == "/text-studio-prohibited-rules.js" else
+                            (root / "web" / path.lstrip("/") if is_risk_script else html_path).read_bytes())
                 except OSError as exc:
                     self._json(500, {"error": str(exc)})
                     return
@@ -1070,7 +1080,8 @@ def make_handler(
                                                         confirm_release=confirm_tts_release)
                             except RuntimeBusyError as exc:
                                 raise LiveSessionError(str(exc), 409) from exc
-                        result = _tts_preview(text.strip(), voice.strip(), gateway_url)
+                        reviews = candidate_reviews(body, 0, text) if "prohibited_reviews" in body else None
+                        result = _tts_preview(text.strip(), voice.strip(), gateway_url, reviews=reviews)
                     finally:
                         if lease and runtime:
                             if _stop_tts_engine(gateway_url, tts_api_key):
@@ -1116,9 +1127,10 @@ def make_handler(
                     return
 
                 if path == "/api/generation/start":
+                    safe_segments = filter_segments(body.get("segments"))
                     result = live.start(
                         body.get("voice", "default"),
-                        body.get("segments"),
+                        safe_segments,
                         body.get("playback_speed", 1.0),
                         body.get("volume", 100.0),
                         autoplay=False,
@@ -1143,9 +1155,10 @@ def make_handler(
                     return
 
                 if path == "/api/live/start":
+                    safe_segments = filter_segments(body.get("segments"))
                     result = live.start(
                         body.get("voice", "default"),
-                        body.get("segments"),
+                        safe_segments,
                         body.get("playback_speed", 1.0),
                         body.get("volume", 100.0),
                     )
